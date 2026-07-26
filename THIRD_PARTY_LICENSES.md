@@ -17,10 +17,11 @@ Each is used under its own license.
 
 ## Android / Kotlin runtime dependencies
 
-Standard AndroidX, Jetpack Compose, Kotlin stdlib, and Google Play services
-libraries are used under their respective licenses (Apache-2.0 unless noted in
-each artifact's POM). See `app/build.gradle.kts` and `companion/build.gradle.kts`
-for the resolved dependency set.
+Standard AndroidX, Jetpack Compose, and Kotlin stdlib libraries are used under
+their respective licenses (Apache-2.0 unless noted in each artifact's POM).
+OpenAutoLink does **not** depend on Google Play services or any other
+proprietary Google runtime library. See `app/build.gradle.kts` and
+`companion/build.gradle.kts` for the resolved dependency set.
 
 ## Notes
 

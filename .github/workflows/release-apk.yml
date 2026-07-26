@@ -53,6 +53,46 @@ jobs:
           mkdir -p secrets
           echo "${{ secrets.UPLOAD_KEYSTORE_BASE64 }}" | base64 -d > secrets/upload-key.jks
 
+      # Derive the version from the release tag so both APKs are stamped with a
+      # real, increasing version. Without this both modules fall back to their
+      # defaults (versionCode 1) and every release APK looks identical to
+      # Android, making installed builds impossible to tell apart.
+      #
+      # versionCode is the bare PATCH component (v0.1.372 -> 372) so CI shares
+      # ONE sequence with scripts/linux/bundle-release.sh, which drives Play
+      # releases from secrets/version.properties. Keeping the two in a single
+      # sequence means a CI-built APK could go to Play without burning a
+      # version number.
+      #
+      # This scheme only holds while the version stays on 0.1.x: bumping to
+      # 0.2.0 would produce versionCode 0 and REGRESS below the current Play
+      # value. That case fails the build on purpose -- pick the new numbering
+      # deliberately and update this step plus secrets/version.properties
+      # together, because a versionCode bump on Play is irreversible.
+      - name: Derive version from release tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          NAME="${TAG#v}"
+          if ! [[ "$NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "ERROR: release tag '$TAG' is not vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          if [ "$MAJOR" != "0" ] || [ "$MINOR" != "1" ]; then
+            echo "ERROR: tag '$TAG' leaves the 0.1.x line." >&2
+            echo "versionCode is the bare PATCH component, so '$NAME' would" >&2
+            echo "produce versionCode $PATCH and may regress below the value" >&2
+            echo "already published to Play. Choose the new numbering scheme" >&2
+            echo "explicitly: update this step and secrets/version.properties." >&2
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "Version: name=$NAME code=$PATCH"
+
       - name: Build car app release APK
         env:
           UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
@@ -60,7 +100,9 @@ jobs:
           UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_STORE_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --no-daemon
+          ./gradlew :app:assembleRelease --no-daemon \
+            -PoalVersionCode=${{ steps.version.outputs.code }} \
+            -PoalVersionName=${{ steps.version.outputs.name }}
 
       - name: Build companion release APK
         env:
@@ -68,7 +110,9 @@ jobs:
           UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
           UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_STORE_PASSWORD }}
         run: |
-          ./gradlew :companion:assembleRelease --no-daemon
+          ./gradlew :companion:assembleRelease --no-daemon \
+            -PoalVersionCode=${{ steps.version.outputs.code }} \
+            -PoalVersionName=${{ steps.version.outputs.name }}
 
       - name: Rename APKs
         run: |
