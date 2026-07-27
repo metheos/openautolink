@@ -216,6 +216,7 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     cbMethods_.onAudioFocusRequest = env->GetMethodID(cbClass, "onAudioFocusRequest", "(I)V");
     cbMethods_.onError = env->GetMethodID(cbClass, "onError", "(Ljava/lang/String;)V");
     cbMethods_.onNativeLog = env->GetMethodID(cbClass, "onNativeLog", "(ILjava/lang/String;Ljava/lang/String;)V");
+    cbMethods_.onSensorSubscribed = env->GetMethodID(cbClass, "onSensorSubscribed", "(I)V");
     env->DeleteLocalRef(cbClass);
 
     // Read SDR config from Kotlin
@@ -465,8 +466,20 @@ void JniSession::nativeDiag(int level, const char* tag, const std::string& msg)
     releaseEnv(attached);
 }
 
+void JniSession::notifySensorSubscribed(int sensorType)
+{
+    if (!cbMethods_.onSensorSubscribed || !callbackRef_) return;
+    bool attached;
+    JNIEnv* env = getEnv(attached);
+    if (env) {
+        env->CallVoidMethod(callbackRef_, cbMethods_.onSensorSubscribed,
+                            static_cast<jint>(sensorType));
+    }
+    releaseEnv(attached);
+}
+
 // ============================================================================
-// IControlServiceChannelEventHandler Ã¢â‚¬â€ AA handshake + session control
+// IControlServiceChannelEventHandler — AA handshake + session control
 // ============================================================================
 
 void JniSession::onVersionResponse(uint16_t majorCode, uint16_t minorCode,

@@ -80,6 +80,11 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         // App-side settings
         val DRIVE_SIDE = stringPreferencesKey("drive_side")
         val GPS_FORWARDING = booleanPreferencesKey("gps_forwarding")
+        // Force the phone to always see the car as parked. Off by default, in
+        // which case the real VHAL gear/driving state is forwarded as-is.
+        // Intended for bench/diagnostic use and for head units whose VHAL never
+        // reports a usable gear. See issue #61.
+        val ALWAYS_IN_PARK = booleanPreferencesKey("always_in_park")
         val CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation")
         val OVERLAY_STATS_BUTTON = booleanPreferencesKey("overlay_stats_button")
         val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
@@ -225,6 +230,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_AA_DECODER_ADDITIONAL_DEPTH = 1
         const val DEFAULT_DRIVE_SIDE = "left"
         const val DEFAULT_GPS_FORWARDING = true
+        const val DEFAULT_ALWAYS_IN_PARK = false
         const val DEFAULT_CLUSTER_NAVIGATION = true
         const val DEFAULT_OVERLAY_STATS_BUTTON = true
         const val DEFAULT_FILE_LOGGING_ENABLED = false
@@ -406,6 +412,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     val gpsForwarding: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[GPS_FORWARDING] ?: DEFAULT_GPS_FORWARDING
+    }
+
+    val alwaysInPark: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[ALWAYS_IN_PARK] ?: DEFAULT_ALWAYS_IN_PARK
     }
 
     val clusterNavigation: Flow<Boolean> = dataStore.data.map { prefs ->
@@ -612,6 +622,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setGpsForwarding(enabled: Boolean) {
         dataStore.edit { it[GPS_FORWARDING] = enabled }
+    }
+
+    suspend fun setAlwaysInPark(enabled: Boolean) {
+        dataStore.edit { it[ALWAYS_IN_PARK] = enabled }
     }
 
     suspend fun setClusterNavigation(enabled: Boolean) {
