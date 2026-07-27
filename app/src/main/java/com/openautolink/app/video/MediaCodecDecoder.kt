@@ -36,9 +36,26 @@ class MediaCodecDecoder(
         private const val INPUT_TIMEOUT_BEHIND_US = 5000L // 5ms — shorter when catching up
         private const val OUTPUT_TIMEOUT_US = 1000L // 1ms timeout for output drain
         private const val STATS_INTERVAL_MS = 500L
-        // Minimum IDR size to be considered a real picture (not encoder startup seed).
-        // Real IDRs at any supported resolution are 50KB+. Seed IDRs are ~900 bytes.
-        private const val MIN_REAL_IDR_BYTES = 4096
+        // Minimum IDR size to be considered a real picture (not encoder startup seed
+        // and not gearhead's startup splash).
+        //
+        // HISTORY (#18): this was 4096 with a comment claiming "seed IDRs are ~900
+        // bytes". That was measured against an early seed IDR and is WRONG for the
+        // case that actually matters: gearhead sends an ~8176-byte black/green
+        // startup-splash keyframe at session start (confirmed in the deep-sleep
+        // black-video investigation, 2026-07-18). 8176 > 4096, so the splash took
+        // the REAL-IDR branch — we unblanked on a non-picture and then rendered
+        // P-frames anchored to it until the phone's next scheduled IDR.
+        //
+        // On WIRELESS that next IDR is 60 SECONDS away: gearhead hard-codes
+        // VideoEncoderParams__key_frame_interval_wireless = 60 (teardown
+        // p000/acgw.java mo3361l; the 2s "ackless" alternative in mo3360k is dead
+        // code — p000/vlz.java's constructor assigns ackless=false unconditionally).
+        // That is the exact source of #18's "green for the first 60 seconds".
+        //
+        // Real content IDRs measure 100-210KB. 50000 sits well above the 8176B
+        // splash and well below the smallest observed real IDR.
+        private const val MIN_REAL_IDR_BYTES = 50_000
         // After accepting a seed IDR, silently decode P-frames for this long before
         // rendering. Gives the decoder time to accumulate picture content from P-frames
         // so the first visible frame is mostly complete rather than green.
@@ -70,6 +87,43 @@ class MediaCodecDecoder(
     @Volatile private var receivedIdr = false
     private var mimeType: String = CodecSelector.codecToMime(codecPreference)
     private var detectedCodec: String = codecPreference
+
+    // ---- #18 H.265 green-startup diagnostics -------------------------------
+    // Purpose: separate the three candidate causes of "green for the first 60s"
+    // that are indistinguishable in the current logs:
+    //   (a) a non-picture keyframe (gearhead's ~8176B splash) opening the render
+    //       gate, then 60s of P-frames anchored to it (gearhead's wireless
+    //       keyframe interval is hard-coded to 60s — teardown p000/acgw.java);
+    //   (b) H.265 SPS parse failure -> decoder configured at fallback 1920x1080
+    //       while the stream is actually 1440p/4K;
+    //   (c) colour-standard mismatch (gearhead sets BT.709 explicitly on its HEVC
+    //       encoder, p000/iiw.java; we never set KEY_COLOR_STANDARD on the decoder).
+    // Counters are reset on each codec config so they describe the current stream.
+    /** P-frames fed to the decoder since the last IDR. Distinguishes "P-frames
+     *  flowing but never re-anchored" from "encoder silent" — opposite fixes. */
+    private val pFramesSinceIdr = AtomicLong(0)
+    /** Wall-clock of the last IDR that opened the render gate. */
+    @Volatile private var lastRealIdrMs = 0L
+    /** Count of IDRs seen this stream, by classification. */
+    private var realIdrCount = 0
+    private var subThresholdIdrCount = 0
+
+    /** True when the current stream is H.265 — gates the verbose #18 logging. */
+    private fun isH265Stream(): Boolean =
+        detectedCodec == "h265" || detectedCodec == "hevc" || mimeType == CodecSelector.MIME_H265
+
+    /** Emit the #18 diagnostic line for an IDR, naming the branch that consumed it. */
+    private fun logIdrDiag(branch: String, frame: VideoFrame) {
+        if (!isH265Stream()) return
+        val sinceLast = if (lastRealIdrMs > 0) System.currentTimeMillis() - lastRealIdrMs else -1L
+        val msg = "H265-IDR branch=$branch size=${frame.data.size}B " +
+                "threshold=$MIN_REAL_IDR_BYTES pSinceLastIdr=${pFramesSinceIdr.get()} " +
+                "msSinceLastIdr=$sinceLast real=$realIdrCount sub=$subThresholdIdrCount " +
+                "renderGate=$renderingEnabled outFmt=$outputFormatReceived"
+        Log.i(TAG, msg)
+        DiagnosticLog.i("video", msg)
+    }
+    // -----------------------------------------------------------------------
 
     /**
      * Set the negotiated codec type from the AA protocol (video setup response).
@@ -313,6 +367,11 @@ class MediaCodecDecoder(
         codecConfigData = frame.data.copyOf()
         receivedIdr = false
         awaitingFreshIdr = false
+        // #18: counters describe the CURRENT stream only.
+        pFramesSinceIdr.set(0)
+        lastRealIdrMs = 0L
+        realIdrCount = 0
+        subThresholdIdrCount = 0
         _needsKeyframe = true  // Request IDR after codec reconfigure
         _needsKeyframeFlow.value = true
 
@@ -379,6 +438,8 @@ class MediaCodecDecoder(
         // have accumulated that the picture is mostly complete. A real IDR (when it arrives
         // at the phone's natural GOP interval) will clean up any remaining artifacts.
         if (frame.data.size < MIN_REAL_IDR_BYTES) {
+            subThresholdIdrCount++
+            logIdrDiag("sub-threshold(seed-or-splash)", frame)
             Log.w(TAG, "Seed IDR detected (${frame.data.size} bytes < $MIN_REAL_IDR_BYTES) — silent decode for ${SEED_WARMUP_MS}ms before rendering")
             DiagnosticLog.w("video", "Seed IDR: ${frame.data.size}B, warmup ${SEED_WARMUP_MS}ms")
             queueFrame(frame)  // Feed to decoder — establishes reference for P-frames
@@ -395,6 +456,10 @@ class MediaCodecDecoder(
             return
         }
 
+        realIdrCount++
+        logIdrDiag("real", frame)
+        lastRealIdrMs = System.currentTimeMillis()
+        pFramesSinceIdr.set(0)
         Log.i(TAG, "IDR keyframe received: ${frame.data.size} bytes, renderGate: false->true")
         DiagnosticLog.i("video", "IDR received: ${frame.data.size}B, codecActive=${codec != null}, enabling render")
         receivedIdr = true
@@ -459,6 +524,18 @@ class MediaCodecDecoder(
                 _needsKeyframe = false
                 _needsKeyframeFlow.value = false
             }
+        }
+        // #18: count P-frames between IDRs and periodically report. During a green
+        // window this distinguishes "P-frames flowing but never re-anchored to a
+        // real IDR" (expected on the 60s wireless GOP) from "encoder silent".
+        val pCount = pFramesSinceIdr.incrementAndGet()
+        if (isH265Stream() && pCount % 120L == 0L) {
+            val sinceIdr = if (lastRealIdrMs > 0) System.currentTimeMillis() - lastRealIdrMs else -1L
+            DiagnosticLog.i(
+                "video",
+                "H265-pflow p=$pCount msSinceRealIdr=$sinceIdr renderGate=$renderingEnabled " +
+                        "awaitingFreshIdr=$awaitingFreshIdr real=$realIdrCount sub=$subThresholdIdrCount"
+            )
         }
         queueFrame(frame)
     }
@@ -551,6 +628,24 @@ class MediaCodecDecoder(
             // (e.g. 1920x1080). Wrong dimensions cause green/corrupt first frames.
             val configWidth = if (videoWidth > 0) videoWidth else 1920
             val configHeight = if (videoHeight > 0) videoHeight else 1080
+            // #18 candidate (b): if the H.265 SPS fails to parse we silently fall
+            // back to 1920x1080 while the stream may actually be 1440p/4K — a
+            // classic green/corrupt-init source. Make that failure LOUD.
+            if (isH265Stream()) {
+                DiagnosticLog.i(
+                    "video",
+                    "H265-config spsParsed=${spsDims != null} spsDims=${spsDims?.first}x${spsDims?.second} " +
+                            "pending=${pendingWidth}x${pendingHeight} using=${configWidth}x${configHeight} " +
+                            "fallback=${spsDims == null} configBytes=${configData.size}"
+                )
+                if (spsDims == null) {
+                    DiagnosticLog.w(
+                        "video",
+                        "H265-config SPS PARSE FAILED — decoder init uses fallback " +
+                                "${configWidth}x${configHeight}; suspect #18 cause (b)"
+                    )
+                }
+            }
             Log.i(TAG, "Configuring codec with video dims: ${configWidth}x${configHeight} " +
                     "(parsed=${spsDims != null}, pending=${pendingWidth}x${pendingHeight}, surface: ${surfaceWidth}x${surfaceHeight})")
 
@@ -801,6 +896,23 @@ class MediaCodecDecoder(
                             val format = mc.outputFormat
                             Log.i(TAG, "Output format changed: $format")
                             outputFormatReceived = true
+                            // #18 candidate (c): gearhead's HEVC encoder explicitly sets
+                            // color-standard=1 (BT.709) — teardown p000/iiw.java — while
+                            // its AVC encoder does not. We never set KEY_COLOR_STANDARD on
+                            // the decoder, so a decoder defaulting to BT.601 is itself a
+                            // green-tint mechanism. Dump what the decoder actually reports.
+                            if (isH265Stream()) {
+                                fun key(n: String): String = try {
+                                    if (format.containsKey(n)) format.getInteger(n).toString() else "unset"
+                                } catch (_: Throwable) { "n/a" }
+                                DiagnosticLog.i(
+                                    "video",
+                                    "H265-outfmt color-standard=${key("color-standard")} " +
+                                            "color-range=${key("color-range")} " +
+                                            "color-transfer=${key("color-transfer")} " +
+                                            "fmt=$format"
+                                )
+                            }
                             // Use crop rect for actual video dimensions (KEY_WIDTH includes padding)
                             val cropLeft = format.getInteger("crop-left", 0)
                             val cropRight = format.getInteger("crop-right", -1)
