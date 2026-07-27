@@ -345,6 +345,14 @@ class AasdkSession(
         AasdkNative.nativeRequestKeyframe()
     }
 
+    /**
+     * Invoked when the phone subscribes to a sensor type, so the owner
+     * (SessionManager) can push current vehicle state immediately instead of
+     * waiting for a VHAL change event that a parked car never produces.
+     * See issue #61.
+     */
+    @Volatile var onSensorSubscribedListener: ((Int) -> Unit)? = null
+
     // -- AasdkSessionCallback (called from native thread → dispatch to flows) --
 
     override fun onSessionStarted() {
@@ -688,6 +696,17 @@ class AasdkSession(
             2 -> com.openautolink.app.diagnostics.DiagnosticLog.w(tag, message)
             3 -> com.openautolink.app.diagnostics.DiagnosticLog.e(tag, message)
             else -> com.openautolink.app.diagnostics.DiagnosticLog.i(tag, message)
+        }
+    }
+
+    override fun onSensorSubscribed(sensorType: Int) {
+        com.openautolink.app.diagnostics.DiagnosticLog.i(
+            "vhal", "phone subscribed sensor type=$sensorType — pushing current state"
+        )
+        try {
+            onSensorSubscribedListener?.invoke(sensorType)
+        } catch (t: Throwable) {
+            OalLog.w(TAG, "onSensorSubscribed($sensorType): ${t.message}")
         }
     }
 }
