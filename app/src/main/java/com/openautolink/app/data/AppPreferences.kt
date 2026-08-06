@@ -63,6 +63,15 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
          * (WIFI_INVALID_BSSID) before it will attempt projection.
          */
         val WPP_BSSID = stringPreferencesKey("wpp_bssid")
+
+        /**
+         * Optional manual override for the address advertised to the phone.
+         *
+         * A connected car has several interfaces up at once and auto-detection
+         * can pick one the phone cannot route to (seen in-vehicle: advertised
+         * 172.16.101.100 while the phone was on 10.2.110.109). Blank = auto.
+         */
+        val WPP_LOCAL_IP = stringPreferencesKey("wpp_local_ip")
         val DIRECT_TRANSPORT = stringPreferencesKey("direct_transport")
         val MANUAL_IP_ENABLED = booleanPreferencesKey("manual_ip_enabled")
         val MANUAL_IP_ADDRESS = stringPreferencesKey("manual_ip_address")
@@ -378,6 +387,11 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[WPP_BSSID] ?: ""
     }
 
+    /** Manual head-unit IP for WPP, or blank to auto-detect. */
+    val wppLocalIp: Flow<String> = dataStore.data.map { prefs ->
+        prefs[WPP_LOCAL_IP] ?: ""
+    }
+
     val directTransport: Flow<String> = dataStore.data.map { prefs ->
         // Migrate any saved "nearby" preference to "hotspot" — Nearby Connections
         // is no longer used; the companion app speaks TCP over the shared WiFi.
@@ -519,6 +533,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setWppBssid(bssid: String) {
         dataStore.edit { it[WPP_BSSID] = bssid.trim() }
+    }
+
+    suspend fun setWppLocalIp(ip: String) {
+        dataStore.edit { it[WPP_LOCAL_IP] = ip.trim() }
     }
 
     suspend fun setHotspotPassword(password: String) {

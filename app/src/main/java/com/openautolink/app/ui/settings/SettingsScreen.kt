@@ -361,6 +361,16 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
             LocalEchoTextField(
+                value = uiState.wppLocalIp,
+                onValueChange = { viewModel.updateWppLocalIp(it) },
+                label = { Text("Head unit IP (optional)") },
+                singleLine = true,
+                supportingText = {
+                    Text("Leave blank — this is detected automatically each time. Only set it to diagnose a one-off problem, and clear it afterwards: the car's hotspot subnet changes on every restart, so a fixed value here will stop working.")
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            LocalEchoTextField(
                 value = uiState.wppBssid,
                 onValueChange = { viewModel.updateWppBssid(it) },
                 label = { Text("Access point BSSID") },

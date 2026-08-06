@@ -21,6 +21,8 @@ data class SettingsUiState(
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
     /** AP BSSID advertised to the phone in WPP mode. Must be entered by hand. */
     val wppBssid: String = "",
+    /** Manual head-unit IP for WPP; blank means auto-detect. */
+    val wppLocalIp: String = "",
     val videoAutoNegotiate: Boolean = AppPreferences.DEFAULT_VIDEO_AUTO_NEGOTIATE,
     val videoCodec: String = AppPreferences.DEFAULT_VIDEO_CODEC,
     val videoFps: Int = AppPreferences.DEFAULT_VIDEO_FPS,
@@ -192,6 +194,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)
     private val _wppBssidOverride = MutableStateFlow("")
+    private val _wppLocalIpOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
 
     init {
@@ -205,6 +208,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             preferences.wppBssid.collect { _wppBssidOverride.value = it }
         }
         viewModelScope.launch {
+            preferences.wppLocalIp.collect { _wppLocalIpOverride.value = it }
+        }
+        viewModelScope.launch {
             preferences.directTransport.collect { _directTransportOverride.value = it }
         }
     }
@@ -215,10 +221,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _hotspotPasswordOverride,
         _directTransportOverride,
         _wppBssidOverride,
-    ) { state, ssid, psk, transport, bssid ->
+        _wppLocalIpOverride,
+    ) { arr ->
+        val state = arr[0] as SettingsUiState
         state.copy(
-            hotspotSsid = ssid, hotspotPassword = psk,
-            directTransport = transport, wppBssid = bssid,
+            hotspotSsid = arr[1] as String, hotspotPassword = arr[2] as String,
+            directTransport = arr[3] as String, wppBssid = arr[4] as String,
+            wppLocalIp = arr[5] as String,
         )
     }.stateIn(
         viewModelScope,
@@ -305,6 +314,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         return com.openautolink.app.transport.PhoneDiscovery
             .getInstance(getApplication())
             .listRealInterfaces()
+    }
+
+    fun updateWppLocalIp(ip: String) {
+        _wppLocalIpOverride.value = ip
+        viewModelScope.launch { preferences.setWppLocalIp(ip) }
     }
 
     fun updateWppBssid(bssid: String) {

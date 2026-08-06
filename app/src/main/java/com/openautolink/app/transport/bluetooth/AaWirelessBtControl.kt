@@ -183,6 +183,7 @@ object AaWirelessBtControl {
             // The address the phone is told to dial. Detected from the live
             // interface rather than stored, because it changes with the network.
             val ip = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
+                ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() }
                 ?: localIpv4Address()
                 ?: ""
 
@@ -207,14 +208,70 @@ object AaWirelessBtControl {
             startAdvertising(context, creds)
     }
 
-    /** Best-effort local IPv4, skipping loopback and virtual interfaces. */
+    /**
+     * Best-effort local IPv4 for the access-point interface.
+     *
+     * Picking "the first non-loopback address" is wrong on a real head unit. A
+     * connected car has several interfaces up at once — modem, telematics,
+     * ethernet, plus the SoftAP — and the first one enumerated is rarely the one
+     * the phone can reach. Observed in-vehicle: the car advertised
+     * `172.16.101.100` (an unrelated internal interface) while the phone, having
+     * correctly joined the car's AP, sat on `10.2.110.109`. Association and
+     * credentials were perfect; the TCP connect simply had nowhere to go.
+     *
+     * Preference order:
+     *  1. an interface that looks like a SoftAP (`ap*`, `wlan1`, `swlan*`, …)
+     *  2. any other wlan interface
+     *  3. anything else routable
+     *
+     * Within each tier, RFC1918 addresses are preferred, since an AP hands out
+     * private addresses. This is still a heuristic — hence the manual override.
+     */
     private fun localIpv4Address(): String? = runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces().toList()
+        data class Candidate(val name: String, val addr: String)
+
+        val candidates = java.net.NetworkInterface.getNetworkInterfaces().toList()
             .filter { it.isUp && !it.isLoopback && !it.isVirtual }
-            .flatMap { it.inetAddresses.toList() }
-            .filterIsInstance<java.net.Inet4Address>()
-            .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
-            ?.hostAddress
+            .flatMap { nif ->
+                nif.inetAddresses.toList()
+                    .filterIsInstance<java.net.Inet4Address>()
+                    .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+                    .mapNotNull { it.hostAddress?.let { a -> Candidate(nif.name, a) } }
+            }
+        if (candidates.isEmpty()) return@runCatching null
+
+        fun tier(name: String): Int = when {
+            name.startsWith("ap") || name.startsWith("swlan") || name == "wlan1" -> 0
+            name.startsWith("wlan") -> 1
+            else -> 2
+        }
+        fun isPrivate(a: String): Boolean =
+            a.startsWith("10.") || a.startsWith("192.168.") ||
+                (a.startsWith("172.") && a.substringAfter('.').substringBefore('.').toIntOrNull()
+                    ?.let { it in 16..31 } == true)
+
+        // A gateway-looking address (x.y.z.1) is a strong signal for "this
+        // interface IS the access point", since an AP is the gateway for its
+        // clients. Ranks above interface-name guessing, which varies by OEM.
+        fun looksLikeGateway(a: String) = a.endsWith(".1")
+
+        val chosen = candidates.sortedWith(
+            compareBy<Candidate> { if (looksLikeGateway(it.addr)) 0 else 1 }
+                .thenBy { tier(it.name) }
+                .thenBy { if (isPrivate(it.addr)) 0 else 1 }
+        ).first()
+
+        // Always log, not just when ambiguous: the car's AP subnet is reassigned
+        // by the telematics module on every restart, so the advertised address
+        // legitimately changes run to run and must be traceable in the logs.
+        run {
+            OalLog.i(TAG, "Local address candidates: " +
+                    candidates.joinToString { "${it.name}=${it.addr}" } +
+                    " — advertising ${chosen.addr} (${chosen.name}). " +
+                    "If the phone joins the AP but projection never starts, compare this " +
+                    "against the phone's own address: they must share a subnet.")
+        }
+        chosen.addr
     }.getOrNull()
 
     private fun startAdvertising(context: Context, creds: AaWirelessBtServer.WifiCredentials) {
