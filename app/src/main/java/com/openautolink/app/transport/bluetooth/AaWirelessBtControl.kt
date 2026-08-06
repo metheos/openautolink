@@ -8,7 +8,9 @@ import com.openautolink.app.diagnostics.OalLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -103,7 +105,37 @@ object AaWirelessBtControl {
             context, receiver, filter,
             androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
         )
-        OalLog.i(TAG, "AA wireless BT control ready (send $ACTION_START to begin advertising)")
+
+        // Start advertising automatically whenever WPP is the selected transport.
+        //
+        // Selecting Settings → Transport → Wireless (WPP) binds the TCP listener
+        // (AasdkSession.startWpp) but that alone publishes nothing over Bluetooth,
+        // so the phone has nothing to discover and reports "no Android Auto". The
+        // SDP record is what makes the head unit visible; it must come up on the
+        // same trigger as the listener, not from a debug broadcast.
+        //
+        // Observed in-vehicle before this fix: "AA wireless BT control ready" and
+        // "WPP TCP server listening on 0.0.0.0:5277", but never
+        // "Listening on Android Auto Wireless UUID" — the advertiser sat waiting
+        // for a broadcast that only ever came from adb.
+        scope.launch {
+            val prefs = com.openautolink.app.data.AppPreferences.getInstance(context)
+            prefs.directTransport
+                .map { it == com.openautolink.app.data.AppPreferences.DIRECT_TRANSPORT_WPP }
+                .distinctUntilChanged()
+                .collect { isWpp ->
+                    if (isWpp) {
+                        OalLog.i(TAG, "WPP transport selected — starting Bluetooth advertiser")
+                        startFromPreferences(context)
+                    } else if (btServer != null) {
+                        OalLog.i(TAG, "Transport is no longer WPP — stopping Bluetooth advertiser")
+                        btServer?.stop()
+                        btServer = null
+                    }
+                }
+        }
+
+        OalLog.i(TAG, "AA wireless BT control ready")
     }
 
     /**
@@ -129,20 +161,28 @@ object AaWirelessBtControl {
      *   - empty PSK on a secured network → `WIFI_SECURITY_NOT_SUPPORTED`
      *     (we send `securityMode=OPEN`, which gearhead rejects for a WPA2 AP)
      */
-    private fun handleStart(context: Context, intent: Intent) {
-        scope.launch {
+    private fun handleStart(context: Context, intent: Intent?) {
+        scope.launch { startFromPreferences(context, intent) }
+    }
+
+    /**
+     * Load credentials from Settings (optionally overridden by intent extras)
+     * and begin advertising. Shared by the automatic transport trigger and the
+     * adb bring-up broadcast so both validate identically.
+     */
+    private suspend fun startFromPreferences(context: Context, intent: Intent? = null) {
             val prefs = com.openautolink.app.data.AppPreferences.getInstance(context)
 
-            val ssid = intent.getStringExtra("ssid")?.takeIf { it.isNotBlank() }
+            val ssid = intent?.getStringExtra("ssid")?.takeIf { it.isNotBlank() }
                 ?: prefs.hotspotSsid.first()
-            val psk = intent.getStringExtra("psk")
+            val psk = intent?.getStringExtra("psk")
                 ?: prefs.hotspotPassword.first()
-            val bssid = intent.getStringExtra("bssid")?.takeIf { it.isNotBlank() }
+            val bssid = intent?.getStringExtra("bssid")?.takeIf { it.isNotBlank() }
                 ?: prefs.wppBssid.first()
-            val port = intent.getIntExtra("port", 5277)
+            val port = intent?.getIntExtra("port", 5277) ?: 5277
             // The address the phone is told to dial. Detected from the live
             // interface rather than stored, because it changes with the network.
-            val ip = intent.getStringExtra("ip")?.takeIf { it.isNotBlank() }
+            val ip = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
                 ?: localIpv4Address()
                 ?: ""
 
@@ -157,15 +197,14 @@ object AaWirelessBtControl {
             }
             if (problems.isNotEmpty()) {
                 OalLog.w(TAG, "Not advertising — ${problems.joinToString("; ")}. " +
-                        "Set these in Settings → Wireless (WPP).")
-                return@launch
+                        "Set these in Settings → Transport → Wireless (WPP).")
+                return
             }
 
             val creds = AaWirelessBtServer.WifiCredentials(
                 ssid = ssid, psk = psk, bssid = bssid, ip = ip, port = port,
             )
             startAdvertising(context, creds)
-        }
     }
 
     /** Best-effort local IPv4, skipping loopback and virtual interfaces. */
