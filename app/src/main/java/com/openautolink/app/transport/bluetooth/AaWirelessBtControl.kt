@@ -270,13 +270,15 @@ object AaWirelessBtControl {
                     java.util.concurrent.Callable {
                         runCatching {
                             java.net.Socket().use { s ->
-                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 400)
+                                // 400ms was too tight on a freshly-associated
+                                // phone; the identity server may not be bound yet.
+                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 900)
                                 ip
                             }
                         }.getOrNull()
                     }
                 }
-            pool.invokeAll(tasks, 8, java.util.concurrent.TimeUnit.SECONDS)
+            pool.invokeAll(tasks, 12, java.util.concurrent.TimeUnit.SECONDS)
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
@@ -433,14 +435,28 @@ object AaWirelessBtControl {
         // which it refuses. Falling back to the car's own address preserves the
         // shared-network case (proven working on a tablet) and costs nothing.
         bt.setEndpointResolver {
-            // WPP mode suppresses phone discovery (nothing to dial), so
-            // lastKnownPhoneIp is usually null here. Sweep the AP subnet for the
-            // companion instead — it is a /24 of 1.5s probes run in parallel, and
-            // only when we have no cached address.
-            val phoneIp = lastKnownPhoneIp
-                ?: findCompanionOnApSubnet(manualIp ?: localIpv4Address(apInterface))
-                    ?.also { lastKnownPhoneIp = it }
-            val proxyPort = phoneIp?.let { companionProxyPort(it) }
+            // Resolve the companion's address, preferring one discovery already
+            // found. The sweep is the fallback, not the primary: it runs on the
+            // BT dial-back, which is seconds after the phone associates and
+            // often before it has an address or its servers are listening.
+            // Measured in-vehicle: this sweep found nothing at 15:45:43 while
+            // OAL's own discovery found the phone at 15:47:01, same subnet.
+            //
+            // A cached address is re-verified rather than trusted: the phone's
+            // address changes when the AP is resubnetted each ignition cycle.
+            val cached = lastKnownPhoneIp
+            var proxyPort = cached?.let { companionProxyPort(it) }
+            if (proxyPort == null) {
+                if (cached != null) {
+                    OalLog.i(TAG, "Companion did not answer at $cached — re-scanning")
+                    lastKnownPhoneIp = null
+                }
+                val found = findCompanionOnApSubnet(manualIp ?: localIpv4Address(apInterface))
+                if (found != null) {
+                    lastKnownPhoneIp = found
+                    proxyPort = companionProxyPort(found)
+                }
+            }
             when {
                 proxyPort != null ->
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)

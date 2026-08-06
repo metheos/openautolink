@@ -1166,7 +1166,13 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     val haveDefault = defaultPhoneId.value.isNotBlank()
                     val idleAndCarHotspot = mode == AppPreferences.CONNECTION_MODE_CAR_HOTSPOT &&
                         state == SessionState.IDLE
-                    if (usbTransportActive.value) continue  // USB: nothing to sweep for
+                    // USB has nothing to sweep for. WPP does: the sweep is how we
+                    // learn the companion's address, which the Bluetooth advertiser
+                    // needs to ask for its AA proxy port. It never dials the phone
+                    // in WPP mode — the phone connects to us — so running it is
+                    // discovery only.
+                    val transportNow = preferences.directTransport.first()
+                    if (transportNow == AppPreferences.DIRECT_TRANSPORT_USB) continue
                     if (!idleAndCarHotspot) continue
                     if (askMode) continue          // user wants to pick manually
                     if (!haveDefault) continue     // no default → chooser path handles it
@@ -1464,8 +1470,26 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 TAG,
                 "Switching to ${phone.friendlyName} ($host:${phone.port}) src=${phone.source}",
             )
+            // Feed the resolved address to the Bluetooth advertiser so it can ask
+            // the companion for its AA proxy port. Discovery is the authoritative
+            // source here — the advertiser's own probe runs on the BT dial-back,
+            // seconds after association, and can fire before the phone has
+            // finished coming up on the network.
+            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                .lastKnownPhoneIp = host
             _carHotspotSwitching.value = true
             _activePhoneId.value = phoneId
+            // In WPP mode the session owns the listening socket the phone is
+            // about to connect to. Restarting it on every discovery result tore
+            // the listener down repeatedly mid-attempt (observed in-vehicle:
+            // "WPP TCP server stopped/listening" four times in two minutes).
+            // Discovery in WPP mode exists only to learn the phone's address.
+            if (preferences.directTransport.first() == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                OalLog.i(TAG, "WPP transport — keeping the existing listener; " +
+                        "discovery only refreshed the companion address")
+                _carHotspotSwitching.value = false
+                return
+            }
             sessionManager.stop()
             hasConnected = false
             // Encode the port into the override string when it isn't the
