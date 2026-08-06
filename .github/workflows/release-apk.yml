@@ -3,6 +3,16 @@ name: Release APKs
 on:
   release:
     types: [published]
+  # Releases created through the REST API with a token do not emit a
+  # `release: published` event, so tagging that way silently produces a release
+  # with no APKs attached. This lets the build be run against an existing tag
+  # instead of having to delete and recreate the release by hand.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and attach APKs to (e.g. v0.1.384)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,9 +24,26 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      # One source of truth for the tag: the release event supplies it on a
+      # normal publish, the input supplies it on a manual re-run.
+      - name: Resolve release tag
+        id: tag
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "ERROR: no tag from the release event or the workflow input" >&2
+            exit 1
+          fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building $TAG"
+
+      # Check out the TAG, not the default branch. A manual re-run must build
+      # the code the tag points at, otherwise the APKs would not match the
+      # release they are attached to.
       - uses: actions/checkout@v4
         with:
           submodules: true
+          ref: ${{ steps.tag.outputs.value }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -72,7 +99,7 @@ jobs:
       - name: Derive version from release tag
         id: version
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ steps.tag.outputs.value }}"
           NAME="${TAG#v}"
           if ! [[ "$NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "ERROR: release tag '$TAG' is not vMAJOR.MINOR.PATCH" >&2
@@ -116,7 +143,7 @@ jobs:
 
       - name: Rename APKs
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ steps.tag.outputs.value }}"
           mv app/build/outputs/apk/release/app-release.apk \
              "app/build/outputs/apk/release/openautolink-car-${TAG}.apk"
           mv companion/build/outputs/apk/release/companion-release.apk \
@@ -125,6 +152,9 @@ jobs:
       - name: Upload APKs to release
         uses: softprops/action-gh-release@v2
         with:
+          # Explicit: on workflow_dispatch there is no release in the event
+          # context to infer the target from.
+          tag_name: ${{ steps.tag.outputs.value }}
           files: |
             app/build/outputs/apk/release/openautolink-car-*.apk
             companion/build/outputs/apk/release/openautolink-companion-*.apk
