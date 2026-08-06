@@ -72,6 +72,26 @@ object AaWirelessBtControl {
      */
     @Volatile
     var lastKnownPhoneIp: String? = null
+        set(value) {
+            field = value
+            if (value != null) {
+                synchronized(recentPhoneIps) {
+                    recentPhoneIps.remove(value)
+                    recentPhoneIps.add(0, value)
+                    while (recentPhoneIps.size > 4) recentPhoneIps.removeAt(recentPhoneIps.size - 1)
+                }
+            }
+        }
+
+    /**
+     * Recently-seen phone addresses, newest first.
+     *
+     * Bluetooth toggling drops WiFi and the phone reappears on a different subnet,
+     * so the address that worked a minute ago may not be the one that works now —
+     * but the old one is often still valid. Keeping a short history and probing
+     * all of them is cheaper and more reliable than a subnet scan.
+     */
+    private val recentPhoneIps = mutableListOf<String>()
 
 
     @Volatile
@@ -247,21 +267,23 @@ object AaWirelessBtControl {
      * private addresses. This is still a heuristic — hence the manual override.
      */
     /**
-     * Locates the companion on the head unit's own subnet.
+     * Last-resort scan for the companion when discovery has not yet reported one.
      *
-     * The car can always reach the phone — outbound is permitted; it is the
-     * inbound direction the AP blocks. So a sweep from here succeeds even when
-     * the phone could never have connected to us.
+     * Deliberately narrow. The previous version walked all 254 hosts with a 900ms
+     * connect timeout and took 7.2s — long enough that the handshake had already
+     * moved on: measured in-vehicle, the scan reported "No companion answered" at
+     * 16:34:36 while the companion's reply landed at 16:34:49.
      *
-     * Bounded and parallel: 254 hosts, 400ms connect timeout, 32 at a time.
-     * Returns the first host that answers the identity probe.
+     * OAL's own PhoneDiscovery finds the phone in about 4s and now publishes every
+     * address it sees, so this only covers the gap before the first discovery
+     * result. 250ms per host over 64 threads walks a /24 in well under 2s.
      */
     private fun findCompanionOnApSubnet(ourIp: String?): String? {
         if (ourIp.isNullOrBlank()) return null
         val prefix = ourIp.substringBeforeLast('.', "")
         if (prefix.isEmpty()) return null
-        OalLog.i(TAG, "Looking for the companion on $prefix.0/24 to get its proxy port")
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(32)
+        OalLog.i(TAG, "No address from discovery yet — quick scan of $prefix.0/24")
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(64)
         return try {
             val tasks = (1..254)
                 .map { "$prefix.$it" }
@@ -270,22 +292,20 @@ object AaWirelessBtControl {
                     java.util.concurrent.Callable {
                         runCatching {
                             java.net.Socket().use { s ->
-                                // 400ms was too tight on a freshly-associated
-                                // phone; the identity server may not be bound yet.
-                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 900)
+                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 250)
                                 ip
                             }
                         }.getOrNull()
                     }
                 }
-            pool.invokeAll(tasks, 12, java.util.concurrent.TimeUnit.SECONDS)
+            pool.invokeAll(tasks, 3, java.util.concurrent.TimeUnit.SECONDS)
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
                 ?.also { OalLog.i(TAG, "Companion found at $it") }
-                ?: run { OalLog.w(TAG, "No companion answered on $prefix.0/24"); null }
+                ?: run { OalLog.w(TAG, "No companion on $prefix.0/24"); null }
         } catch (e: Exception) {
-            OalLog.w(TAG, "Companion sweep failed: ${e.message}")
+            OalLog.w(TAG, "Companion scan failed: ${e.message}")
             null
         } finally {
             pool.shutdownNow()
@@ -305,8 +325,8 @@ object AaWirelessBtControl {
      */
     private fun companionProxyPort(phoneIp: String): Int? = runCatching {
         java.net.Socket().use { sock ->
-            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), 1500)
-            sock.soTimeout = 1500
+            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), 800)
+            sock.soTimeout = 800
             sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
             val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
             if (!reply.startsWith("OAL!")) return@runCatching null
@@ -448,8 +468,26 @@ object AaWirelessBtControl {
             //
             // A cached address is re-verified rather than trusted: the phone's
             // address changes when the AP is resubnetted each ignition cycle.
-            val cached = lastKnownPhoneIp
-            var proxyPort = cached?.let { companionProxyPort(it) }
+            // Try every address we know of, not just the newest. Toggling
+            // Bluetooth drops WiFi, so the phone moves between the car's AP, its
+            // own hotspot subnet and home WiFi within a single session — observed
+            // in one log: 10.2.110.109, then 10.187.47.73, then the car itself on
+            // 192.168.0.104. A single cached value is stale as often as not.
+            val candidates = buildList {
+                lastKnownPhoneIp?.let { add(it) }
+                addAll(recentPhoneIps)
+            }.distinct()
+            var proxyPort: Int? = null
+            var cached: String? = null
+            for (ip in candidates) {
+                val p = companionProxyPort(ip)
+                if (p != null) {
+                    proxyPort = p
+                    cached = ip
+                    lastKnownPhoneIp = ip
+                    break
+                }
+            }
             if (proxyPort == null) {
                 if (cached != null) {
                     OalLog.i(TAG, "Companion did not answer at $cached — re-scanning")

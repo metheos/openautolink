@@ -155,6 +155,23 @@ class PhoneDiscovery private constructor(private val context: Context) {
     private val _phones = MutableStateFlow<List<DiscoveredPhone>>(emptyList())
     val phones: StateFlow<List<DiscoveredPhone>> = _phones
 
+    /**
+     * Hands the freshest phone address to the Bluetooth advertiser.
+     *
+     * Discovery is fast (mDNS/UDP answer in well under a second, the tuned sweep
+     * in ~4s) and runs continuously. The advertiser's own /24 probe took 7.2s and
+     * repeatedly gave up before the companion replied — measured in-vehicle: the
+     * sweep reported "No companion answered" at 16:34:36 and the companion's reply
+     * arrived at 16:34:49.
+     *
+     * Toggling Bluetooth drops WiFi, so the phone's address genuinely changes
+     * mid-session; publishing on every discovery keeps it current rather than
+     * pinning a value that was right a minute ago.
+     */
+    private fun publishPhoneAddress(host: String) {
+        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.lastKnownPhoneIp = host
+    }
+
     private val _isDiscovering = MutableStateFlow(false)
     val isDiscovering: StateFlow<Boolean> = _isDiscovering
 
@@ -532,8 +549,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
                         if (ident != null) {
                             // Remember where the companion lives so the Bluetooth
                             // advertiser can ask it for its AA proxy port.
-                            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
-                                .lastKnownPhoneIp = ip
+                            publishPhoneAddress(ip)
                             addOrUpdate(
                                 phoneId = ident.phoneId,
                                 friendlyName = ident.friendlyName,
@@ -841,6 +857,10 @@ class PhoneDiscovery private constructor(private val context: Context) {
         mdnsServiceName: String?,
         viaSource: SourceBit,
     ) {
+        // Every discovery source funnels through here, so this is the one place
+        // that always has the freshest address for the Bluetooth advertiser.
+        host?.takeIf { it.isNotBlank() }?.let { publishPhoneAddress(it) }
+
         synchronized(lock) {
             val canonicalKey = keyFor(phoneId, mdnsServiceName, host)
             var existing = byKey[canonicalKey]
