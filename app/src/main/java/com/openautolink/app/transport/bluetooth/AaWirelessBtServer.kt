@@ -354,8 +354,21 @@ class AaWirelessBtServer(
             // does not sit in the stream and get mistaken for the reply to
             // WifiStartRequest below.
             val versionReply = readMessage(input)
+            // Log the payload, not just its size. A WifiVersionResponse carries a
+            // status field, and gearhead has values like STATUS_NO_COMPATIBLE_VERSION
+            // and NO_COMPATIBLE_WIFI_VERSION_FOUND — a reply that merely *arrives*
+            // tells us nothing about whether it accepted us. 140 bytes is also far
+            // larger than a bare ack, so there is content here worth reading.
             OalLog.i(TAG, "Handshake: version reply type=${versionReply.type} " +
-                    "(${versionReply.payload.size} bytes)")
+                    "(${versionReply.payload.size} bytes) hex=" +
+                    versionReply.payload.take(64).joinToString("") { "%02x".format(it) })
+            runCatching {
+                val vr = Wireless.WifiVersionResponse.parseFrom(versionReply.payload)
+                OalLog.i(TAG, "Handshake: phone WPP version " +
+                        "${vr.versionMajor}.${vr.versionMinor} status=${vr.status}")
+            }.onFailure {
+                OalLog.w(TAG, "Handshake: could not parse WifiVersionResponse: ${it.message}")
+            }
 
             OalLog.i(TAG, "Handshake: sending WifiStartRequest (type $MSG_WIFI_START_REQUEST) -> ${creds.ip}:${creds.port}")
             sendMessage(
