@@ -310,10 +310,14 @@ object AaWirelessBtControl {
             sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
             val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
             if (!reply.startsWith("OAL!")) return@runCatching null
+            // wpp=0 means "I have no proxy accepting right now" and must NOT be
+            // treated as a port. Advertising a dead port sends Android Auto to a
+            // closed socket, which fails silently on both sides.
             reply.removePrefix("OAL!").split('\t')
                 .firstOrNull { it.startsWith("wpp=") }
                 ?.removePrefix("wpp=")?.trim()?.toIntOrNull()
                 ?.takeIf { it in 1..65535 }
+                ?.also { OalLog.i(TAG, "Companion reports AA proxy on port $it") }
         }
     }.getOrNull()
 

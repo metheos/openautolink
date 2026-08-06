@@ -94,6 +94,17 @@ class AaProxy(
         CompanionLog.d(TAG, "Car socket updated (pending AA connect)")
     }
 
+    /**
+     * True only while the local server socket is genuinely accepting.
+     *
+     * [localPort] alone is not enough: the proxy object is deliberately kept
+     * after stop() so it can be reused, so its port keeps reporting a value long
+     * after the socket has closed. Advertising that port to Android Auto sends
+     * the phone to a closed socket and the connection fails silently.
+     */
+    val isAccepting: Boolean
+        get() = isRunning && serverSocket?.isClosed == false
+
     /** Start the proxy server. Returns the localhost port AA should connect to. */
     fun start(): Int {
         val server = ServerSocket(0)

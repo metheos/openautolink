@@ -165,6 +165,43 @@ class TcpAdvertiser(
      * launch intent (in case AA missed the previous one). If a bridge is
      * already active, no-op.
      */
+    /**
+     * Ensures a local AA proxy is accepting, and returns its port (0 on failure).
+     *
+     * Called from the identity probe, which the car sends immediately before the
+     * Bluetooth handshake. Starting the proxy here rather than relying on the
+     * Bluetooth auto-start path means the port we report is always real: in the
+     * 16:03 in-vehicle run the companion answered the probe while no proxy
+     * existed at all, so the car advertised 127.0.0.1:41697 and the phone
+     * connected to nothing.
+     */
+    private fun ensureProxyForWpp(): Int {
+        if (!isRunning) return 0
+        return try {
+            activeProxy?.stop()
+            val proxy = AaProxy(
+                preConnectedSocket = null,
+                listener = object : AaProxy.Listener {
+                    override fun onConnected() {
+                        CompanionLog.i(TAG, "AA connected to the WPP proxy")
+                        stateListener.onProxyConnected()
+                    }
+                    override fun onDisconnected(unexpected: Boolean) {
+                        CompanionLog.i(TAG, "WPP proxy disconnected (unexpected=$unexpected)")
+                        stateListener.onProxyDisconnected()
+                    }
+                },
+            )
+            activeProxy = proxy
+            val port = proxy.start()
+            CompanionLog.i(TAG, "Started proxy for WPP on localhost:$port")
+            port
+        } catch (e: Exception) {
+            CompanionLog.e(TAG, "Could not start a proxy for WPP: ${e.message}")
+            0
+        }
+    }
+
     fun preWarmAaPipeline() {
         if (!isRunning) {
             CompanionLog.w(TAG, "preWarmAaPipeline ignored — TcpAdvertiser not running")
@@ -281,7 +318,23 @@ class TcpAdvertiser(
             //
             // 0 means "no proxy running yet" — the car must then fall back to its
             // own address rather than advertising a port nothing is listening on.
-            val wppPort = activeProxy?.localPort ?: 0
+            // Only report a port that is genuinely accepting. activeProxy is kept
+            // after stop() for reuse (see cleanup), so localPort alone reports a
+            // dead socket — and the car would advertise 127.0.0.1:<dead> to
+            // Android Auto, which fails with no error on either side.
+            // The car asks for this port so it can tell Android Auto to connect to
+            // 127.0.0.1:<port>. The identity probe IS the car saying "I am about to
+            // start a session", so make sure a proxy is actually accepting rather
+            // than reporting a port and hoping.
+            //
+            // Only localPort is not enough: activeProxy is kept after stop() for
+            // reuse, so it keeps reporting a dead socket, and the phone would be
+            // sent to a closed port with no error on either side.
+            val proxy = activeProxy
+            val wppPort = when {
+                proxy?.isAccepting == true -> proxy.localPort
+                else -> ensureProxyForWpp()
+            }
             val response = "OAL!$phoneId\t$friendlyName\twpp=$wppPort\n".toByteArray(Charsets.UTF_8)
             socket.getOutputStream().apply {
                 write(response)
