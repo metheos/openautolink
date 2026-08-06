@@ -361,6 +361,21 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
             LocalEchoTextField(
+                value = uiState.wppChannelMhz,
+                onValueChange = { viewModel.updateWppChannelMhz(it) },
+                label = { Text("Hotspot frequency in MHz (optional)") },
+                singleLine = true,
+                supportingText = {
+                    Text(
+                        "e.g. 5805. Leave blank to advertise the common 5GHz channels. " +
+                            "The phone compares this against its own scan and refuses to " +
+                            "connect if there is no overlap — set it if the log shows " +
+                            "\"WiFi channels not supported\"."
+                    )
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            LocalEchoTextField(
                 value = uiState.wppApInterface,
                 onValueChange = { viewModel.updateWppApInterface(it) },
                 label = { Text("Hotspot network interface") },

@@ -25,6 +25,8 @@ data class SettingsUiState(
     val wppLocalIp: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
+    /** Exact AP frequency in MHz sent to the phone; 0 = advertise the default 5GHz set. */
+    val wppChannelMhz: String = "",
     val videoAutoNegotiate: Boolean = AppPreferences.DEFAULT_VIDEO_AUTO_NEGOTIATE,
     val videoCodec: String = AppPreferences.DEFAULT_VIDEO_CODEC,
     val videoFps: Int = AppPreferences.DEFAULT_VIDEO_FPS,
@@ -198,6 +200,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _wppBssidOverride = MutableStateFlow("")
     private val _wppLocalIpOverride = MutableStateFlow("")
     private val _wppApInterfaceOverride = MutableStateFlow(AppPreferences.DEFAULT_WPP_AP_INTERFACE)
+    private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
 
     init {
@@ -217,6 +220,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             preferences.wppApInterface.collect { _wppApInterfaceOverride.value = it }
         }
         viewModelScope.launch {
+            preferences.wppChannelMhz.collect {
+                _wppChannelMhzOverride.value = if (it > 0) it.toString() else ""
+            }
+        }
+        viewModelScope.launch {
             preferences.directTransport.collect { _directTransportOverride.value = it }
         }
     }
@@ -229,6 +237,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _wppBssidOverride,
         _wppLocalIpOverride,
         _wppApInterfaceOverride,
+        _wppChannelMhzOverride,
     ) { arr ->
         val state = arr[0] as SettingsUiState
         state.copy(
@@ -236,6 +245,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             directTransport = arr[3] as String, wppBssid = arr[4] as String,
             wppLocalIp = arr[5] as String,
             wppApInterface = arr[6] as String,
+            wppChannelMhz = arr[7] as String,
         )
     }.stateIn(
         viewModelScope,
@@ -322,6 +332,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         return com.openautolink.app.transport.PhoneDiscovery
             .getInstance(getApplication())
             .listRealInterfaces()
+    }
+
+    fun updateWppChannelMhz(mhz: String) {
+        _wppChannelMhzOverride.value = mhz
+        viewModelScope.launch { preferences.setWppChannelMhz(mhz.trim().toIntOrNull() ?: 0) }
     }
 
     fun updateWppApInterface(name: String) {
