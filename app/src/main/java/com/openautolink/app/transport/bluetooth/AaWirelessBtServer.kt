@@ -284,7 +284,42 @@ class AaWirelessBtServer(
             val input = DataInputStream(socket.inputStream)
             val output = socket.outputStream
 
-            OalLog.i(TAG, "Handshake: sending WifiStartRequest (type 1) -> ${creds.ip}:${creds.port}")
+            // Version exchange FIRST. gearhead warns
+            //   "Trying to proceed with WifiStartRequest before we received
+            //    WifiVersionRequest"
+            // on every session when this is skipped — but the real cost is
+            // silent: WifiVersionRequest is the ONLY carrier of
+            // WifiProjectionProtocolInfo, so without it the phone never learns
+            // our TCP endpoint and logs
+            //   "No WPP on TCP configuration found in storage for the head unit"
+            // and falls back to the WiFi-credential path.
+            OalLog.i(TAG, "Handshake: sending WifiVersionRequest (type $MSG_WIFI_VERSION_REQUEST) " +
+                    "v$WPP_VERSION_MAJOR.$WPP_VERSION_MINOR with WPP-over-TCP endpoint " +
+                    "${creds.ip}:${creds.port}")
+            sendMessage(
+                output,
+                MSG_WIFI_VERSION_REQUEST,
+                Wireless.WifiVersionRequest.newBuilder()
+                    .setVersionMajor(WPP_VERSION_MAJOR)
+                    .setVersionMinor(WPP_VERSION_MINOR)
+                    .setWppInfo(
+                        Wireless.WifiProjectionProtocolInfo.newBuilder()
+                            .setIpAddress(creds.ip)
+                            .setPort(creds.port)
+                            .build()
+                    )
+                    .build()
+                    .toByteArray(),
+            )
+
+            // The phone replies with WifiVersionResponse (type 5). Read it so it
+            // does not sit in the stream and get mistaken for the reply to
+            // WifiStartRequest below.
+            val versionReply = readMessage(input)
+            OalLog.i(TAG, "Handshake: version reply type=${versionReply.type} " +
+                    "(${versionReply.payload.size} bytes)")
+
+            OalLog.i(TAG, "Handshake: sending WifiStartRequest (type $MSG_WIFI_START_REQUEST) -> ${creds.ip}:${creds.port}")
             sendMessage(
                 output,
                 MSG_WIFI_START_REQUEST,
@@ -407,8 +442,23 @@ class AaWirelessBtServer(
         val HFP_UUID: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
 
         private const val HEADER_BYTES = 4
-        private const val MSG_WIFI_START_REQUEST = 1
-        private const val MSG_WIFI_INFO_REQUEST = 2
-        private const val MSG_WIFI_INFO_RESPONSE = 3
+        // Wire message types, recovered from the AA 17.4 teardown (enum `xnp`,
+        // third constructor argument). Types 1/2/3 are confirmed correct by our
+        // own production logs, which validates the whole table.
+        private const val MSG_WIFI_START_REQUEST = 1      // MESSAGE_WIFI_REQUEST_START_BT
+        private const val MSG_WIFI_INFO_REQUEST = 2       // MESSAGE_WIFI_REQUEST_INFO_BT
+        private const val MSG_WIFI_INFO_RESPONSE = 3      // MESSAGE_WIFI_RESPONSE_INFO_BT
+        private const val MSG_WIFI_VERSION_REQUEST = 4    // MESSAGE_WIFI_VERSION_REQUEST_BT
+        private const val MSG_WIFI_VERSION_RESPONSE = 5   // MESSAGE_WIFI_VERSION_RESPONSE_BT
+
+        /**
+         * WPP protocol version we advertise.
+         *
+         * Must be at least 4.1: gearhead gates WifiProjectionProtocolInfo on
+         * `pev.d = jaj(4, 1)` and otherwise logs "Skip handling
+         * WifiProjectionProtocolInfo as the protocol version is too low."
+         */
+        private const val WPP_VERSION_MAJOR = 4
+        private const val WPP_VERSION_MINOR = 1
     }
 }
