@@ -206,7 +206,12 @@ object AaWirelessBtControl {
             val creds = AaWirelessBtServer.WifiCredentials(
                 ssid = ssid, psk = psk, bssid = bssid, ip = ip, port = port,
             )
-            startAdvertising(context, creds)
+            startAdvertising(
+                context, creds,
+                manualIp = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
+                    ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() },
+                apInterface = prefs.wppApInterface.first(),
+            )
     }
 
     /**
@@ -280,7 +285,12 @@ object AaWirelessBtControl {
         chosen.addr
     }.getOrNull()
 
-    private fun startAdvertising(context: Context, creds: AaWirelessBtServer.WifiCredentials) {
+    private fun startAdvertising(
+        context: Context,
+        creds: AaWirelessBtServer.WifiCredentials,
+        manualIp: String?,
+        apInterface: String,
+    ) {
         // Switching the session into WPP mode is what binds the listener — see
         // AasdkSession.startWpp(). Doing it here rather than starting our own
         // server avoids two components racing for the same port.
@@ -297,6 +307,11 @@ object AaWirelessBtControl {
         // Probe first: if the BT stack refuses to publish the record we want that
         // stated plainly in the log, not inferred later from the phone's silence.
         OalLog.i(TAG, "SDP advertise capability: ${bt.canAdvertise()}")
+        // Re-resolve the address on every handshake rather than reusing the value
+        // captured here: the car's AP is given a new subnet on each ignition
+        // cycle, so this snapshot goes stale as soon as the car is restarted.
+        // Honour a manual override if one is set, otherwise look it up live.
+        bt.setAddressResolver { manualIp ?: localIpv4Address(apInterface) }
         bt.updateCredentials(creds)
         bt.start()
     }

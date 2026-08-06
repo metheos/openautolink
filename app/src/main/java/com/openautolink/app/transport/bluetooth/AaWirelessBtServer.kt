@@ -271,13 +271,51 @@ class AaWirelessBtServer(
         }
     }
 
+    /**
+     * Resolves the head unit's current IPv4 at handshake time.
+     *
+     * Not a stored value. The car's access point is reassigned a new subnet on
+     * every ignition cycle (observed: 10.2.110.x one session, a different /24 the
+     * next), so an address captured when the app started is stale by the time the
+     * phone actually connects — and the phone would be told to dial an address
+     * that no longer exists.
+     */
+    fun interface AddressResolver {
+        fun currentIpv4(): String?
+    }
+
+    @Volatile
+    private var addressResolver: AddressResolver? = null
+
+    /** Supply the live-address lookup used for every handshake. */
+    fun setAddressResolver(resolver: AddressResolver) {
+        addressResolver = resolver
+    }
+
     private suspend fun handleHandshake(socket: BluetoothSocket) {
-        val creds = credentials
-        if (creds == null) {
+        val stored = credentials
+        if (stored == null) {
             OalLog.w(TAG, "Handshake attempted with no credentials set — closing. " +
                     "updateCredentials() must be called before the phone connects.")
             runCatching { socket.close() }
             return
+        }
+
+        // Re-read the address now, not at start-up. The AP subnet changes on every
+        // ignition cycle; sending a stale address means the phone dials into
+        // nothing and silently gives up.
+        val liveIp = addressResolver?.currentIpv4()
+        val creds = when {
+            liveIp.isNullOrBlank() -> {
+                OalLog.w(TAG, "Could not resolve a current IPv4 — falling back to ${stored.ip}")
+                stored
+            }
+            liveIp != stored.ip -> {
+                OalLog.i(TAG, "Head unit address changed ${stored.ip} -> $liveIp " +
+                        "(AP resubnetted since last start) — advertising the current one")
+                stored.copy(ip = liveIp)
+            }
+            else -> stored
         }
 
         try {
