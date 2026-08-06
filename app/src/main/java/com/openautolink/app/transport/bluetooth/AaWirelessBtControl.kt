@@ -55,6 +55,7 @@ object AaWirelessBtControl {
     private const val BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
     private val BSSID_RE = Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
@@ -184,7 +185,7 @@ object AaWirelessBtControl {
             // interface rather than stored, because it changes with the network.
             val ip = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
                 ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() }
-                ?: localIpv4Address()
+                ?: localIpv4Address(prefs.wppApInterface.first())
                 ?: ""
 
             val problems = buildList {
@@ -227,7 +228,7 @@ object AaWirelessBtControl {
      * Within each tier, RFC1918 addresses are preferred, since an AP hands out
      * private addresses. This is still a heuristic — hence the manual override.
      */
-    private fun localIpv4Address(): String? = runCatching {
+    private fun localIpv4Address(apInterface: String): String? = runCatching {
         data class Candidate(val name: String, val addr: String)
 
         val candidates = java.net.NetworkInterface.getNetworkInterfaces().toList()
@@ -240,10 +241,15 @@ object AaWirelessBtControl {
             }
         if (candidates.isEmpty()) return@runCatching null
 
+        // Interface tiers. The configured AP interface wins outright; the rest
+        // are fallbacks for OEMs that name it differently, so a wrong setting
+        // degrades to a guess rather than to nothing.
         fun tier(name: String): Int = when {
-            name.startsWith("ap") || name.startsWith("swlan") || name == "wlan1" -> 0
-            name.startsWith("wlan") -> 1
-            else -> 2
+            name == apInterface -> 0
+            name.startsWith("ap_br_") || name.startsWith("ap") ||
+                name.startsWith("swlan") || name == "wlan1" -> 1
+            name.startsWith("wlan") -> 2
+            else -> 3
         }
         fun isPrivate(a: String): Boolean =
             a.startsWith("10.") || a.startsWith("192.168.") ||
@@ -256,8 +262,8 @@ object AaWirelessBtControl {
         fun looksLikeGateway(a: String) = a.endsWith(".1")
 
         val chosen = candidates.sortedWith(
-            compareBy<Candidate> { if (looksLikeGateway(it.addr)) 0 else 1 }
-                .thenBy { tier(it.name) }
+            compareBy<Candidate> { tier(it.name) }
+                .thenBy { if (looksLikeGateway(it.addr)) 0 else 1 }
                 .thenBy { if (isPrivate(it.addr)) 0 else 1 }
         ).first()
 

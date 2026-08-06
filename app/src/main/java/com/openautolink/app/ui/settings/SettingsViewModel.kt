@@ -23,6 +23,8 @@ data class SettingsUiState(
     val wppBssid: String = "",
     /** Manual head-unit IP for WPP; blank means auto-detect. */
     val wppLocalIp: String = "",
+    /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
+    val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
     val videoAutoNegotiate: Boolean = AppPreferences.DEFAULT_VIDEO_AUTO_NEGOTIATE,
     val videoCodec: String = AppPreferences.DEFAULT_VIDEO_CODEC,
     val videoFps: Int = AppPreferences.DEFAULT_VIDEO_FPS,
@@ -195,6 +197,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)
     private val _wppBssidOverride = MutableStateFlow("")
     private val _wppLocalIpOverride = MutableStateFlow("")
+    private val _wppApInterfaceOverride = MutableStateFlow(AppPreferences.DEFAULT_WPP_AP_INTERFACE)
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
 
     init {
@@ -211,6 +214,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             preferences.wppLocalIp.collect { _wppLocalIpOverride.value = it }
         }
         viewModelScope.launch {
+            preferences.wppApInterface.collect { _wppApInterfaceOverride.value = it }
+        }
+        viewModelScope.launch {
             preferences.directTransport.collect { _directTransportOverride.value = it }
         }
     }
@@ -222,12 +228,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _directTransportOverride,
         _wppBssidOverride,
         _wppLocalIpOverride,
+        _wppApInterfaceOverride,
     ) { arr ->
         val state = arr[0] as SettingsUiState
         state.copy(
             hotspotSsid = arr[1] as String, hotspotPassword = arr[2] as String,
             directTransport = arr[3] as String, wppBssid = arr[4] as String,
             wppLocalIp = arr[5] as String,
+            wppApInterface = arr[6] as String,
         )
     }.stateIn(
         viewModelScope,
@@ -314,6 +322,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         return com.openautolink.app.transport.PhoneDiscovery
             .getInstance(getApplication())
             .listRealInterfaces()
+    }
+
+    fun updateWppApInterface(name: String) {
+        _wppApInterfaceOverride.value = name
+        viewModelScope.launch { preferences.setWppApInterface(name) }
     }
 
     fun updateWppLocalIp(ip: String) {

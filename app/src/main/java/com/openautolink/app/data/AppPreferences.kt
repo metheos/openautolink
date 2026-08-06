@@ -72,6 +72,16 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
          * 172.16.101.100 while the phone was on 10.2.110.109). Blank = auto.
          */
         val WPP_LOCAL_IP = stringPreferencesKey("wpp_local_ip")
+
+        /**
+         * Network interface whose address is advertised to the phone.
+         *
+         * Defaults to [DEFAULT_WPP_AP_INTERFACE], the bridged SoftAP on AAOS.
+         * Configurable because the name is OEM-specific, and picking the wrong
+         * interface is silent: the phone joins the AP fine and then cannot reach
+         * the head unit.
+         */
+        val WPP_AP_INTERFACE = stringPreferencesKey("wpp_ap_interface")
         val DIRECT_TRANSPORT = stringPreferencesKey("direct_transport")
         val MANUAL_IP_ENABLED = booleanPreferencesKey("manual_ip_enabled")
         val MANUAL_IP_ADDRESS = stringPreferencesKey("manual_ip_address")
@@ -232,6 +242,13 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
          * advertiser to be running so the phone learns our {ip, port}.
          */
         const val DIRECT_TRANSPORT_WPP = "wpp"
+
+        /**
+         * Bridged SoftAP interface on AAOS head units — the one the phone
+         * associates to. Confirmed constant on a 2024 Blazer EV across restarts,
+         * even though the subnet it serves is reassigned on every boot.
+         */
+        const val DEFAULT_WPP_AP_INTERFACE = "ap_br_swlan0"
         const val DEFAULT_DIRECT_TRANSPORT = "hotspot" // "hotspot" (TCP over shared WiFi), "usb" (AOAv2)
         const val DEFAULT_MANUAL_IP_ENABLED = false
         const val DEFAULT_MANUAL_IP_ADDRESS = ""
@@ -392,6 +409,11 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[WPP_LOCAL_IP] ?: ""
     }
 
+    /** Interface whose IPv4 is advertised to the phone. */
+    val wppApInterface: Flow<String> = dataStore.data.map { prefs ->
+        prefs[WPP_AP_INTERFACE] ?: DEFAULT_WPP_AP_INTERFACE
+    }
+
     val directTransport: Flow<String> = dataStore.data.map { prefs ->
         // Migrate any saved "nearby" preference to "hotspot" — Nearby Connections
         // is no longer used; the companion app speaks TCP over the shared WiFi.
@@ -537,6 +559,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setWppLocalIp(ip: String) {
         dataStore.edit { it[WPP_LOCAL_IP] = ip.trim() }
+    }
+
+    suspend fun setWppApInterface(name: String) {
+        dataStore.edit { it[WPP_AP_INTERFACE] = name.trim() }
     }
 
     suspend fun setHotspotPassword(password: String) {

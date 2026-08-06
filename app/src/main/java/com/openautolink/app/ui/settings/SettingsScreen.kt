@@ -361,6 +361,16 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
             LocalEchoTextField(
+                value = uiState.wppApInterface,
+                onValueChange = { viewModel.updateWppApInterface(it) },
+                label = { Text("Hotspot network interface") },
+                singleLine = true,
+                supportingText = {
+                    Text("The interface serving the car's hotspot. Default \"${AppPreferences.DEFAULT_WPP_AP_INTERFACE}\" is correct for AAOS head units — only change it if the phone joins the hotspot but projection never starts.")
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            LocalEchoTextField(
                 value = uiState.wppLocalIp,
                 onValueChange = { viewModel.updateWppLocalIp(it) },
                 label = { Text("Head unit IP (optional)") },
