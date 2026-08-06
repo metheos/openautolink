@@ -22,10 +22,21 @@ enum SecurityMode {
     WPA_WPA2_ENTERPRISE = 28;
 }
 
+/**
+ * Schema from smali `xnu`: field 1 int32, 2 int32, 3 bytes, 4 message, 5 message.
+ *
+ * Fields 1/2 were previously modelled as ip_address(string)/port(int32); the
+ * real schema has BOTH as int32, and the endpoint travels in the nested
+ * WifiProjectionProtocolInfo instead. Kept as-is for 1/2 because that shape is
+ * what gearhead has accepted from us in production, and changing it blind would
+ * risk the one part of the handshake that already works.
+ */
 message WifiStartRequest {
     required string ip_address = 1;
     required int32 port = 2;
     optional int32 status = 3;
+    optional WifiProjectionProtocolInfo wpp_info = 4;
+    optional AccessPointInfo access_point_info = 5;
 }
 
 message WifiInfoResponse {
@@ -79,4 +90,31 @@ message WifiVersionResponse {
     optional int32 version_major = 1;
     optional int32 version_minor = 2;
     optional int32 status = 3;
+}
+
+/**
+ * Access point description carried inside WifiStartRequest.
+ *
+ * This is where `supportedWifiChannels` lives — NOT on WifiInfoResponse, whose
+ * schema (class `xno`) has exactly five fields and no repeated member. Sending
+ * an empty channel list is fatal:
+ *
+ *     GH.WIRELESS.CHANNEL: WifiScanner reported available channels: [5180, 5200, ...]
+ *     GH.WIRELESS.SETUP:   State changed to NO_COMPATIBLE_WIFI_CHANNEL_FOUND
+ *     GH.WIRELESS.SETUP:   WiFi channels not supported: []
+ *
+ * the phone intersects our list with its own, gets nothing, and gives up.
+ *
+ * Schema from smali `xnk`: fieldCount=5, max field 6, repeatedFieldCount=1
+ *     field 1 STRING, 2 STRING, 3 STRING, 4 ENUM, 6 REPEATED
+ * Field names confirmed by gearhead's own debug printer (lub.smali):
+ *     accessPointInfo.ssid / .wifiSecurityMode / .supportedWifiChannels
+ */
+message AccessPointInfo {
+    optional string ssid = 1;
+    optional string key = 2;
+    optional string bssid = 3;
+    optional SecurityMode wifi_security_mode = 4;
+    // Frequencies in MHz, e.g. 5805. Repeated, so must be non-empty.
+    repeated int32 supported_wifi_channels = 6;
 }

@@ -82,6 +82,15 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
          * the head unit.
          */
         val WPP_AP_INTERFACE = stringPreferencesKey("wpp_ap_interface")
+
+        /**
+         * Exact frequency (MHz) of the car's hotspot, e.g. 5805. 0 = auto.
+         *
+         * The phone rejects the connection outright when our advertised channel
+         * list does not overlap its own scan, so a precise value here is the
+         * difference between working and NO_COMPATIBLE_WIFI_CHANNEL_FOUND.
+         */
+        val WPP_CHANNEL_MHZ = intPreferencesKey("wpp_channel_mhz")
         val DIRECT_TRANSPORT = stringPreferencesKey("direct_transport")
         val MANUAL_IP_ENABLED = booleanPreferencesKey("manual_ip_enabled")
         val MANUAL_IP_ADDRESS = stringPreferencesKey("manual_ip_address")
@@ -404,6 +413,11 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[WPP_BSSID] ?: ""
     }
 
+    /** Exact AP frequency in MHz advertised to the phone; 0 = use the default set. */
+    val wppChannelMhz: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[WPP_CHANNEL_MHZ] ?: 0
+    }
+
     /** Manual head-unit IP for WPP, or blank to auto-detect. */
     val wppLocalIp: Flow<String> = dataStore.data.map { prefs ->
         prefs[WPP_LOCAL_IP] ?: ""
@@ -559,6 +573,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setWppLocalIp(ip: String) {
         dataStore.edit { it[WPP_LOCAL_IP] = ip.trim() }
+    }
+
+    suspend fun setWppChannelMhz(mhz: Int) {
+        dataStore.edit { it[WPP_CHANNEL_MHZ] = mhz }
     }
 
     suspend fun setWppApInterface(name: String) {

@@ -118,6 +118,15 @@ class AaWirelessBtServer(
         val bssid: String,
         val ip: String,
         val port: Int,
+        /**
+         * Frequencies (MHz) the head unit's AP can use, e.g. [5805].
+         *
+         * Must be non-empty: the phone intersects this with its own scan results
+         * and fails with NO_COMPATIBLE_WIFI_CHANNEL_FOUND when the intersection
+         * is empty. Detected from the live AP rather than hardcoded, because the
+         * car picks its channel at boot.
+         */
+        val channelsMhz: List<Int> = emptyList(),
     )
 
     /**
@@ -378,6 +387,31 @@ class AaWirelessBtServer(
                     .setIpAddress(creds.ip)
                     .setPort(creds.port)
                     .setStatus(0)
+                    // The endpoint also rides here, not only on WifiVersionRequest:
+                    // xnu field 4 is the same WifiProjectionProtocolInfo message.
+                    .setWppInfo(
+                        Wireless.WifiProjectionProtocolInfo.newBuilder()
+                            .setIpAddress(creds.ip)
+                            .setPort(creds.port)
+                            .build()
+                    )
+                    // Without a channel list the phone intersects ours (empty)
+                    // with its own and reports
+                    //   "WiFi channels not supported: []"
+                    //   State changed to NO_COMPATIBLE_WIFI_CHANNEL_FOUND
+                    // and abandons the connection.
+                    .setAccessPointInfo(
+                        Wireless.AccessPointInfo.newBuilder()
+                            .setSsid(creds.ssid)
+                            .setKey(creds.psk)
+                            .setBssid(creds.bssid)
+                            .setWifiSecurityMode(
+                                if (creds.psk.isEmpty()) Wireless.SecurityMode.OPEN
+                                else Wireless.SecurityMode.WPA2_PERSONAL
+                            )
+                            .addAllSupportedWifiChannels(creds.channelsMhz)
+                            .build()
+                    )
                     .build()
                     .toByteArray(),
             )

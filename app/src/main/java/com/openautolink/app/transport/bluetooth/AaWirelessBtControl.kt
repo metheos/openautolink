@@ -205,6 +205,7 @@ object AaWirelessBtControl {
 
             val creds = AaWirelessBtServer.WifiCredentials(
                 ssid = ssid, psk = psk, bssid = bssid, ip = ip, port = port,
+                channelsMhz = apChannelsMhz(prefs.wppChannelMhz.first()),
             )
             startAdvertising(
                 context, creds,
@@ -233,6 +234,37 @@ object AaWirelessBtControl {
      * Within each tier, RFC1918 addresses are preferred, since an AP hands out
      * private addresses. This is still a heuristic — hence the manual override.
      */
+    /**
+     * Frequencies (MHz) advertised as supported by the head unit's access point.
+     *
+     * Must not be empty. The phone intersects this list with its own scan
+     * results; an empty list produces
+     *   "WiFi channels not supported: []" -> NO_COMPATIBLE_WIFI_CHANNEL_FOUND
+     * and the connection is abandoned even though everything else succeeded.
+     *
+     * An unprivileged app cannot read a running SoftAP's channel
+     * (getWifiApConfiguration is signature-gated), so:
+     *   1. use the configured override if set — the reliable answer
+     *   2. otherwise advertise the common 5 GHz set, which at least gives the
+     *      intersection a chance of being non-empty
+     *
+     * The fallback is a guess and is logged as one.
+     */
+    private fun apChannelsMhz(override: Int): List<Int> {
+        if (override > 0) {
+            OalLog.i(TAG, "AP channel from settings: $override MHz")
+            return listOf(override)
+        }
+        // The phone's own scan reported [5180, 5200, 5220, 5240, 5745, 5765,
+        // 5785, 5805, 5825, ...], so covering that range keeps the intersection
+        // non-empty for a head unit that lands anywhere in it.
+        val fallback = listOf(5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825)
+        OalLog.w(TAG, "AP channel not configured — advertising the common 5GHz set $fallback. " +
+                "If projection fails with NO_COMPATIBLE_WIFI_CHANNEL_FOUND, set the exact " +
+                "channel in Settings.")
+        return fallback
+    }
+
     private fun localIpv4Address(apInterface: String): String? = runCatching {
         data class Candidate(val name: String, val addr: String)
 
