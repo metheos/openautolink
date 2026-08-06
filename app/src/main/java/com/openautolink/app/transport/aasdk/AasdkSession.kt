@@ -189,6 +189,27 @@ class AasdkSession(
      * connected socket — so this reuses [handleConnection] unchanged.
      */
     private fun startWpp() {
+        // Which side dials depends on which endpoint we advertised over Bluetooth.
+        //
+        //   companion loopback  -> the COMPANION is the server (it listens on 5277
+        //                          for us, and bridges AA's localhost connection to
+        //                          that socket). We must DIAL OUT, exactly as in
+        //                          ordinary hotspot mode.
+        //   car's own address   -> WE are the server and the phone dials in.
+        //
+        // Getting this wrong deadlocks silently with both ends listening: observed
+        // in-vehicle at 16:18, where AA connected to the companion's proxy and the
+        // companion then timed out with "No car socket within 30000ms — AA
+        // connected but no car ready", because the car was listening too.
+        val companionIp = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+            .lastKnownPhoneIp
+        if (companionIp != null) {
+            OalLog.i(TAG, "WPP transport with companion at $companionIp — dialling out " +
+                    "to its proxy (the companion is the server in this direction)")
+            startTcp()
+            return
+        }
+
         OalLog.i(TAG, "Starting aasdk session (WPP transport — phone connects to us)")
         _wppServer?.stop()
         _wppServer = com.openautolink.app.transport.hotspot.WppTcpServer(
