@@ -50,6 +50,9 @@ object AaWirelessBtControl {
      */
     private const val ACTION_SET_TRANSPORT = "com.openautolink.app.DEBUG_SET_TRANSPORT"
 
+    /** Companion's identity-probe port; it reports its AA proxy port here. */
+    private const val IDENTITY_PORT = 5278
+
     /** Reserved MACs gearhead rejects outright — see pev.smali validation. */
     private const val ZERO_MAC = "00:00:00:00:00:00"
     private const val BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
@@ -60,6 +63,15 @@ object AaWirelessBtControl {
 
     @Volatile
     private var btServer: AaWirelessBtServer? = null
+
+    /**
+     * Last IPv4 we saw the companion on, used to ask it for its proxy port.
+     *
+     * Set by whoever discovers or connects to the phone. Null until then, in
+     * which case we advertise the car's own address.
+     */
+    @Volatile
+    var lastKnownPhoneIp: String? = null
 
 
     @Volatile
@@ -235,6 +247,75 @@ object AaWirelessBtControl {
      * private addresses. This is still a heuristic — hence the manual override.
      */
     /**
+     * Locates the companion on the head unit's own subnet.
+     *
+     * The car can always reach the phone — outbound is permitted; it is the
+     * inbound direction the AP blocks. So a sweep from here succeeds even when
+     * the phone could never have connected to us.
+     *
+     * Bounded and parallel: 254 hosts, 400ms connect timeout, 32 at a time.
+     * Returns the first host that answers the identity probe.
+     */
+    private fun findCompanionOnApSubnet(ourIp: String?): String? {
+        if (ourIp.isNullOrBlank()) return null
+        val prefix = ourIp.substringBeforeLast('.', "")
+        if (prefix.isEmpty()) return null
+        OalLog.i(TAG, "Looking for the companion on $prefix.0/24 to get its proxy port")
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(32)
+        return try {
+            val tasks = (1..254)
+                .map { "$prefix.$it" }
+                .filter { it != ourIp }
+                .map { ip ->
+                    java.util.concurrent.Callable {
+                        runCatching {
+                            java.net.Socket().use { s ->
+                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 400)
+                                ip
+                            }
+                        }.getOrNull()
+                    }
+                }
+            pool.invokeAll(tasks, 8, java.util.concurrent.TimeUnit.SECONDS)
+                .asSequence()
+                .mapNotNull { runCatching { it.get() }.getOrNull() }
+                .firstOrNull()
+                ?.also { OalLog.i(TAG, "Companion found at $it") }
+                ?: run { OalLog.w(TAG, "No companion answered on $prefix.0/24"); null }
+        } catch (e: Exception) {
+            OalLog.w(TAG, "Companion sweep failed: ${e.message}")
+            null
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    /**
+     * Asks the companion, over the already-open car->phone link, which local port
+     * its Android Auto proxy is listening on.
+     *
+     * Probed at handshake time rather than cached: the companion restarts its
+     * proxy per session, so a port learned during discovery is usually stale.
+     *
+     * Returns null when no companion answers or it reports no proxy — the caller
+     * then advertises the car's own address, which only works on an AP that
+     * permits inbound connections.
+     */
+    private fun companionProxyPort(phoneIp: String): Int? = runCatching {
+        java.net.Socket().use { sock ->
+            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), 1500)
+            sock.soTimeout = 1500
+            sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
+            val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
+            if (!reply.startsWith("OAL!")) return@runCatching null
+            reply.removePrefix("OAL!").split('\t')
+                .firstOrNull { it.startsWith("wpp=") }
+                ?.removePrefix("wpp=")?.trim()?.toIntOrNull()
+                ?.takeIf { it in 1..65535 }
+        }
+    }.getOrNull()
+
+    /**
      * Frequencies (MHz) advertised as supported by the head unit's access point.
      *
      * Must not be empty. The phone intersects this list with its own scan
@@ -344,6 +425,32 @@ object AaWirelessBtControl {
         // cycle, so this snapshot goes stale as soon as the car is restarted.
         // Honour a manual override if one is set, otherwise look it up live.
         bt.setAddressResolver { manualIp ?: localIpv4Address(apInterface) }
+
+        // Endpoint selection, evaluated per handshake.
+        //
+        // Prefer the companion's loopback proxy: the phone connects to itself, so
+        // the car's access point is never asked to accept an inbound connection —
+        // which it refuses. Falling back to the car's own address preserves the
+        // shared-network case (proven working on a tablet) and costs nothing.
+        bt.setEndpointResolver {
+            // WPP mode suppresses phone discovery (nothing to dial), so
+            // lastKnownPhoneIp is usually null here. Sweep the AP subnet for the
+            // companion instead — it is a /24 of 1.5s probes run in parallel, and
+            // only when we have no cached address.
+            val phoneIp = lastKnownPhoneIp
+                ?: findCompanionOnApSubnet(manualIp ?: localIpv4Address(apInterface))
+                    ?.also { lastKnownPhoneIp = it }
+            val proxyPort = phoneIp?.let { companionProxyPort(it) }
+            when {
+                proxyPort != null ->
+                    AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
+                else -> {
+                    val ip = manualIp ?: localIpv4Address(apInterface)
+                    if (ip.isNullOrBlank()) null
+                    else AaWirelessBtServer.Endpoint.CarDirect(ip, 5277)
+                }
+            }
+        }
         bt.updateCredentials(creds)
         bt.start()
     }

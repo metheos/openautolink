@@ -274,7 +274,15 @@ class TcpAdvertiser(
             )
             val phoneId = com.openautolink.companion.CompanionPrefs.getOrCreatePhoneId(prefs)
             val friendlyName = com.openautolink.companion.CompanionPrefs.getFriendlyName(prefs)
-            val response = "OAL!$phoneId\t$friendlyName\n".toByteArray(Charsets.UTF_8)
+            // Append the WPP proxy port so the car can advertise 127.0.0.1:<port>
+            // to Android Auto over Bluetooth. Extra tab-separated fields are
+            // ignored by older car builds, which split on tab and read [0]/[1],
+            // so this stays backward compatible.
+            //
+            // 0 means "no proxy running yet" — the car must then fall back to its
+            // own address rather than advertising a port nothing is listening on.
+            val wppPort = activeProxy?.localPort ?: 0
+            val response = "OAL!$phoneId\t$friendlyName\twpp=$wppPort\n".toByteArray(Charsets.UTF_8)
             socket.getOutputStream().apply {
                 write(response)
                 flush()

@@ -293,6 +293,54 @@ class AaWirelessBtServer(
         fun currentIpv4(): String?
     }
 
+    /**
+     * Endpoint advertised to Android Auto: where the phone should open TCP.
+     *
+     * Two shapes, and the second is the important one:
+     *
+     *  - [CarDirect] — the car's own address. Requires the phone to open an
+     *    inbound connection across the car's access point, which GM's AP does
+     *    not permit. Correct on a shared network, useless on the car's own.
+     *
+     *  - [PhoneLoopback] — 127.0.0.1 and the companion's local proxy port. The
+     *    phone connects to itself, so no packet crosses the air and no AP can
+     *    interfere. The bytes then travel over the TCP connection the CAR
+     *    opened outbound to the companion, which is permitted.
+     *
+     * The loopback shape is not a new trick: it is exactly what OAL sent in the
+     * `WirelessStartupReceiver` broadcast (ip_address=127.0.0.1,
+     * projection_port=<proxy>) which worked in production until 17.4 disabled
+     * that receiver. This carries the same values over the Bluetooth handshake
+     * instead.
+     */
+    sealed interface Endpoint {
+        val ip: String
+        val port: Int
+
+        data class CarDirect(override val ip: String, override val port: Int) : Endpoint
+        data class PhoneLoopback(override val port: Int) : Endpoint {
+            override val ip: String get() = "127.0.0.1"
+        }
+    }
+
+    /**
+     * Supplies the endpoint at handshake time.
+     *
+     * Resolved per handshake, not cached: the companion's proxy port changes
+     * every time it restarts, and the car's AP subnet changes every ignition
+     * cycle. A value captured at start-up is stale by the time the phone calls.
+     */
+    fun interface EndpointResolver {
+        fun currentEndpoint(): Endpoint?
+    }
+
+    @Volatile
+    private var endpointResolver: EndpointResolver? = null
+
+    fun setEndpointResolver(resolver: EndpointResolver) {
+        endpointResolver = resolver
+    }
+
     @Volatile
     private var addressResolver: AddressResolver? = null
 
@@ -313,18 +361,40 @@ class AaWirelessBtServer(
         // Re-read the address now, not at start-up. The AP subnet changes on every
         // ignition cycle; sending a stale address means the phone dials into
         // nothing and silently gives up.
-        val liveIp = addressResolver?.currentIpv4()
-        val creds = when {
-            liveIp.isNullOrBlank() -> {
-                OalLog.w(TAG, "Could not resolve a current IPv4 — falling back to ${stored.ip}")
-                stored
+        // Prefer the companion's loopback proxy when one is available: it is the
+        // only endpoint the car's access point cannot block, because the phone
+        // connects to itself.
+        val endpoint = endpointResolver?.currentEndpoint()
+        val creds = when (endpoint) {
+            is Endpoint.PhoneLoopback -> {
+                OalLog.i(TAG, "Advertising the companion's loopback proxy " +
+                        "${endpoint.ip}:${endpoint.port} — the phone connects to itself, " +
+                        "so the car's AP never has to accept an inbound connection")
+                stored.copy(ip = endpoint.ip, port = endpoint.port)
             }
-            liveIp != stored.ip -> {
-                OalLog.i(TAG, "Head unit address changed ${stored.ip} -> $liveIp " +
-                        "(AP resubnetted since last start) — advertising the current one")
-                stored.copy(ip = liveIp)
+            is Endpoint.CarDirect -> {
+                OalLog.i(TAG, "No companion proxy — advertising this head unit at " +
+                        "${endpoint.ip}:${endpoint.port}. This needs the AP to allow " +
+                        "inbound connections; if projection never starts, that is why.")
+                stored.copy(ip = endpoint.ip, port = endpoint.port)
             }
-            else -> stored
+            null -> {
+                // Fall back to the old address-only resolution rather than
+                // failing the handshake outright.
+                val liveIp = addressResolver?.currentIpv4()
+                when {
+                    liveIp.isNullOrBlank() -> {
+                        OalLog.w(TAG, "Could not resolve an endpoint — falling back to ${stored.ip}")
+                        stored
+                    }
+                    liveIp != stored.ip -> {
+                        OalLog.i(TAG, "Head unit address changed ${stored.ip} -> $liveIp " +
+                                "(AP resubnetted since last start) — advertising the current one")
+                        stored.copy(ip = liveIp)
+                    }
+                    else -> stored
+                }
+            }
         }
 
         try {

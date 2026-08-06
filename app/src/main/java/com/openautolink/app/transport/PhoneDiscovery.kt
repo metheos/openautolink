@@ -530,6 +530,10 @@ class PhoneDiscovery private constructor(private val context: Context) {
                     async(Dispatchers.IO) {
                         val ident = probeHost(ip)
                         if (ident != null) {
+                            // Remember where the companion lives so the Bluetooth
+                            // advertiser can ask it for its AA proxy port.
+                            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                                .lastKnownPhoneIp = ip
                             addOrUpdate(
                                 phoneId = ident.phoneId,
                                 friendlyName = ident.friendlyName,
@@ -559,7 +563,33 @@ class PhoneDiscovery private constructor(private val context: Context) {
         _isSweeping.value = false
     }
 
-    private data class IdentityResult(val phoneId: String?, val friendlyName: String?)
+    private data class IdentityResult(
+        val phoneId: String?,
+        val friendlyName: String?,
+        /**
+         * Companion's local AA-proxy port, or 0 when it is not running one.
+         *
+         * The car advertises 127.0.0.1:<this> to Android Auto over Bluetooth, so
+         * the phone connects to its own loopback and the car's access point never
+         * has to permit an inbound connection — which it does not.
+         */
+        val wppProxyPort: Int = 0,
+    )
+
+    /**
+     * Reads the optional "wpp=<port>" field from an identity response.
+     *
+     * Absent on older companions, so a missing or malformed value is not an
+     * error — it simply means no local proxy, and the caller falls back to
+     * advertising the car's own address.
+     */
+    private fun parseWppPort(parts: List<String>): Int =
+        parts.firstOrNull { it.startsWith("wpp=") }
+            ?.removePrefix("wpp=")
+            ?.trim()
+            ?.toIntOrNull()
+            ?.takeIf { it in 1..65535 }
+            ?: 0
 
     private suspend fun probeHost(host: String): IdentityResult? = withContext(Dispatchers.IO) {
         withTimeoutOrNull((SWEEP_CONNECT_TIMEOUT_MS + SWEEP_READ_TIMEOUT_MS + 200).toLong()) {
@@ -585,10 +615,13 @@ class PhoneDiscovery private constructor(private val context: Context) {
                     return@withTimeoutOrNull null
                 }
                 val payload = line.removePrefix(OalProtocol.IDENTITY_PROBE_RESPONSE_PREFIX)
-                val parts = payload.split('\t', limit = 2)
+                // No limit: newer companions append "wpp=<port>" as a third field.
+                // The old `limit = 2` folded it into friendlyName.
+                val parts = payload.split('\t')
                 IdentityResult(
                     phoneId = parts.getOrNull(0)?.takeIf { it.isNotBlank() },
                     friendlyName = parts.getOrNull(1)?.takeIf { it.isNotBlank() },
+                    wppProxyPort = parseWppPort(parts),
                 )
             } catch (e: Exception) {
                 // Most failures are "host unreachable" / timeout — expected
@@ -672,7 +705,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
                 }
                 val parts = replyText
                     .removePrefix(OalProtocol.IDENTITY_PROBE_RESPONSE_PREFIX)
-                    .split('\t', limit = 2)
+                    .split('\t')
                 val replyId = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: continue
                 if (!seenIds.add(replyId)) continue
                 OalLog.i(
