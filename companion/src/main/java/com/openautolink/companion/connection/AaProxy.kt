@@ -81,6 +81,12 @@ class AaProxy(
     @Volatile private var pendingCarSocket: Socket? = null
 
     /**
+     * Ticket counter for pre-warm waiters, so a newer AA connection can retire an
+     * older one rather than racing it.
+     */
+    private val waitGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
      * Replace the car-side socket used for the next bridge session.
      *
      * Safe while waiting for AA to connect, and also while a pre-warm bridge is parked
@@ -220,8 +226,21 @@ class AaProxy(
      */
     private suspend fun awaitPendingCarSocket(timeoutMs: Long): Socket? {
         val deadline = System.currentTimeMillis() + timeoutMs
+        // Each waiter takes a ticket. A newer AA connection supersedes older
+        // waiters immediately instead of leaving them to expire underneath it.
+        //
+        // Without this, toggling Bluetooth is unrecoverable: every reconnect fires
+        // "Launching AA" into a proxy that already has a waiter counting down, so
+        // the new AA connection is torn down when the OLD timer expires. That is
+        // the state where the phone says "waiting for car" and never recovers,
+        // however many times you reconnect.
+        val ticket = waitGeneration.incrementAndGet()
         CompanionLog.i(TAG, "AA connected first (pre-warm) — waiting up to ${timeoutMs}ms for car")
         while (System.currentTimeMillis() < deadline && isRunning) {
+            if (waitGeneration.get() != ticket) {
+                CompanionLog.i(TAG, "Newer AA connection arrived — abandoning this wait")
+                return null
+            }
             val s = pendingCarSocket
             if (s != null) {
                 pendingCarSocket = null

@@ -70,6 +70,14 @@ object AaWirelessBtControl {
      * Set by whoever discovers or connects to the phone. Null until then, in
      * which case we advertise the car's own address.
      */
+    /**
+     * Invoked with the companion's address the moment the handshake decides to
+     * advertise its proxy, so the session can dial it before Android Auto is told
+     * to connect.
+     */
+    @Volatile
+    var onCompanionSelected: ((String) -> Unit)? = null
+
     @Volatile
     var lastKnownPhoneIp: String? = null
         set(value) {
@@ -548,8 +556,16 @@ object AaWirelessBtControl {
                 }
             }
             when {
-                proxyPort != null ->
+                proxyPort != null -> {
+                    // Open the car->companion socket BEFORE the handshake tells
+                    // Android Auto where to connect. AA reaches the proxy within
+                    // ~2s of the Bluetooth handshake; the car used to still be
+                    // looking for the companion at that point, so the proxy sat
+                    // holding an AA connection with no car behind it and gave up
+                    // after 30s. Dialling here removes that race entirely.
+                    onCompanionSelected?.invoke(cached ?: "")
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
+                }
                 else -> {
                     // No companion: advertise our own address, and pick the one on
                     // the SAME network as the phone. The head unit has two radios

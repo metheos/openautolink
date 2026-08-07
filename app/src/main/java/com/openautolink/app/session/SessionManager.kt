@@ -1066,6 +1066,14 @@ class SessionManager(
         _effectiveDpi.value = effectiveDpi
 
         aasdkSession = session
+
+        // Let the Bluetooth handshake dial the companion the instant it selects
+        // the loopback endpoint. Waiting until session start is too early — the
+        // companion's address is not known yet — and any later is too late, since
+        // Android Auto connects to the proxy within about two seconds of the
+        // handshake completing.
+        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.onCompanionSelected =
+            { ip -> if (ip.isNotBlank()) session.dialCompanion(ip) }
         // Answer the phone's SensorStartRequest with current vehicle state.
         // Without this, a parked car never sends driving status and the phone
         // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.

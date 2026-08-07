@@ -201,14 +201,19 @@ class AasdkSession(
         // in-vehicle at 16:18, where AA connected to the companion's proxy and the
         // companion then timed out with "No car socket within 30000ms — AA
         // connected but no car ready", because the car was listening too.
-        val companionIp = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
-            .lastKnownPhoneIp
-        if (companionIp != null) {
-            OalLog.i(TAG, "WPP transport with companion at $companionIp — dialling out " +
-                    "to its proxy (the companion is the server in this direction)")
-            startTcp()
-            return
-        }
+        // Deliberately NOT deciding listen-vs-dial here.
+        //
+        // At session start the companion's address is almost always unknown -
+        // discovery has not run yet - so this used to pick "listen" every time and
+        // could never change its mind. Measured: the listener bound at 16:16:43,
+        // the companion was located at 16:21:35, and in between the car completed
+        // ten handshakes advertising the companion's proxy while never dialling it
+        // once. Android Auto connected to that proxy ten times and timed out ten
+        // times.
+        //
+        // The dial is now triggered by the Bluetooth handshake instead, at the
+        // moment it selects the loopback endpoint and therefore knows the address.
+        // See AaWirelessBtControl -> onCompanionSelected.
 
         OalLog.i(TAG, "Starting aasdk session (WPP transport — phone connects to us)")
         _wppServer?.stop()
@@ -224,7 +229,25 @@ class AasdkSession(
         _wppServer?.start()
     }
 
-    private fun startTcp() {
+    /**
+     * Dial a companion that the Bluetooth handshake just located.
+     *
+     * Called when the handshake selects the loopback endpoint, so the car socket
+     * is opened before Android Auto is told to connect - rather than the proxy
+     * holding an AA connection open waiting for a car that never dials.
+     */
+    fun dialCompanion(ip: String) {
+        if (_tcpConnector != null) {
+            OalLog.d(TAG, "Already dialling/connected — ignoring dial request for $ip")
+            return
+        }
+        OalLog.i(TAG, "Companion at $ip — dialling its proxy now (companion is the server)")
+        _wppServer?.stop()
+        _wppServer = null
+        startTcp(manualIp = ip)
+    }
+
+    private fun startTcp(manualIp: String? = null) {
         OalLog.i(TAG, "Starting aasdk session (TCP/hotspot transport)")
         _tcpConnector?.stop()
         _tcpConnector = TcpConnector(
@@ -244,7 +267,8 @@ class AasdkSession(
                 _reconnectAttempt.value = consecutiveReconnectFailures
             },
         )
-        _tcpConnector?.manualIp = manualIpAddress
+        // An explicit dial target wins over the configured manual IP.
+        _tcpConnector?.manualIp = manualIp ?: manualIpAddress
         _tcpConnector?.start()
     }
 
