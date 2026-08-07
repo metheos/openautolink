@@ -1245,6 +1245,22 @@ class SessionManager(
         }
     }
 
+    /**
+     * Dial a companion at [ip] on the live session, without restarting it.
+     *
+     * Used by the phone picker in WPP mode: the user tapping a phone must be able
+     * to recover a stuck session, and restarting would destroy the socket the
+     * phone is about to connect to.
+     */
+    fun dialCompanionNow(ip: String) {
+        val session = aasdkSession
+        if (session == null) {
+            OalLog.w(TAG, "No active session — cannot dial $ip")
+            return
+        }
+        session.dialCompanion(ip)
+    }
+
     fun stop() {
         unregisterScreenReceiver()
         unregisterDebugReceiver()

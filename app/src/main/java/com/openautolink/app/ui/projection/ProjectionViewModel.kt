@@ -1485,8 +1485,13 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             // "WPP TCP server stopped/listening" four times in two minutes).
             // Discovery in WPP mode exists only to learn the phone's address.
             if (preferences.directTransport.first() == AppPreferences.DIRECT_TRANSPORT_WPP) {
-                OalLog.i(TAG, "WPP transport — keeping the existing listener; " +
-                        "discovery only refreshed the companion address")
+                // Do not tear the session down — in WPP mode it owns the socket the
+                // phone is about to use. But this is also the path a user takes when
+                // tapping a phone in the picker, so it must still ACT: dial the
+                // chosen phone. Previously it returned silently, which made the
+                // picker appear dead once a session was stuck.
+                OalLog.i(TAG, "WPP transport — dialling $host without restarting the session")
+                sessionManager.dialCompanionNow(host)
                 _carHotspotSwitching.value = false
                 return
             }

@@ -578,20 +578,23 @@ object AaWirelessBtControl {
                 lastKnownPhoneIp?.let { add(it) }
                 addAll(recentPhoneIps)
             }.distinct()
+            // companionIp tracks WHICH address answered, from either path. It has
+            // to be set everywhere proxyPort is, or the dial below is skipped and
+            // the car listens forever while the phone waits for a car socket.
             var proxyPort: Int? = null
-            var cached: String? = null
+            var companionIp: String? = null
             for (ip in candidates) {
                 val p = companionProxyPort(ip)
                 if (p != null) {
                     proxyPort = p
-                    cached = ip
+                    companionIp = ip
                     lastKnownPhoneIp = ip
                     break
                 }
             }
             if (proxyPort == null) {
-                if (cached != null) {
-                    OalLog.i(TAG, "Companion did not answer at $cached — re-scanning")
+                if (candidates.isNotEmpty()) {
+                    OalLog.i(TAG, "Companion did not answer at ${candidates.joinToString()} — re-scanning")
                     lastKnownPhoneIp = null
                 }
                 // The scan returns the port too — asking again would cost another
@@ -599,6 +602,7 @@ object AaWirelessBtControl {
                 findCompanionOnAnySubnet(manualIp)?.let { (ip, port) ->
                     lastKnownPhoneIp = ip
                     proxyPort = port
+                    companionIp = ip
                 }
             }
             when {
@@ -609,7 +613,17 @@ object AaWirelessBtControl {
                     // looking for the companion at that point, so the proxy sat
                     // holding an AA connection with no car behind it and gave up
                     // after 30s. Dialling here removes that race entirely.
-                    onCompanionSelected?.invoke(cached ?: "")
+                    // Non-null by construction: proxyPort is only set alongside
+                    // companionIp. Guarded anyway, and loudly, because silently
+                    // skipping the dial is the failure this caused — the car
+                    // listened forever while the phone waited for a car socket.
+                    val dialTarget = companionIp
+                    if (dialTarget.isNullOrBlank()) {
+                        OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
+                                "cannot dial; the session will not connect")
+                    } else {
+                        onCompanionSelected?.invoke(dialTarget)
+                    }
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
                 }
                 else -> {

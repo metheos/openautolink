@@ -55,6 +55,15 @@ class TcpConnector(
     @Volatile
     private var isRunning = false
 
+    /**
+     * True while a dial attempt is in flight or connected.
+     *
+     * Exposed so a caller can tell a live connector from a spent one: treating
+     * "a connector object exists" as "busy" made a dead connector permanent and
+     * blocked every reconnect attempt.
+     */
+    val isActive: Boolean get() = isRunning
+
     @Volatile
     private var nsdFoundHost: String? = null
 

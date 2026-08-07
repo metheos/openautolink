@@ -237,9 +237,19 @@ class AasdkSession(
      * holding an AA connection open waiting for a car that never dials.
      */
     fun dialCompanion(ip: String) {
-        if (_tcpConnector != null) {
+        // Only refuse when a dial is genuinely in flight or connected. Refusing
+        // whenever a connector merely EXISTS makes a dead one permanent: after a
+        // disconnect the stale connector blocked every retry, so the session could
+        // never recover and the phone picker appeared to do nothing.
+        val existing = _tcpConnector
+        if (existing != null && existing.isActive) {
             OalLog.d(TAG, "Already dialling/connected — ignoring dial request for $ip")
             return
+        }
+        if (existing != null) {
+            OalLog.i(TAG, "Replacing a dead connector to dial $ip")
+            existing.stop()
+            _tcpConnector = null
         }
         OalLog.i(TAG, "Companion at $ip — dialling its proxy now (companion is the server)")
         _wppServer?.stop()
