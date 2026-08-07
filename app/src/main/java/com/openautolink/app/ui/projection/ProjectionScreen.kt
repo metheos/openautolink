@@ -95,6 +95,7 @@ fun ProjectionScreen(
     val carHotspotStatus by viewModel.carHotspotStatus.collectAsStateWithLifecycle()
     val carHotspotStatusDetail by viewModel.carHotspotStatusDetail.collectAsStateWithLifecycle()
     val chooserMessage by viewModel.carHotspotChooserMessage.collectAsStateWithLifecycle()
+    val bluetoothPhoneHost by viewModel.bluetoothPhoneHost.collectAsStateWithLifecycle()
     val activePhoneId by viewModel.activePhoneId.collectAsStateWithLifecycle()
 
     // Settings overlay state
@@ -720,6 +721,7 @@ fun ProjectionScreen(
                     sweepProgress = carHotspotSweepProgress,
                     switching = carHotspotSwitching,
                     chooserMessage = chooserMessage,
+                    bluetoothPhoneHost = bluetoothPhoneHost,
                     onSelect = { viewModel.selectCarHotspotPhone(it) },
                     onSelectKnown = { kp ->
                         // Selecting a known-but-not-currently-discovered phone:
@@ -878,6 +880,8 @@ private fun CarHotspotPhoneChooserOverlay(
     sweepProgress: String,
     switching: Boolean,
     chooserMessage: String?,
+    /** Companion IP of the Bluetooth-connected phone; null outside WPP mode. */
+    bluetoothPhoneHost: String?,
     onSelect: (com.openautolink.app.transport.PhoneDiscovery.DiscoveredPhone) -> Unit,
     onSelectKnown: (com.openautolink.app.data.KnownPhone) -> Unit,
     onSetDefault: (String) -> Unit,
@@ -1000,6 +1004,11 @@ private fun CarHotspotPhoneChooserOverlay(
                     KnownPhoneRow(
                         phone = kp,
                         online = online,
+                        // Only meaningful in WPP mode. In Car Hotspot mode every
+                        // online phone is genuinely selectable, so flagging one
+                        // would be misleading rather than helpful.
+                        isBluetoothPhone = bluetoothPhoneHost != null &&
+                            discoveredById[kp.phoneId]?.host == bluetoothPhoneHost,
                         isActive = isActive,
                         isDefault = isDefault,
                         onTap = {
@@ -1092,6 +1101,13 @@ private fun KnownPhoneRow(
     online: Boolean,
     isActive: Boolean,
     isDefault: Boolean,
+    /**
+     * True for the phone connected to this car over Bluetooth.
+     *
+     * Only that phone can start Android Auto, so without marking it the list
+     * implies every online phone is equally usable.
+     */
+    isBluetoothPhone: Boolean = false,
     onTap: () -> Unit,
     onSetDefault: () -> Unit,
     onForget: () -> Unit,
@@ -1147,8 +1163,11 @@ private fun KnownPhoneRow(
                 }
             }
             Text(
-                if (online) "Online — id ${phone.phoneId.take(8)}"
-                else "Not on car WiFi",
+                when {
+                    isBluetoothPhone -> "Bluetooth connected — Android Auto starts here"
+                    online -> "Online — id ${phone.phoneId.take(8)}"
+                    else -> "Not on car WiFi"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -147,6 +147,24 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      * directed warm-cache loop has been trying without success long enough
      * that the user should verify their setup. Cleared on next select / dismiss.
      */
+    /**
+     * Companion IP of the phone connected over Bluetooth, or null when that does
+     * not apply (any transport other than WPP, or no handshake yet).
+     *
+     * Only that phone can start Android Auto, so the picker marks it rather than
+     * presenting every online phone as equally usable.
+     */
+    val bluetoothPhoneHost: StateFlow<String?> = preferences.directTransport
+        .map { transport ->
+            if (transport == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                    .activePhoneCompanionIp
+            } else {
+                null
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     private val _carHotspotChooserMessage = MutableStateFlow<String?>(null)
     val carHotspotChooserMessage: StateFlow<String?> = _carHotspotChooserMessage.asStateFlow()
     private val _fileLoggingActive = MutableStateFlow(false)

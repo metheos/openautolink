@@ -162,7 +162,27 @@ object AaWirelessBtControl {
     fun releaseActivePhone() {
         activePhoneBt?.let { OalLog.i(TAG, "Released the session claim held by $it") }
         activePhoneBt = null
+        activePhoneCompanionIp = null
     }
+
+    /**
+     * IP of the companion belonging to the Bluetooth-connected phone, or null.
+     *
+     * This is the only phone that can start Android Auto — projection begins with
+     * that phone's own Bluetooth handshake — so the UI can mark it and stop
+     * implying the others are equivalent.
+     *
+     * Derived from the handshake rather than reported by the companion: a phone
+     * app cannot read its own Bluetooth MAC (getAddress() returns
+     * 02:00:00:00:00:00 without LOCAL_MAC_ADDRESS, which is signature|privileged
+     * — the same wall that leaves the car's own "BT MAC for SDR: (none)"). But the
+     * car already learns both halves during the handshake: the dialling phone's
+     * Bluetooth address from the RFCOMM socket, and its companion's IP from the
+     * endpoint lookup. Pairing them here needs nothing new on the phone side.
+     */
+    @Volatile
+    var activePhoneCompanionIp: String? = null
+        private set
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -700,6 +720,9 @@ object AaWirelessBtControl {
                     // skipping the dial is the failure this caused — the car
                     // listened forever while the phone waited for a car socket.
                     lastGoodProxyPortByPhone[phoneBtAddress] = proxyPort!!
+                    // Remember which companion belongs to the Bluetooth-connected
+                    // phone so the UI can mark it in the discovery list.
+                    activePhoneCompanionIp = companionIp
                     val dialTarget = companionIp
                     if (dialTarget.isNullOrBlank()) {
                         OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
