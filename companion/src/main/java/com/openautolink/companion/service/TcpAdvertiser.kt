@@ -241,7 +241,19 @@ class TcpAdvertiser(
                 activeProxy = proxy
                 isLaunching = true
                 val localPort = proxy.start()
-                fireAaLaunchIntent(localPort)
+                // Do NOT tell Android Auto to connect yet.
+                //
+                // Bluetooth connecting means "a car is nearby", not "the car can
+                // talk to us". On a cold start the telematics module has not
+                // finished serving its AP, the car has not joined, and it has not
+                // dialled us. Launching AA here puts a connection into the proxy
+                // with nothing behind it: it waits 30s and dies, repeatedly.
+                //
+                // The car's arrival is the real trigger — handleCarConnection()
+                // fires the launch once a car socket exists, so AA is only ever
+                // asked to connect to a bridge that can actually complete.
+                CompanionLog.i(TAG, "Warm proxy ready on $localPort — holding AA launch " +
+                        "until the car connects")
                 // No car-socket watchdog yet — that's started by
                 // handleCarConnection when the car arrives.
             } catch (e: Exception) {

@@ -167,6 +167,14 @@ object AaWirelessBtControl {
                 .collect { isWpp ->
                     if (isWpp) {
                         OalLog.i(TAG, "WPP transport selected — starting Bluetooth advertiser")
+                        // Do not advertise before the car's own access point is
+                        // actually serving. On a cold start the telematics module
+                        // takes longer to bring up Blazing than the app takes to
+                        // boot: at 08:44 the advertiser ran 7s after ignition and
+                        // published 172.16.101.100 — a telematics interface —
+                        // because ap_br_swlan0 did not exist yet. The phone was
+                        // then pointed at an address it could never reach.
+                        awaitApInterface(prefs.wppApInterface.first())
                         startFromPreferences(context)
                     } else if (btServer != null) {
                         OalLog.i(TAG, "Transport is no longer WPP — stopping Bluetooth advertiser")
@@ -274,6 +282,44 @@ object AaWirelessBtControl {
      * Within each tier, RFC1918 addresses are preferred, since an AP hands out
      * private addresses. This is still a heuristic — hence the manual override.
      */
+    /**
+     * Waits for the car's access-point interface to exist and hold an address.
+     *
+     * The telematics module serves "Blazing" independently of Android, and on a
+     * cold start it is not ready when the app is. Advertising before then
+     * publishes whatever interface happens to be up — observed: a 172.16.x
+     * telematics address, unreachable from the phone.
+     *
+     * Bounded, and non-fatal on timeout: if the interface never appears we carry
+     * on and let the normal fallback pick an address, rather than never
+     * advertising at all.
+     */
+    private suspend fun awaitApInterface(apInterface: String, timeoutMs: Long = 45_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var waited = false
+        while (System.currentTimeMillis() < deadline) {
+            val addr = runCatching {
+                java.net.NetworkInterface.getByName(apInterface)
+                    ?.takeIf { it.isUp }
+                    ?.inetAddresses?.toList()
+                    ?.filterIsInstance<java.net.Inet4Address>()
+                    ?.firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+                    ?.hostAddress
+            }.getOrNull()
+            if (addr != null) {
+                if (waited) OalLog.i(TAG, "$apInterface is up at $addr — advertising now")
+                return
+            }
+            if (!waited) {
+                OalLog.i(TAG, "Waiting for $apInterface — the car's hotspot is not serving yet")
+                waited = true
+            }
+            kotlinx.coroutines.delay(1_000)
+        }
+        OalLog.w(TAG, "$apInterface did not appear within ${timeoutMs}ms — " +
+                "advertising anyway with whatever address is available")
+    }
+
     /**
      * Last-resort scan for the companion across EVERY network the head unit is on.
      *
