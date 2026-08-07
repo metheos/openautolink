@@ -521,6 +521,27 @@ class AasdkSession(
                 if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
             lastFailureWasProtocolError = false
 
+            // Re-advertise over Bluetooth after repeated failures in WPP mode.
+            //
+            // Reconnecting the TCP transport is not enough here. The car's socket
+            // to the companion comes back every time, but Android Auto is gone —
+            // it disconnected when the network dropped and nothing can summon it.
+            // The AA-launch broadcast targets WirelessStartupReceiver, which 17.4
+            // disables, so it is a no-op. The ONLY working way to tell AA where to
+            // connect is the Bluetooth WPP handshake, and that only runs when the
+            // PHONE dials back on the AA UUID.
+            //
+            // Bouncing the SDP record makes the phone re-dial, which re-runs the
+            // handshake with a freshly-resolved endpoint. Without this, any
+            // network blip is unrecoverable: observed as 217 keyframe re-requests
+            // and nine retries over eight minutes, TCP connecting happily each
+            // time with no peer behind it.
+            if (transportMode == "wpp" && consecutiveReconnectFailures >= 2) {
+                OalLog.i(TAG, "WPP: re-advertising over Bluetooth so the phone re-dials " +
+                        "and Android Auto is told where to connect")
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
+            }
+
             cancelPendingReconnect("superseded by newer teardown")
             val job = scope.launch {
                 _connectionState.value = ConnectionState.DISCONNECTED

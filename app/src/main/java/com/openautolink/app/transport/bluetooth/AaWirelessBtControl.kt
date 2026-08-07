@@ -105,7 +105,45 @@ object AaWirelessBtControl {
     @Volatile
     private var started = false
 
+    /**
+     * Tear down and republish the SDP record so the phone dials back.
+     *
+     * The phone only initiates the WPP handshake when it sees our service appear,
+     * and that handshake is the only mechanism that tells Android Auto where to
+     * connect. After a network drop the phone believes it is still set up and
+     * never re-dials, so the car must make the record disappear and return.
+     */
+    fun readvertise() {
+        val ctx = appContext
+        if (ctx == null) {
+            OalLog.w(TAG, "Cannot re-advertise — no context yet")
+            return
+        }
+        scope.launch {
+            runCatching {
+                btServer?.stop()
+                btServer = null
+                kotlinx.coroutines.delay(1_000)
+                startFromPreferences(ctx)
+            }.onFailure { OalLog.w(TAG, "Re-advertise failed: ${it.message}") }
+        }
+    }
+
+    @Volatile
+    private var appContext: Context? = null
+
+    /**
+     * Proxy port from the last successful companion lookup.
+     *
+     * Used to keep advertising the loopback endpoint through a transient lookup
+     * failure. The port is stable across reconnects — the companion keeps its
+     * proxy — whereas its IP is not.
+     */
+    @Volatile
+    private var lastGoodProxyPort: Int? = null
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         synchronized(this) {
             if (started) return
             started = true
@@ -400,7 +438,12 @@ object AaWirelessBtControl {
                         askCompanion(ip, connectTimeoutMs = 1200)?.let { ip to it }
                     }
                 }
-            pool.invokeAll(tasks, 6, java.util.concurrent.TimeUnit.SECONDS)
+            // Budget must cover the whole /24 at the chosen timeout, or the scan
+            // reports "no companion" for one that is plainly there. Measured:
+            // 254 hosts / 128 threads = 2 waves x 1200ms = 2.4s of pure connect
+            // time, and a 3s cap cut it off at 2.48s while the companion was
+            // answering probes 4s either side of that moment.
+            pool.invokeAll(tasks, 12, java.util.concurrent.TimeUnit.SECONDS)
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
@@ -617,6 +660,7 @@ object AaWirelessBtControl {
                     // companionIp. Guarded anyway, and loudly, because silently
                     // skipping the dial is the failure this caused — the car
                     // listened forever while the phone waited for a car socket.
+                    lastGoodProxyPort = proxyPort
                     val dialTarget = companionIp
                     if (dialTarget.isNullOrBlank()) {
                         OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
@@ -625,6 +669,19 @@ object AaWirelessBtControl {
                         onCompanionSelected?.invoke(dialTarget)
                     }
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
+                }
+                // A companion WAS working a moment ago, so a single failed lookup
+                // is far more likely to be a transient network state than a real
+                // absence — the phone rejoining the AP takes seconds and its
+                // address changes. Falling back to CarDirect here locks in an
+                // endpoint the phone cannot reach through the car's AP, and every
+                // later attempt inherits it. Keep the loopback endpoint and let
+                // the next handshake resolve the new address.
+                lastGoodProxyPort != null -> {
+                    OalLog.i(TAG, "Companion not found this time, but it was on " +
+                            "port $lastGoodProxyPort — keeping the loopback endpoint " +
+                            "rather than falling back to an unreachable one")
+                    AaWirelessBtServer.Endpoint.PhoneLoopback(lastGoodProxyPort!!)
                 }
                 else -> {
                     // No companion: advertise our own address, and pick the one on
