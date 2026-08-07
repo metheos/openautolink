@@ -139,8 +139,30 @@ object AaWirelessBtControl {
      * failure. The port is stable across reconnects — the companion keeps its
      * proxy — whereas its IP is not.
      */
+    /**
+     * Proxy port from the last successful lookup, PER PHONE (keyed by BT address).
+     *
+     * A single shared value silently mixes two phones up: 127.0.0.1:<port> only
+     * resolves on the device whose companion opened that port, so reusing phone
+     * A's port for phone B points B's Android Auto at a closed socket.
+     */
+    private val lastGoodProxyPortByPhone = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * The phone currently holding the projection session, by BT address.
+     *
+     * Android Auto is single-session per head unit, so a second phone dialling
+     * mid-session must be turned away rather than allowed to take over by
+     * accident. Cleared when the session ends so the next phone can claim it.
+     */
     @Volatile
-    private var lastGoodProxyPort: Int? = null
+    var activePhoneBt: String? = null
+
+    /** Release the session claim so another phone can take it. */
+    fun releaseActivePhone() {
+        activePhoneBt?.let { OalLog.i(TAG, "Released the session claim held by $it") }
+        activePhoneBt = null
+    }
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -602,7 +624,24 @@ object AaWirelessBtControl {
         // the car's access point is never asked to accept an inbound connection —
         // which it refuses. Falling back to the car's own address preserves the
         // shared-network case (proven working on a tablet) and costs nothing.
-        bt.setEndpointResolver {
+        bt.setEndpointResolver { phoneBtAddress ->
+            // Only serve the phone the head unit is actually paired-and-connected
+            // to for projection. Two phones can dial the SDP record concurrently,
+            // and the endpoint is per-phone: 127.0.0.1:<port> only means anything
+            // on the device whose companion owns that port. Handing phone B the
+            // port belonging to phone A's companion sends B's Android Auto to a
+            // closed socket on its own loopback.
+            //
+            // Android Auto is single-session per head unit, so serving one phone
+            // is correct — but the choice must be deliberate, not first-to-dial.
+            val claimed = activePhoneBt
+            if (claimed != null && !claimed.equals(phoneBtAddress, ignoreCase = true)) {
+                OalLog.i(TAG, "Ignoring handshake from $phoneBtAddress — " +
+                        "$claimed already has the session")
+                return@setEndpointResolver null
+            }
+            activePhoneBt = phoneBtAddress
+
             // Resolve the companion's address, preferring one discovery already
             // found. The sweep is the fallback, not the primary: it runs on the
             // BT dial-back, which is seconds after the phone associates and
@@ -660,7 +699,7 @@ object AaWirelessBtControl {
                     // companionIp. Guarded anyway, and loudly, because silently
                     // skipping the dial is the failure this caused — the car
                     // listened forever while the phone waited for a car socket.
-                    lastGoodProxyPort = proxyPort
+                    lastGoodProxyPortByPhone[phoneBtAddress] = proxyPort!!
                     val dialTarget = companionIp
                     if (dialTarget.isNullOrBlank()) {
                         OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
@@ -677,11 +716,12 @@ object AaWirelessBtControl {
                 // endpoint the phone cannot reach through the car's AP, and every
                 // later attempt inherits it. Keep the loopback endpoint and let
                 // the next handshake resolve the new address.
-                lastGoodProxyPort != null -> {
-                    OalLog.i(TAG, "Companion not found this time, but it was on " +
-                            "port $lastGoodProxyPort — keeping the loopback endpoint " +
+                lastGoodProxyPortByPhone[phoneBtAddress] != null -> {
+                    val port = lastGoodProxyPortByPhone.getValue(phoneBtAddress)
+                    OalLog.i(TAG, "Companion for $phoneBtAddress not found this time, " +
+                            "but it was on port $port — keeping the loopback endpoint " +
                             "rather than falling back to an unreachable one")
-                    AaWirelessBtServer.Endpoint.PhoneLoopback(lastGoodProxyPort!!)
+                    AaWirelessBtServer.Endpoint.PhoneLoopback(port)
                 }
                 else -> {
                     // No companion: advertise our own address, and pick the one on

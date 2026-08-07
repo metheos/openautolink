@@ -1262,6 +1262,11 @@ class SessionManager(
     }
 
     fun stop() {
+        // Let another phone claim the session. Without this the first phone to
+        // dial holds it until the app restarts, so a second phone in the car can
+        // never connect even after the first one leaves.
+        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.releaseActivePhone()
+
         unregisterScreenReceiver()
         unregisterDebugReceiver()
         observeJob?.cancel()

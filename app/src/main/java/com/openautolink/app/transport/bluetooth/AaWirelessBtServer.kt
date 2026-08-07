@@ -263,7 +263,9 @@ class AaWirelessBtServer(
             if (client != null) {
                 val remote = runCatching { client.remoteDevice?.address ?: "?" }.getOrDefault("?")
                 OalLog.i(TAG, "Phone dialled back on the AA Wireless UUID from $remote")
-                scope.launch(CoroutineName("AaWirelessBt-Handshake")) { handleHandshake(client) }
+                scope.launch(CoroutineName("AaWirelessBt-Handshake")) {
+                    handleHandshake(client, remote)
+                }
                 continue
             }
 
@@ -331,7 +333,14 @@ class AaWirelessBtServer(
      * cycle. A value captured at start-up is stale by the time the phone calls.
      */
     fun interface EndpointResolver {
-        fun currentEndpoint(): Endpoint?
+        /**
+         * @param phoneBtAddress the Bluetooth address of the phone that dialled,
+         *   so two phones in the car cannot be handed each other's proxy port.
+         *   The port is meaningful only on the phone that owns it — 127.0.0.1
+         *   resolves on whichever device connects — so a mixed-up port sends a
+         *   phone's Android Auto to a closed socket on its own loopback.
+         */
+        fun currentEndpoint(phoneBtAddress: String): Endpoint?
     }
 
     @Volatile
@@ -349,7 +358,7 @@ class AaWirelessBtServer(
         addressResolver = resolver
     }
 
-    private suspend fun handleHandshake(socket: BluetoothSocket) {
+    private suspend fun handleHandshake(socket: BluetoothSocket, phoneBtAddress: String) {
         val stored = credentials
         if (stored == null) {
             OalLog.w(TAG, "Handshake attempted with no credentials set — closing. " +
@@ -364,7 +373,7 @@ class AaWirelessBtServer(
         // Prefer the companion's loopback proxy when one is available: it is the
         // only endpoint the car's access point cannot block, because the phone
         // connects to itself.
-        val endpoint = endpointResolver?.currentEndpoint()
+        val endpoint = endpointResolver?.currentEndpoint(phoneBtAddress)
         val creds = when (endpoint) {
             is Endpoint.PhoneLoopback -> {
                 OalLog.i(TAG, "Advertising the companion's loopback proxy " +

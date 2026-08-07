@@ -649,7 +649,24 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     } catch (_: Exception) { null }
                     val who = defaultName ?: "your phone"
                     val noIface = !phoneDiscovery.hasAnyIpv4Interface()
-                    _carHotspotChooserMessage.value = if (noIface) {
+                    val wppMode = preferences.directTransport.first() ==
+                        AppPreferences.DIRECT_TRANSPORT_WPP
+                    _carHotspotChooserMessage.value = if (wppMode) {
+                        // In WPP mode a phone can be on the network, discoverable
+                        // and running the companion, and still be unprojectable:
+                        // Android Auto is started by that phone's own Bluetooth
+                        // handshake, and only one phone is Bluetooth-connected at
+                        // a time. Selecting a different one here cannot start it.
+                        //
+                        // No third-party app can change which phone is connected —
+                        // BluetoothDevice.connect() and setActiveDevice() are both
+                        // @SystemApi + BLUETOOTH_PRIVILEGED — so say where the
+                        // control actually lives instead of implying we have it.
+                        "Wireless (WPP) projects to whichever phone is connected to this car " +
+                            "over Bluetooth. To use a different phone, switch it in the car's " +
+                            "Bluetooth settings — Android Auto is started by that phone's own " +
+                            "Bluetooth connection."
+                    } else if (noIface) {
                         "Waiting for the car's WiFi network. Make sure the car hotspot is on " +
                             "(or that this head unit is connected to your phone's hotspot). " +
                             "We'll reconnect automatically as soon as it's available."
@@ -1486,11 +1503,23 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             // Discovery in WPP mode exists only to learn the phone's address.
             if (preferences.directTransport.first() == AppPreferences.DIRECT_TRANSPORT_WPP) {
                 // Do not tear the session down — in WPP mode it owns the socket the
-                // phone is about to use. But this is also the path a user takes when
-                // tapping a phone in the picker, so it must still ACT: dial the
-                // chosen phone. Previously it returned silently, which made the
-                // picker appear dead once a session was stuck.
-                OalLog.i(TAG, "WPP transport — dialling $host without restarting the session")
+                // phone is about to use.
+                //
+                // Only dial a phone that is the one currently connected over
+                // Bluetooth. On 17.4 the ONLY thing that starts Android Auto is
+                // that phone's own Bluetooth handshake, so dialling a different
+                // phone opens a socket to a companion whose Android Auto will
+                // never connect — the session then sits waiting forever.
+                //
+                // Switching phones means switching which one the head unit is
+                // Bluetooth-connected to, and no third-party app can do that:
+                // BluetoothDevice.connect() and BluetoothAdapter.setActiveDevice()
+                // are both @SystemApi + BLUETOOTH_PRIVILEGED. It belongs to the
+                // car's own Bluetooth settings.
+                val btPhone = com.openautolink.app.transport.bluetooth
+                    .AaWirelessBtControl.activePhoneBt
+                OalLog.i(TAG, "WPP transport — dialling $host" +
+                        (btPhone?.let { " (Bluetooth session held by $it)" } ?: ""))
                 sessionManager.dialCompanionNow(host)
                 _carHotspotSwitching.value = false
                 return
