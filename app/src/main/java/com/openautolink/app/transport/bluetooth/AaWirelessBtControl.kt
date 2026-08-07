@@ -288,7 +288,7 @@ object AaWirelessBtControl {
      * arguably better, since the phone is the AP there and the telematics module's
      * filtering is bypassed completely.
      */
-    private fun findCompanionOnAnySubnet(manualIp: String?): String? {
+    private fun findCompanionOnAnySubnet(manualIp: String?): Pair<String, Int>? {
         val localIps = buildList {
             manualIp?.takeIf { it.isNotBlank() }?.let { add(it) }
             addAll(allLocalIpv4())
@@ -320,27 +320,37 @@ object AaWirelessBtControl {
             }
     }.getOrDefault(emptyList())
 
-    private fun scanSubnet(prefix: String, ourIp: String): String? {
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(64)
+    /**
+     * Scans one /24 for the companion, returning its address AND proxy port.
+     *
+     * Does the whole identity exchange in the scan rather than connecting once to
+     * test the port and again to ask the question. The second round trip cost ~5s
+     * over the telematics bridge — measured at 17:01, where the scan gave up at
+     * 39.2s and the companion's reply only completed at 44.3s.
+     *
+     * Timeout is 1200ms, not the 250ms of the previous revision. Two in-vehicle
+     * runs bracket the right value: at 900ms the companion was found but the scan
+     * took 7.2s; at 250ms the scan took 1.06s and found nothing, on a subnet where
+     * the companion demonstrably answered five seconds later. The telematics
+     * bridge is simply slow. With 128 threads a /24 still completes in about 2s
+     * even when every address times out.
+     */
+    private fun scanSubnet(prefix: String, ourIp: String): Pair<String, Int>? {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(128)
         return try {
             val tasks = (1..254)
                 .map { "$prefix.$it" }
                 .filter { it != ourIp }
                 .map { ip ->
                     java.util.concurrent.Callable {
-                        runCatching {
-                            java.net.Socket().use { s ->
-                                s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 250)
-                                ip
-                            }
-                        }.getOrNull()
+                        askCompanion(ip, connectTimeoutMs = 1200)?.let { ip to it }
                     }
                 }
-            pool.invokeAll(tasks, 3, java.util.concurrent.TimeUnit.SECONDS)
+            pool.invokeAll(tasks, 6, java.util.concurrent.TimeUnit.SECONDS)
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
-                ?.also { OalLog.i(TAG, "Companion found at $it") }
+                ?.also { OalLog.i(TAG, "Companion found at ${it.first} with proxy port ${it.second}") }
         } catch (e: Exception) {
             OalLog.w(TAG, "Scan of $prefix.0/24 failed: ${e.message}")
             null
@@ -350,33 +360,33 @@ object AaWirelessBtControl {
     }
 
     /**
-     * Asks the companion, over the already-open car->phone link, which local port
-     * its Android Auto proxy is listening on.
+     * Asks the companion at [phoneIp] for its Android Auto proxy port.
      *
-     * Probed at handshake time rather than cached: the companion restarts its
-     * proxy per session, so a port learned during discovery is usually stale.
+     * Returns null if nothing answers, the reply is not ours, or it reports no
+     * proxy (wpp=0). A zero must not be treated as a port: advertising a dead
+     * port sends Android Auto to a closed socket and fails silently on both ends.
      *
-     * Returns null when no companion answers or it reports no proxy — the caller
-     * then advertises the car's own address, which only works on an AP that
-     * permits inbound connections.
+     * The default timeout is generous because the telematics bridge is slow — a
+     * probe that would succeed at 1200ms returned nothing at 250ms.
      */
-    private fun companionProxyPort(phoneIp: String): Int? = runCatching {
+    private fun askCompanion(phoneIp: String, connectTimeoutMs: Int = 1200): Int? = runCatching {
         java.net.Socket().use { sock ->
-            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), 800)
-            sock.soTimeout = 800
+            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), connectTimeoutMs)
+            sock.soTimeout = connectTimeoutMs
             sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
             val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
             if (!reply.startsWith("OAL!")) return@runCatching null
-            // wpp=0 means "I have no proxy accepting right now" and must NOT be
-            // treated as a port. Advertising a dead port sends Android Auto to a
-            // closed socket, which fails silently on both sides.
             reply.removePrefix("OAL!").split('\t')
                 .firstOrNull { it.startsWith("wpp=") }
                 ?.removePrefix("wpp=")?.trim()?.toIntOrNull()
                 ?.takeIf { it in 1..65535 }
-                ?.also { OalLog.i(TAG, "Companion reports AA proxy on port $it") }
         }
     }.getOrNull()
+
+    private fun companionProxyPort(phoneIp: String): Int? =
+        askCompanion(phoneIp)?.also {
+            OalLog.i(TAG, "Companion at $phoneIp reports AA proxy on port $it")
+        }
 
     /**
      * Frequencies (MHz) advertised as supported by the head unit's access point.
@@ -530,10 +540,11 @@ object AaWirelessBtControl {
                     OalLog.i(TAG, "Companion did not answer at $cached — re-scanning")
                     lastKnownPhoneIp = null
                 }
-                val found = findCompanionOnAnySubnet(manualIp)
-                if (found != null) {
-                    lastKnownPhoneIp = found
-                    proxyPort = companionProxyPort(found)
+                // The scan returns the port too — asking again would cost another
+                // slow round trip over the telematics bridge.
+                findCompanionOnAnySubnet(manualIp)?.let { (ip, port) ->
+                    lastKnownPhoneIp = ip
+                    proxyPort = port
                 }
             }
             when {
