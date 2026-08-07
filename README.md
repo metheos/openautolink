@@ -9,23 +9,37 @@
 
 <a id="aa174"></a>
 
-> # ⚠️ Android Auto 17.4 broke wireless startup — a fix is coming
+> # Android Auto 17.4 broke wireless — OpenAutoLink has it working again
 >
-> **If you are on Android Auto 17.4, wireless projection will not start with the current release. Use USB mode for now: Settings → Direct transport → USB.**
+> **Wireless projection is restored on Android Auto 17.4, with sustained video.** It needs a few setup changes, and expect some rough edges while it settles — see below.
 >
-> Google disabled the entry point every companion app used to start wireless projection. In 17.4 the `WirelessStartupReceiver` ships `android:enabled="false"`, and the `WirelessStartupActivity` it forwards to is `android:exported="false"` — so the broadcast is silently swallowed (`result=0`, no log, no error) and the activity cannot be launched by another app. Confirmed on-device: `cmd package query-receivers` reports **"No receivers found"**, and even `adb pm enable` is refused with a `SecurityException`.
+> Google disabled the entry point every wireless implementation depended on. In 17.4 the `WirelessStartupReceiver` ships `android:enabled="false"`, and the `WirelessStartupActivity` it forwards to is `android:exported="false"` — so the broadcast is silently swallowed (`result=0`, no log, no error) and the activity cannot be launched by another app. Confirmed on-device: `cmd package query-receivers` reports **"No receivers found"**, and even `adb pm enable` is refused with a `SecurityException`.
 >
-> This affects **every** third-party wireless implementation, not just OpenAutoLink.
+> That broke **every** third-party wireless implementation, not just OpenAutoLink.
 >
-> **Symptom:** the car connects and shows "connected", but projection never starts. The companion logs `AA broadcast sent`, then `AA didn't connect to proxy in 8000ms` on repeat.
+> ### How it works now
 >
-> ### The good news
+> The disabled receiver was never the only way in. Android Auto still fully supports the path real factory head units use — a Bluetooth service advertisement followed by Google's own WiFi Projection Protocol (WPP) — and that path is completely untouched in 17.4. OpenAutoLink now speaks it.
 >
-> That disabled receiver was never the only way in. Android Auto still fully supports the path real factory head units use — a Bluetooth service advertisement followed by Google's own WiFi Projection Protocol — and that path is completely untouched in 17.4.
+> ### What you need to change
 >
-> OpenAutoLink now speaks it. **Wireless projection has been restored on 17.4, with sustained video — and it is better than what it replaces: the head unit talks to the phone directly, so the companion app is no longer needed at all.** No proxy, no discovery sweeps, no second app to install and keep running — just Android Auto, the way a factory unit does it.
+> **1. Bluetooth pairing to the car is now mandatory.** It is not optional or a convenience any more: the Bluetooth handshake is the only remaining way to tell Android Auto to start and where to connect. No Bluetooth, no wireless.
 >
-> This is working in testing and not yet in a release. It needs validation in a real vehicle before it ships. Progress: [#70](https://github.com/mossyhub/openautolink/pull/70) · Tracking: [#66](https://github.com/mossyhub/openautolink/issues/66)
+> **2. Forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service, so it will never begin the handshake. Do this after updating both apps.
+>
+> **3. Select Wireless (WPP) as the transport** — Settings → Transport → **Wireless (WPP)**. The older Wi-Fi mode uses the startup path Google disabled and will not work on 17.4.
+>
+> **4. Do not use the companion app's car Wi-Fi connection feature.** Android Auto now joins the car's network itself as part of the handshake, and having the companion app do it as well means both are fighting over the same radio — the connection drops repeatedly. The option is hidden for new installs; if you configured it previously it is still shown so you can remove your entries. Clear it.
+>
+> The companion app is still required in this mode. It holds the network path open on the phone side.
+>
+> A walkthrough video covering the new setup is coming shortly.
+>
+> ### Expect some bumps
+>
+> The core path is working and streaming, but recovery around disconnects is still being smoothed out — dropping Wi-Fi, toggling Bluetooth or updating mid-drive may need a retry or a Bluetooth reconnect. Reports and logs are welcome. USB mode remains the reliable fallback: Settings → Transport → USB.
+>
+> Tracking: [#66](https://github.com/mossyhub/openautolink/issues/66)
 >
 > *(On GM head units USB re-prompts for permission on every connect — a separate, known GM AAOS bug.)*
 
@@ -234,11 +248,15 @@ OpenAutoLink defaults to **Car Hotspot mode** on both apps.
    > **Tip:** If your car doesn't have a data plan (e.g. no OnStar subscription), the car's hotspot has no internet. Phones will detect this and pop a notification asking if you want to disconnect or switch networks — tell it to **stay connected**. Modern Android is smart enough to keep the car WiFi for the projection link while routing the phone's own internet traffic over cellular.
 
 3. **Open the Companion app** on your phone and configure it:
-   - Under **Car WiFi**, tap **Add Car WiFi** and enter the car's WiFi SSID and password. This allows the app to force-connect your phone to the car's WiFi even when you're already on another network (like your home WiFi in the driveway). Your password is stored locally on the phone only — it is never sent anywhere.
-   - Tap **Connect Now** while near the car. This performs a one-time connection that grants the app permission to manage the car's WiFi automatically in the future. If the car WiFi is already a saved network on your phone, this happens silently. Otherwise, Android will show a one-time prompt — tap the car's WiFi to approve.
+   - **On Android Auto 17.4 or newer, leave Car WiFi empty.** Android Auto joins the car's network itself as part of the Bluetooth handshake. Adding an entry here makes the companion app compete with it for the same radio and the connection drops repeatedly. See the [17.4 notice](#aa174).
+   - On older Android Auto versions only: under **Car WiFi**, tap **Add Car WiFi**, enter the car's SSID and password, then tap **Connect Now** while near the car. Your password is stored locally on the phone only — it is never sent anywhere.
    - Under **Auto-Start**, the default is **Bluetooth + WiFi Scan (recommended)**. Tap **Select Devices** and check your car's Bluetooth name. This way, the companion service starts automatically when your phone connects to the car's Bluetooth.
 
-4. **Configure Bluetooth for AA (important).** Keep your phone paired to the car's Bluetooth — the Bluetooth connection is what triggers the companion app to start. But go into your **phone's Bluetooth settings → tap the car's name → turn off Media Audio and Phone Calls.** When Android Auto is running, media and phone calls flow through the AA session natively. If you leave the car's Bluetooth media/calls enabled, GM's built-in apps will compete with AA for audio and calls, causing a poor experience (doubled audio, missed calls, steering wheel buttons not working correctly).
+4. **Configure Bluetooth for AA (important).** Keep your phone paired to the car's Bluetooth. On Android Auto 17.4+ this is mandatory — the Bluetooth handshake is the only remaining way to start wireless projection.
+
+   Go into your **phone's Bluetooth settings → tap the car's name → turn off Media Audio.** When Android Auto is running, media flows through the AA session natively; leaving the car's Bluetooth media enabled makes GM's built-in apps compete with AA for audio (doubled audio, steering wheel buttons not working correctly).
+
+   > **On 17.4+, leave Phone Calls enabled.** The hands-free profile is what keeps the Bluetooth link up between the phone and the car. Turning it off lets the link drop, and the handshake that starts projection never runs. On older Android Auto versions you could disable both.
 
 5. **Open OpenAutoLink on the car.** The phone chooser appears with every phone the car can see. Tap your phone to connect — that phone is saved as your default for future drives.
 
@@ -324,7 +342,7 @@ The original architecture used an SBC (single-board computer) running a C++ brid
 
 ## Known Issues
 
-- **Android Auto 17.4 broke wireless startup — use USB for now** — Google shipped `WirelessStartupReceiver` disabled and `WirelessStartupActivity` unexported, so the broadcast-based startup every companion app used no longer works. Affects all third-party wireless implementations. A fix using the Bluetooth + WiFi Projection Protocol path (the one factory head units use, untouched in 17.4) is working in testing and drops the companion app entirely — see the [notice at the top](#aa174). Until it ships, use USB mode.
+- **Android Auto 17.4 broke wireless startup — fixed, with setup changes** — Google shipped `WirelessStartupReceiver` disabled and `WirelessStartupActivity` unexported, so the broadcast-based startup every wireless implementation used no longer works. Affects all third-party implementations. OpenAutoLink now uses the Bluetooth + WiFi Projection Protocol path instead (the one factory head units use, untouched in 17.4). Requires Bluetooth pairing to the car, re-pairing after the update, and the Wireless (WPP) transport — see the [notice at the top](#aa174). Recovery around disconnects is still being smoothed out; USB remains the reliable fallback.
 - **H.265 video may appear green-tinted** on first connection for 30–45 seconds. May be Qualcomm-specific — not yet confirmed on other SoCs
 
 If you encounter other problems, please [open an issue](https://github.com/mossyhub/openautolink/issues).

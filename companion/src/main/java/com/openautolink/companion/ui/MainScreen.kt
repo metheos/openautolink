@@ -475,13 +475,29 @@ fun MainScreen(
             Spacer(Modifier.height(20.dp))
 
             // ── Car WiFi Config ────────────────────────────────────
-            CarWifiConfig(
-                entries = carWifiEntries,
-                onEntriesChanged = { updated ->
-                    carWifiEntries = updated
-                    com.openautolink.companion.wifi.CarWifiEntry.saveAll(prefs, updated)
-                },
-            )
+            //
+            // Hidden unless already configured. On Android Auto 17.4+ this feature
+            // is actively harmful: Android Auto joins the car's network itself as
+            // part of the Bluetooth handshake, so having the companion app request
+            // the same SSID makes the two contend for the radio and the connection
+            // drops every few seconds.
+            //
+            // Still rendered for anyone who has existing entries, so they can see
+            // and remove them rather than being stuck with settings they cannot
+            // reach.
+            if (carWifiEntries.isNotEmpty()) {
+                CarWifiConfig(
+                    entries = carWifiEntries,
+                    onEntriesChanged = { updated ->
+                        carWifiEntries = updated
+                        com.openautolink.companion.wifi.CarWifiEntry.saveAll(prefs, updated)
+                    },
+                )
+
+                Spacer(Modifier.height(28.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(20.dp))
+            }
 
             Spacer(Modifier.height(28.dp))
             HorizontalDivider()
@@ -1032,6 +1048,19 @@ private fun CarWifiConfig(
             "even if this phone is currently on another network (e.g. home WiFi).",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+
+    // Only reachable by users who configured this before it was hidden. Tell them
+    // why it should go, rather than leaving a setting that quietly breaks 17.4.
+    Text(
+        text = "Remove these entries if you are on Android Auto 17.4 or newer. " +
+            "Android Auto now joins the car's network itself during the Bluetooth " +
+            "handshake, and having this app do it too makes both compete for the " +
+            "same radio — the connection drops repeatedly.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
         modifier = Modifier.fillMaxWidth(),
     )
     Spacer(Modifier.height(8.dp))
