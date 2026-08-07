@@ -267,22 +267,60 @@ object AaWirelessBtControl {
      * private addresses. This is still a heuristic — hence the manual override.
      */
     /**
-     * Last-resort scan for the companion when discovery has not yet reported one.
+     * Last-resort scan for the companion across EVERY network the head unit is on.
      *
-     * Deliberately narrow. The previous version walked all 254 hosts with a 900ms
-     * connect timeout and took 7.2s — long enough that the handshake had already
-     * moved on: measured in-vehicle, the scan reported "No companion answered" at
-     * 16:34:36 while the companion's reply landed at 16:34:49.
+     * A Blazer has two independent radios and they sit on different networks:
      *
-     * OAL's own PhoneDiscovery finds the phone in about 4s and now publishes every
-     * address it sees, so this only covers the gap before the first discovery
-     * result. 250ms per host over 64 threads walks a /24 in well under 2s.
+     *   ap_br_swlan0  the telematics module's AP ("Blazing", 10.2.110.x) that the
+     *                 phone joins — and whose inbound filtering is the reason the
+     *                 loopback endpoint exists at all
+     *   wlan0         the head unit's own Android WiFi, a client only. Observed on
+     *                 home WiFi (192.168.0.104) and on the phone's hotspot
+     *                 (10.187.47.188), never on Blazing
+     *
+     * An earlier version scanned only the telematics subnet and so missed the
+     * companion entirely when it was reachable over wlan0: at 16:34:29 the scan of
+     * 10.2.110.0/24 found nothing, and 25s later discovery reported the phone at
+     * 10.187.47.73 — the phone-hotspot subnet, via the other radio.
+     *
+     * Which radio carries the traffic does not matter to the design; only that the
+     * head unit can dial the companion. Reaching it over the phone's own hotspot is
+     * arguably better, since the phone is the AP there and the telematics module's
+     * filtering is bypassed completely.
      */
-    private fun findCompanionOnApSubnet(ourIp: String?): String? {
-        if (ourIp.isNullOrBlank()) return null
-        val prefix = ourIp.substringBeforeLast('.', "")
-        if (prefix.isEmpty()) return null
-        OalLog.i(TAG, "No address from discovery yet — quick scan of $prefix.0/24")
+    private fun findCompanionOnAnySubnet(manualIp: String?): String? {
+        val localIps = buildList {
+            manualIp?.takeIf { it.isNotBlank() }?.let { add(it) }
+            addAll(allLocalIpv4())
+        }.distinct()
+        if (localIps.isEmpty()) return null
+
+        for (ip in localIps) {
+            val prefix = ip.substringBeforeLast('.', "")
+            if (prefix.isEmpty()) continue
+            OalLog.i(TAG, "Scanning $prefix.0/24 for the companion")
+            scanSubnet(prefix, ip)?.let { return it }
+        }
+        OalLog.w(TAG, "No companion on any local subnet (${localIps.joinToString()})")
+        return null
+    }
+
+    /** Every non-loopback IPv4 the head unit currently holds, across both radios. */
+    private fun allLocalIpv4(): List<String> = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+            // The telematics module also exposes several vt* interfaces on
+            // 172.16.x that lead nowhere useful; scanning them wastes seconds.
+            .filterNot { it.name.startsWith("vt") }
+            .flatMap { nif ->
+                nif.inetAddresses.toList()
+                    .filterIsInstance<java.net.Inet4Address>()
+                    .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+                    .mapNotNull { it.hostAddress }
+            }
+    }.getOrDefault(emptyList())
+
+    private fun scanSubnet(prefix: String, ourIp: String): String? {
         val pool = java.util.concurrent.Executors.newFixedThreadPool(64)
         return try {
             val tasks = (1..254)
@@ -303,9 +341,8 @@ object AaWirelessBtControl {
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
                 ?.also { OalLog.i(TAG, "Companion found at $it") }
-                ?: run { OalLog.w(TAG, "No companion on $prefix.0/24"); null }
         } catch (e: Exception) {
-            OalLog.w(TAG, "Companion scan failed: ${e.message}")
+            OalLog.w(TAG, "Scan of $prefix.0/24 failed: ${e.message}")
             null
         } finally {
             pool.shutdownNow()
@@ -493,7 +530,7 @@ object AaWirelessBtControl {
                     OalLog.i(TAG, "Companion did not answer at $cached — re-scanning")
                     lastKnownPhoneIp = null
                 }
-                val found = findCompanionOnApSubnet(manualIp ?: localIpv4Address(apInterface))
+                val found = findCompanionOnAnySubnet(manualIp)
                 if (found != null) {
                     lastKnownPhoneIp = found
                     proxyPort = companionProxyPort(found)
@@ -503,7 +540,21 @@ object AaWirelessBtControl {
                 proxyPort != null ->
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
                 else -> {
-                    val ip = manualIp ?: localIpv4Address(apInterface)
+                    // No companion: advertise our own address, and pick the one on
+                    // the SAME network as the phone. The head unit has two radios
+                    // on different networks (telematics AP vs its own wlan0), so
+                    // "our IP" is ambiguous — naming the wrong one sends the phone
+                    // somewhere it cannot route to.
+                    val ip = manualIp
+                        ?: lastKnownPhoneIp?.let { phone ->
+                            val phonePrefix = phone.substringBeforeLast('.', "")
+                            allLocalIpv4().firstOrNull {
+                                it.substringBeforeLast('.', "") == phonePrefix
+                            }?.also {
+                                OalLog.i(TAG, "Advertising $it — same subnet as the phone ($phone)")
+                            }
+                        }
+                        ?: localIpv4Address(apInterface)
                     if (ip.isNullOrBlank()) null
                     else AaWirelessBtServer.Endpoint.CarDirect(ip, 5277)
                 }
