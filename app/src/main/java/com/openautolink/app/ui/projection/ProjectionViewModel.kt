@@ -652,20 +652,23 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     val wppMode = preferences.directTransport.first() ==
                         AppPreferences.DIRECT_TRANSPORT_WPP
                     _carHotspotChooserMessage.value = if (wppMode) {
-                        // In WPP mode a phone can be on the network, discoverable
-                        // and running the companion, and still be unprojectable:
-                        // Android Auto is started by that phone's own Bluetooth
-                        // handshake, and only one phone is Bluetooth-connected at
-                        // a time. Selecting a different one here cannot start it.
+                        // Tapping a phone still dials it — that is the recovery
+                        // path when a session is stuck, and it is worth keeping.
                         //
-                        // No third-party app can change which phone is connected —
-                        // BluetoothDevice.connect() and setActiveDevice() are both
-                        // @SystemApi + BLUETOOTH_PRIVILEGED — so say where the
-                        // control actually lives instead of implying we have it.
-                        "Wireless (WPP) projects to whichever phone is connected to this car " +
-                            "over Bluetooth. To use a different phone, switch it in the car's " +
-                            "Bluetooth settings — Android Auto is started by that phone's own " +
-                            "Bluetooth connection."
+                        // But discovery finds every phone on the network running
+                        // the companion, and only the Bluetooth-connected one can
+                        // actually project: Android Auto is started by that
+                        // phone's own Bluetooth handshake. Dialling any other one
+                        // opens a socket whose Android Auto never arrives.
+                        //
+                        // We cannot change which phone that is — connect() and
+                        // setActiveDevice() are both @SystemApi +
+                        // BLUETOOTH_PRIVILEGED — so name the retry for what it is
+                        // and point at where the switch actually happens.
+                        "Tap a phone to retry the connection to it. Note that Android Auto " +
+                            "only starts on the phone that is currently connected to this car " +
+                            "over Bluetooth — to project from a different phone, switch it in " +
+                            "the car's Bluetooth settings first."
                     } else if (noIface) {
                         "Waiting for the car's WiFi network. Make sure the car hotspot is on " +
                             "(or that this head unit is connected to your phone's hotspot). " +
