@@ -164,10 +164,45 @@ class SessionManager(
     @Volatile
     private var lastKnownSurface: Triple<android.view.Surface, Int, Int>? = null
 
+    /** Decoder settings from the last full session setup, for rebuilding one. */
+    @Volatile
+    private var lastCodecPreference: String = "h264"
+
+    @Volatile
+    private var lastScalingMode: String = "letterbox"
+
     /** Called by the UI whenever a surface becomes available or is destroyed. */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
         lastKnownSurface = surface?.let { Triple(it, width, height) }
         if (surface != null) _videoDecoder?.attach(surface, width, height)
+    }
+
+    /**
+     * Guarantee a video decoder exists before a native session starts.
+     *
+     * stop() releases the decoder and nulls it (ignition off does exactly that),
+     * but the Bluetooth-handshake dial reaches the transport directly through
+     * AasdkSession.startTcp() and never re-runs the full session setup where the
+     * decoder is built. The result was a native session with no decoder at all:
+     *
+     *     15:36:44  Starting native aasdk session
+     *     15:36:44  Cannot attach surface: pendingSurface=true decoder=false
+     *
+     * Every frame arrived and was discarded — a black screen behind a healthy
+     * stream. Save & Reconnect appeared to "fix" it only because that path does
+     * go through the full setup and therefore built a decoder.
+     */
+    fun ensureVideoDecoder() {
+        if (_videoDecoder != null) return
+        OalLog.i(TAG, "No video decoder for this session — creating one")
+        _videoDecoder = MediaCodecDecoder(lastCodecPreference, lastScalingMode)
+        lastKnownSurface?.let { (surface, w, h) ->
+            if (surface.isValid) {
+                OalLog.i(TAG, "Attaching the last known surface to the new decoder")
+                _videoDecoder?.attach(surface, w, h)
+            }
+        }
+        onDecoderCreated?.invoke()
     }
 
     private var _videoDecoder: VideoDecoder? = null
@@ -612,6 +647,10 @@ class SessionManager(
 
         // Create video decoder
         _videoDecoder?.release()
+        // Remember these so a decoder can be rebuilt if a later transport restart
+        // needs one without re-running this setup.
+        lastCodecPreference = codecPreference
+        lastScalingMode = scalingMode
         _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
         // Re-attach the surface the UI last reported, if there is one.
         //
@@ -1122,7 +1161,9 @@ class SessionManager(
         aasdkSession = session
         // Same surface guarantee for transport restarts, which reuse the decoder
         // and so never trigger onDecoderCreated.
-        session.onNativeSessionStarting = { onDecoderCreated?.invoke() }
+        // A transport restart can begin a native session without re-running the
+        // full setup, so make sure a decoder exists rather than assuming one does.
+        session.onNativeSessionStarting = { ensureVideoDecoder() }
 
         // Let the Bluetooth handshake dial the companion the instant it selects
         // the loopback endpoint. Waiting until session start is too early — the
