@@ -164,12 +164,19 @@ class SessionManager(
     @Volatile
     private var lastKnownSurface: Triple<android.view.Surface, Int, Int>? = null
 
-    /** Decoder settings from the last full session setup, for rebuilding one. */
+    /**
+     * Decoder settings from the last full session setup, for rebuilding one.
+     *
+     * Seeded from AppPreferences' own defaults, not MediaCodecDecoder's
+     * constructor defaults — those disagree on scaling mode (the decoder
+     * defaults to letterbox, the app to crop), and the app's value is the one
+     * the user is actually running.
+     */
     @Volatile
-    private var lastCodecPreference: String = "h264"
+    private var lastCodecPreference: String = AppPreferences.DEFAULT_VIDEO_CODEC
 
     @Volatile
-    private var lastScalingMode: String = "letterbox"
+    private var lastScalingMode: String = AppPreferences.DEFAULT_VIDEO_SCALING_MODE
 
     /** Called by the UI whenever a surface becomes available or is destroyed. */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
