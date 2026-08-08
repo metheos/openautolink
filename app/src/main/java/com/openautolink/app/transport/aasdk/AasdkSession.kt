@@ -201,6 +201,25 @@ class AasdkSession(
         // in-vehicle at 16:18, where AA connected to the companion's proxy and the
         // companion then timed out with "No car socket within 30000ms — AA
         // connected but no car ready", because the car was listening too.
+        // If we already know where the companion is, dial it now.
+        //
+        // Save & Reconnect restarts the session, and the restart came up in
+        // listen mode waiting for an inbound connection the car's AP will not
+        // permit. No new Bluetooth handshake follows a restart — the phone is
+        // already connected and has no reason to re-dial — so the car sat
+        // listening forever showing "searching for phone" while the phone showed
+        // "connected". Discovery even found the phone; nothing acted on it,
+        // because in WPP mode only the handshake triggers a dial.
+        val known = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+            .lastKnownPhoneIp
+        if (known != null) {
+            OalLog.i(TAG, "WPP restart with a known companion at $known — dialling " +
+                    "rather than waiting for a handshake that is not coming")
+            startTcp(manualIp = known)
+            return
+        }
+
+        // Otherwise wait for the handshake to tell us where to go.
         // Deliberately NOT deciding listen-vs-dial here.
         //
         // At session start the companion's address is almost always unknown -

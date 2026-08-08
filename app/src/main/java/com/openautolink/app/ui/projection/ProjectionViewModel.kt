@@ -284,6 +284,16 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     init {
         registerTransportNetworkCallback()
 
+        // Attach the surface as soon as a decoder exists, in addition to the
+        // state-change path below. Either one alone can miss: the state observer
+        // needs a transition it may not see, and onSurfaceAvailable silently does
+        // nothing when the decoder has not been created yet.
+        // Hop to the ViewModel scope: the decoder is created on whichever thread
+        // starts the session, and surface attach must not run there.
+        sessionManager.onDecoderCreated = {
+            viewModelScope.launch { attachPendingSurface() }
+        }
+
         // Collect video and audio stats when streaming
         viewModelScope.launch {
             sessionManager.sessionState.collect { state ->

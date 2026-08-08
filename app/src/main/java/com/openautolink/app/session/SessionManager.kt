@@ -143,6 +143,17 @@ class SessionManager(
     val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
 
     // Video decoder
+    /**
+     * Invoked right after a new video decoder is created.
+     *
+     * Lets the UI attach a surface that already exists. Attaching only on a
+     * session-state change misses the case where the surface was recreated
+     * before the session started, which leaves a healthy stream decoding to
+     * nothing.
+     */
+    @Volatile
+    var onDecoderCreated: (() -> Unit)? = null
+
     private var _videoDecoder: VideoDecoder? = null
     val videoDecoder: VideoDecoder? get() = _videoDecoder
     val videoStats: StateFlow<VideoStats>? get() = _videoDecoder?.stats
@@ -586,6 +597,16 @@ class SessionManager(
         // Create video decoder
         _videoDecoder?.release()
         _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
+        // Hand the new decoder whatever surface already exists.
+        //
+        // The surface can be ready long before the session: after an ignition
+        // cycle it was recreated 42s ahead of the decoder, so
+        // `videoDecoder?.attach(...)` in onSurfaceAvailable was a silent no-op on
+        // a null decoder, and the state-change collector that normally attaches
+        // saw no transition. Video then streamed at 41fps into a decoder that had
+        // no surface and was never configured — a black screen with a perfectly
+        // healthy stream behind it.
+        onDecoderCreated?.invoke()
 
         // Create audio player
         _audioPlayer?.release()
