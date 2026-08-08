@@ -1388,6 +1388,18 @@ class SessionManager(
             OalLog.w(TAG, "reconnect() already in progress — ignoring duplicate call")
             return
         }
+        // Never restart while a Bluetooth handshake is in flight. In WPP mode the
+        // session owns the socket the phone is about to connect to, and a restart
+        // destroys it. Observed in-vehicle:
+        //     13:38:16.806  Phone dialled back on the AA Wireless UUID
+        //     13:38:16.956  Reconnect requested
+        //     13:38:16.959  WPP TCP server stopped
+        // 150ms after the phone dialled, the listener it was about to use was gone.
+        if (com.openautolink.app.transport.bluetooth.AaWirelessBtControl.handshakeInFlight) {
+            OalLog.w(TAG, "reconnect() deferred — a Bluetooth handshake is in flight and " +
+                    "restarting now would destroy the socket the phone is about to use")
+            return
+        }
         reconnectInProgress = true
         OalLog.i(TAG, "Reconnecting AA session with new settings (minimal restart)")
         micSource = micSourcePreference

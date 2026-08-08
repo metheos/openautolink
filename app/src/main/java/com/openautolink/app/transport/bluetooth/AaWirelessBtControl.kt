@@ -53,6 +53,15 @@ object AaWirelessBtControl {
     /** Companion's identity-probe port; it reports its AA proxy port here. */
     private const val IDENTITY_PORT = 5278
 
+    /**
+     * How long a phone's session claim blocks other phones.
+     *
+     * Long enough to cover a normal reconnect, short enough that a claim left
+     * behind by a session that ended badly cannot lock the car to a phone that
+     * has since left. A phone actively dialling beats a claim older than this.
+     */
+    private const val CLAIM_TIMEOUT_MS = 120_000L
+
     /** Reserved MACs gearhead rejects outright — see pev.smali validation. */
     private const val ZERO_MAC = "00:00:00:00:00:00"
     private const val BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
@@ -155,13 +164,28 @@ object AaWirelessBtControl {
      * mid-session must be turned away rather than allowed to take over by
      * accident. Cleared when the session ends so the next phone can claim it.
      */
+    /**
+     * True from the moment a phone dials the SDP record until its handshake ends.
+     *
+     * The session owns the listener the phone is about to connect to, so anything
+     * that would restart the session must wait. A settings-triggered reconnect
+     * landed 150ms into a handshake and tore the listener down underneath it.
+     */
+    @Volatile
+    var handshakeInFlight: Boolean = false
+
     @Volatile
     var activePhoneBt: String? = null
+
+    /** When [activePhoneBt] took the session, for ageing out a stale claim. */
+    @Volatile
+    private var activePhoneClaimedAt: Long = 0L
 
     /** Release the session claim so another phone can take it. */
     fun releaseActivePhone() {
         activePhoneBt?.let { OalLog.i(TAG, "Released the session claim held by $it") }
         activePhoneBt = null
+        activePhoneClaimedAt = 0L
         activePhoneCompanionIp = null
     }
 
@@ -485,7 +509,13 @@ object AaWirelessBtControl {
             // 254 hosts / 128 threads = 2 waves x 1200ms = 2.4s of pure connect
             // time, and a 3s cap cut it off at 2.48s while the companion was
             // answering probes 4s either side of that moment.
-            pool.invokeAll(tasks, 12, java.util.concurrent.TimeUnit.SECONDS)
+            // Budget has to exceed the worst case, not approximate it. 254 hosts
+            // over 128 threads is 2 waves; at a 1200ms connect timeout that is
+            // 2.4s of connect alone, plus the identity exchange on any hit. A
+            // 3s cap cut a sweep off at 2.47s and reported "no companion" for one
+            // the car had connected to 0.85s earlier. 20s leaves real headroom
+            // and still returns immediately on the first hit.
+            pool.invokeAll(tasks, 20, java.util.concurrent.TimeUnit.SECONDS)
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
@@ -654,13 +684,29 @@ object AaWirelessBtControl {
             //
             // Android Auto is single-session per head unit, so serving one phone
             // is correct — but the choice must be deliberate, not first-to-dial.
+            // A claim only means something while it is fresh. Observed
+            // in-vehicle: a phone claimed at 14:33 was still blocking a different
+            // phone at 18:20, hours after that session had ended — the claim
+            // outlived the thing it was protecting.
+            //
+            // A phone that dials the SDP record IS present and IS trying to
+            // connect, so an old claim should lose to a live handshake.
             val claimed = activePhoneBt
-            if (claimed != null && !claimed.equals(phoneBtAddress, ignoreCase = true)) {
+            val claimAgeMs = System.currentTimeMillis() - activePhoneClaimedAt
+            if (claimed != null &&
+                !claimed.equals(phoneBtAddress, ignoreCase = true) &&
+                claimAgeMs < CLAIM_TIMEOUT_MS
+            ) {
                 OalLog.i(TAG, "Ignoring handshake from $phoneBtAddress — " +
-                        "$claimed already has the session")
+                        "$claimed has the session (claimed ${claimAgeMs / 1000}s ago)")
                 return@setEndpointResolver null
             }
+            if (claimed != null && !claimed.equals(phoneBtAddress, ignoreCase = true)) {
+                OalLog.i(TAG, "Claim by $claimed is ${claimAgeMs / 1000}s old — " +
+                        "handing the session to $phoneBtAddress, which is dialling now")
+            }
             activePhoneBt = phoneBtAddress
+            activePhoneClaimedAt = System.currentTimeMillis()
 
             // Resolve the companion's address, preferring one discovery already
             // found. The sweep is the fallback, not the primary: it runs on the

@@ -206,11 +206,23 @@ class AaWirelessBtServer(
             OalLog.w(TAG, "HFP presence record failed: ${e.message}")
             return
         }
+        var hfpFailures = 0
         while (running && scope.isActive) {
             val client = try {
                 hfpServerSocket?.accept()
             } catch (e: Exception) {
-                if (running) OalLog.w(TAG, "HFP accept() failed: ${e.message}")
+                // Same dead-socket problem as the AA loop: when Bluetooth goes
+                // away the socket object survives, so this retried forever and
+                // contributed half of the 7,736 accept-failure lines in one
+                // vehicle log. Give up rather than spin.
+                hfpFailures++
+                if (running && hfpFailures <= 3) {
+                    OalLog.w(TAG, "HFP accept() failed: ${e.message}")
+                } else if (running && hfpFailures == MAX_ACCEPT_FAILURES) {
+                    OalLog.w(TAG, "HFP accept() still failing after $hfpFailures tries — " +
+                            "giving up on the HFP presence record")
+                }
+                if (hfpFailures >= MAX_ACCEPT_FAILURES) break
                 try { delay(1000) } catch (_: Throwable) { break }
                 if (hfpServerSocket == null) break
                 continue
@@ -250,12 +262,17 @@ class AaWirelessBtServer(
             return
         }
 
+        var consecutiveAcceptFailures = 0
         while (running && scope.isActive) {
             var threw = false
             val client: BluetoothSocket? = try {
                 aaServerSocket?.accept()
             } catch (e: Exception) {
-                if (running) OalLog.w(TAG, "AA BT accept() failed: ${e.message}")
+                // Log the first few only: a dead socket produces one of these per
+                // retry, and the detail is identical every time.
+                if (running && consecutiveAcceptFailures < 3) {
+                    OalLog.w(TAG, "AA BT accept() failed: ${e.message}")
+                }
                 threw = true
                 null
             }
@@ -263,21 +280,45 @@ class AaWirelessBtServer(
             if (client != null) {
                 val remote = runCatching { client.remoteDevice?.address ?: "?" }.getOrDefault("?")
                 OalLog.i(TAG, "Phone dialled back on the AA Wireless UUID from $remote")
+                // Flag it here rather than inside handleHandshake: the window that
+                // matters starts the instant the phone dials, and the coroutine
+                // may not be scheduled for several milliseconds.
+                AaWirelessBtControl.handshakeInFlight = true
                 scope.launch(CoroutineName("AaWirelessBt-Handshake")) {
-                    handleHandshake(client, remote)
+                    try {
+                        handleHandshake(client, remote)
+                    } finally {
+                        AaWirelessBtControl.handshakeInFlight = false
+                    }
                 }
                 continue
             }
 
-            // accept() returned null or threw. Mirrors HfpPresenceServer: if the
-            // socket is gone we cannot recover, otherwise back off so a torn-down
-            // socket (BT cycling on car shutdown) cannot pin a thread spinning.
+            // accept() returned null or threw.
+            //
+            // A 1s backoff alone is not enough: when Bluetooth goes away the
+            // socket object still exists, so aaServerSocket != null and the loop
+            // retried a permanently dead socket forever. One in-vehicle log
+            // carried 7,736 of these lines — hours of ~2/second across this loop
+            // and the HFP one — burning CPU and drowning everything else.
+            //
+            // Give up after a run of consecutive failures and republish the SDP
+            // record instead: a fresh listener is the only thing that recovers a
+            // dead one, and republishing is also what makes the phone dial back.
             if (aaServerSocket == null) {
                 if (running) OalLog.w(TAG, "AA BT server socket closed — exiting accept loop")
                 break
             }
             if (threw) {
+                consecutiveAcceptFailures++
+                if (consecutiveAcceptFailures >= MAX_ACCEPT_FAILURES) {
+                    OalLog.w(TAG, "AA BT accept() failed $consecutiveAcceptFailures times — " +
+                            "the socket is dead, exiting so the advertiser can republish")
+                    break
+                }
                 try { delay(1000) } catch (_: Throwable) { break }
+            } else {
+                consecutiveAcceptFailures = 0
             }
         }
     }
@@ -622,6 +663,14 @@ class AaWirelessBtServer(
          * `pev.d = jaj(4, 1)` and otherwise logs "Skip handling
          * WifiProjectionProtocolInfo as the protocol version is too low."
          */
+        /**
+         * Consecutive accept() failures before the loop gives up.
+         *
+         * A dead Bluetooth socket never becomes live again, so retrying it is
+         * pure waste. Ten seconds of failures is well past any transient.
+         */
+        private const val MAX_ACCEPT_FAILURES = 10
+
         private const val WPP_VERSION_MAJOR = 4
         private const val WPP_VERSION_MINOR = 1
     }

@@ -171,6 +171,13 @@ class TcpConnector(
                 OalLog.d(TAG, "TCP keepalive tuning unavailable: ${e.message}")
             }
             OalLog.i(TAG, "Connected to companion at $host:$port ($source)")
+            // A successful dial is the strongest evidence of where the companion
+            // is — better than any cache or scan. Publish it so the Bluetooth
+            // handshake does not go looking for an address we are already
+            // connected to. Observed: the resolver scanned blind and reported
+            // "no companion" 0.85s after this exact connection succeeded.
+            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                .lastKnownPhoneIp = host
             isRunning = false
             stopNsdDiscovery()
             onSocketReady(socket)
