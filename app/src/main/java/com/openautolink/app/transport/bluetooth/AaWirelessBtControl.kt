@@ -146,17 +146,45 @@ object AaWirelessBtControl {
     fun ensureAdvertising() {
         val ctx = appContext ?: return
         if (btServer?.isRunning == true) return
+        // Single-flight: ignition ON arrives as 4 -> 5 -> 4 within ~350ms, which
+        // fired this three times in one cycle. Each one raced the others into a
+        // Bluetooth stack that was still down.
+        if (!ensureInFlight.compareAndSet(false, true)) return
         OalLog.i(TAG, "No Bluetooth advertiser running — starting one")
         scope.launch {
-            runCatching { startFromPreferences(ctx) }
-                .onFailure { OalLog.w(TAG, "ensureAdvertising failed: ${it.message}") }
+            try {
+                // Same reason as republishAfterSocketDeath: the radio goes down
+                // with the ignition and comes back on its own schedule, so wait
+                // for it rather than publishing into a disabled adapter.
+                if (!awaitBluetoothEnabled()) {
+                    OalLog.w(TAG, "Bluetooth never came back — not advertising")
+                    return@launch
+                }
+                if (btServer?.isRunning == true) return@launch
+                runCatching { startFromPreferences(ctx) }
+                    .onFailure { OalLog.w(TAG, "ensureAdvertising failed: ${it.message}") }
+            } finally {
+                ensureInFlight.set(false)
+            }
         }
     }
+
+    private val ensureInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun republishAfterSocketDeath() {
         val ctx = appContext ?: return
         scope.launch {
-            kotlinx.coroutines.delay(5_000)
+            // Wait for the adapter to actually come back rather than guessing.
+            //
+            // The previous revision waited a flat 5s and then republished; the
+            // adapter was still disabled 67 SECONDS after the socket died, so
+            // every attempt logged "No BT adapter or adapter disabled" and the
+            // car never advertised again. The head unit's Bluetooth goes down
+            // with the ignition and returns on its own schedule.
+            if (!awaitBluetoothEnabled()) {
+                OalLog.w(TAG, "Bluetooth did not come back — cannot republish the SDP record")
+                return@launch
+            }
             runCatching {
                 btServer?.stop()
                 btServer = null
@@ -166,6 +194,34 @@ object AaWirelessBtControl {
                 OalLog.w(TAG, "Republish after socket death failed: ${it.message}")
             }
         }
+    }
+
+    /**
+     * Polls until the Bluetooth adapter is enabled, or the budget runs out.
+     *
+     * Deliberately generous: an ignition cycle can leave the radio off for over a
+     * minute, and there is no point publishing a service record before then. Note
+     * the phone may show "connected" during this window because the OEM stack
+     * handles calls and media separately — that says nothing about whether we can
+     * publish our own record.
+     */
+    private suspend fun awaitBluetoothEnabled(timeoutMs: Long = 180_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var waited = false
+        while (System.currentTimeMillis() < deadline) {
+            @Suppress("DEPRECATION")
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            if (adapter != null && adapter.isEnabled) {
+                if (waited) OalLog.i(TAG, "Bluetooth is back — republishing")
+                return true
+            }
+            if (!waited) {
+                OalLog.i(TAG, "Bluetooth is off — waiting for it before advertising")
+                waited = true
+            }
+            kotlinx.coroutines.delay(2_000)
+        }
+        return false
     }
 
     fun readvertise() {
