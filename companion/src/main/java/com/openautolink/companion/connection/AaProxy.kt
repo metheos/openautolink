@@ -81,6 +81,30 @@ class AaProxy(
     @Volatile private var pendingCarSocket: Socket? = null
 
     /**
+     * Set when the car announces it is shutting down, cleared on a fresh dial.
+     *
+     * Distinguishes "the car is powering off" from "the link glitched". The two
+     * look identical at the socket level until something times out, and the
+     * recovery for each is the opposite: a glitch wants the car socket kept for
+     * reuse, a shutdown wants everything dropped so the next ignition starts
+     * clean on a new subnet, a new phone address and a new proxy port.
+     */
+    @Volatile private var carGoneForGood: Boolean = false
+
+    /**
+     * The car is powering down. Drop the bridge and hold nothing over.
+     */
+    fun onCarShutdown() {
+        carGoneForGood = true
+        CompanionLog.i(TAG, "Car signalled shutdown — releasing the bridge")
+        runCatching { pendingCarSocket?.close() }
+        pendingCarSocket = null
+        // Retire any pre-warm waiter: Android Auto is about to disconnect anyway
+        // and a waiter left counting down would swallow the next attach.
+        waitGeneration.incrementAndGet()
+    }
+
+    /**
      * Ticket counter for pre-warm waiters, so a newer AA connection can retire an
      * older one rather than racing it.
      */
@@ -205,11 +229,21 @@ class AaProxy(
                 //
                 // Only recycle a socket that is still usable, and only when no other bridge
                 // is pumping (which would own it).
-                if (isRunning && pumpingBridges.get() == 0) {
+                if (isRunning && pumpingBridges.get() == 0 && !carGoneForGood) {
                     carSocket?.takeIf { !it.isClosed && it.isConnected }?.let {
                         pendingCarSocket = it
                         CompanionLog.i(TAG, "Car socket still live — returned to pool for next AA attach")
                     }
+                } else if (carGoneForGood) {
+                    // The car said goodbye. A TCP socket to a head unit that is
+                    // powering down still reports connected — nothing has sent a
+                    // FIN yet — so pooling it hands the next Android Auto attach
+                    // a socket to a car that no longer exists, and the bridge
+                    // sits there until something times out.
+                    runCatching { carSocket?.close() }
+                    pendingCarSocket = null
+                    CompanionLog.i(TAG, "Car has shut down — dropping its socket " +
+                            "instead of pooling it for reuse")
                 }
                 if (activeBridges.decrementAndGet() <= 0) {
                     listener?.onDisconnected(unexpected)

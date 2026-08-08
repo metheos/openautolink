@@ -1106,6 +1106,13 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     if (sessionManager.sessionState.value == SessionState.IDLE) return@collect
                     OalLog.i(TAG, "Ignition OFF — sending ByeBye before teardown")
                     sessionManager.shutdownGracefully("ignition_off")
+                    // Clear what we learned about the phone's whereabouts. The
+                    // telematics AP comes back on a different subnet with a
+                    // different phone address, and the companion reopens its
+                    // proxy on a different port, so every cached value is known
+                    // to be wrong before we even try it.
+                    com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                        .resetForNextIgnition()
                 }
         }
         // Auto-close the phone chooser once we successfully reach STREAMING.

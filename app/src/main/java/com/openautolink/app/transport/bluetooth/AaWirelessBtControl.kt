@@ -181,6 +181,64 @@ object AaWirelessBtControl {
     @Volatile
     private var activePhoneClaimedAt: Long = 0L
 
+    /**
+     * Forget everything learned about where the phone was, on ignition off.
+     *
+     * The telematics module reassigns its AP a new subnet on every ignition
+     * cycle, so every cached address is guaranteed stale by the next start —
+     * one session held 10.2.110.109, 10.2.110.125 and 10.2.110.82, all dead.
+     * Carrying them over costs a probe round-trip each before the scan that was
+     * always going to be needed, right at the moment the car is trying to
+     * connect quickly.
+     *
+     * Proxy ports go too: the companion opens a fresh listener on a new port
+     * each time its service starts, so a remembered port is not just stale, it
+     * would be advertised to Android Auto as a live endpoint.
+     */
+    fun resetForNextIgnition() {
+        // Snapshot the addresses BEFORE clearing them — the notify is async and
+        // would otherwise race the clear and find nothing to send to.
+        val targets = buildList {
+            lastKnownPhoneIp?.let { add(it) }
+            synchronized(recentPhoneIps) { addAll(recentPhoneIps) }
+        }.distinct()
+        notifyCompanionOfShutdown(targets)
+        releaseActivePhone()
+        lastKnownPhoneIp = null
+        synchronized(recentPhoneIps) { recentPhoneIps.clear() }
+        lastGoodProxyPortByPhone.clear()
+        handshakeInFlight = false
+        OalLog.i(TAG, "Cleared cached phone addresses and proxy ports — " +
+                "the AP is reassigned a new subnet on every ignition cycle")
+    }
+
+    /**
+     * Tell the companion we are powering down, so it drops the bridge.
+     *
+     * Strictly fire-and-forget on a very short timeout. Measured on a real
+     * power-down, the app had about 800ms of life left after IGNITION_STATE
+     * reached OFF — the last log line was 816ms later. Anything that blocks
+     * longer than that simply never happens.
+     *
+     * Best-effort by design: failing to deliver this costs nothing, because the
+     * companion still discovers the loss the slow way. Delivering it saves the
+     * next connection from a pooled socket to a car that no longer exists.
+     */
+    private fun notifyCompanionOfShutdown(targets: List<String>) {
+        if (targets.isEmpty()) return
+        for (ip in targets) {
+            scope.launch {
+                runCatching {
+                    java.net.Socket().use { s ->
+                        s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 250)
+                        s.getOutputStream().apply { write("BYE!\n".toByteArray()); flush() }
+                    }
+                    OalLog.i(TAG, "Told the companion at $ip we are shutting down")
+                }
+            }
+        }
+    }
+
     /** Release the session claim so another phone can take it. */
     fun releaseActivePhone() {
         activePhoneBt?.let { OalLog.i(TAG, "Released the session claim held by $it") }

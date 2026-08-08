@@ -313,6 +313,28 @@ class TcpAdvertiser(
                 buf[0] == 'O'.code.toByte() && buf[1] == 'A'.code.toByte() &&
                 buf[2] == 'L'.code.toByte() && buf[3] == '?'.code.toByte() &&
                 buf[4] == '\n'.code.toByte()
+
+            // "BYE!\n" on the same port: the car is powering down. Sent while the
+            // head unit is still alive, because once the telematics AP drops there
+            // is no path left to say anything.
+            //
+            // Without it a shutdown is indistinguishable from a glitch — the TCP
+            // socket still reports connected, nothing has sent a FIN — so the
+            // proxy would pool a socket to a car that no longer exists and hand it
+            // to the next Android Auto attach.
+            val isBye = read == 5 &&
+                buf[0] == 'B'.code.toByte() && buf[1] == 'Y'.code.toByte() &&
+                buf[2] == 'E'.code.toByte() && buf[3] == '!'.code.toByte() &&
+                buf[4] == '\n'.code.toByte()
+            if (isBye) {
+                CompanionLog.i(TAG, "Car at $remoteIp is shutting down — clearing state " +
+                        "so the next ignition starts fresh")
+                activeProxy?.onCarShutdown()
+                activeCarSocket?.let { runCatching { it.close() } }
+                activeCarSocket = null
+                return
+            }
+
             if (!isProbe) {
                 CompanionLog.d(TAG, "Identity probe from $remoteIp: bad/empty request ($read bytes)")
                 return
