@@ -100,6 +100,9 @@ class AaWirelessBtServer(
     @Volatile
     private var running = false
 
+    /** True while the SDP record is published and the accept loop is alive. */
+    val isRunning: Boolean get() = running
+
     @Volatile
     private var credentials: WifiCredentials? = null
 
@@ -313,7 +316,16 @@ class AaWirelessBtServer(
                 consecutiveAcceptFailures++
                 if (consecutiveAcceptFailures >= MAX_ACCEPT_FAILURES) {
                     OalLog.w(TAG, "AA BT accept() failed $consecutiveAcceptFailures times — " +
-                            "the socket is dead, exiting so the advertiser can republish")
+                            "the socket is dead, republishing the SDP record")
+                    // Republish HERE rather than merely exiting. The previous
+                    // revision broke out of the loop and left a comment saying
+                    // the advertiser would republish — nothing did. The
+                    // advertiser only (re)starts on a transport-preference
+                    // change, so after an ignition cycle killed the socket the
+                    // car silently stopped advertising for the rest of the
+                    // session: no SDP record, so the phone had nothing to dial
+                    // back to and was never told which WiFi to join.
+                    AaWirelessBtControl.republishAfterSocketDeath()
                     break
                 }
                 try { delay(1000) } catch (_: Throwable) { break }

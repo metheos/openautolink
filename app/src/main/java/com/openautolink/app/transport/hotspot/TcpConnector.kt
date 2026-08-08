@@ -43,7 +43,22 @@ class TcpConnector(
         const val NSD_SERVICE_TYPE = "_openautolink._tcp"
         private const val CONNECT_TIMEOUT_MS = 5000
         private const val RETRY_DELAY_MS = 3000L
+
+        /**
+         * Gateway dials before concluding it is a router, not a phone hotspot.
+         *
+         * Ten at a 3s cadence is ~30s — long enough for a hotspot still coming
+         * up, short enough not to spend 12 minutes dialling a home router, which
+         * is what happened when the head unit sat on home WiFi in the driveway.
+         */
+        private const val MAX_GATEWAY_ATTEMPTS = 10
     }
+
+    /**
+     * Consecutive failed gateway dials. Reset whenever the network changes or a
+     * dial succeeds, so moving onto a real phone hotspot re-enables the path.
+     */
+    private var gatewayFailures = 0
 
     /** When set, connects only to this IP (skips mDNS and gateway discovery). */
     var manualIp: String? = null
@@ -73,6 +88,10 @@ class TcpConnector(
     fun start() {
         if (isRunning) return
         isRunning = true
+        // Fresh budget per start: start() follows a network or transport change,
+        // which is exactly when a gateway that never answered might now be a
+        // phone hotspot that does.
+        gatewayFailures = 0
         OalLog.i(TAG, "Starting TCP connector (port $COMPANION_PORT)")
 
         // Manual IP may be either "host" or "host:port". If a port is given it
@@ -131,12 +150,30 @@ class TcpConnector(
                     if (tryConnect(nsdHost, nsdFoundPort, "mDNS")) return@launch
                 }
 
-                // Fall back to gateway IP (works on phone hotspot)
+                // Fall back to the gateway, which IS the phone when the head unit
+                // is on a phone hotspot. On any other network it is a router that
+                // will never answer, so stop after a bounded number of tries
+                // rather than dialling it forever.
+                //
+                // Measured: 240 attempts at 192.168.0.1 over 12 minutes while the
+                // head unit sat on home WiFi in the driveway. Each one is a
+                // pointless connect with a real timeout, and it buries anything
+                // useful in the log.
                 val gatewayIp = getGatewayIp()
-                if (gatewayIp != null) {
+                if (gatewayIp != null && gatewayFailures < MAX_GATEWAY_ATTEMPTS) {
                     anyTried = true
-                    if (tryConnect(gatewayIp, COMPANION_PORT, "gateway")) return@launch
-                } else {
+                    if (tryConnect(gatewayIp, COMPANION_PORT, "gateway")) {
+                        gatewayFailures = 0
+                        return@launch
+                    }
+                    gatewayFailures++
+                    if (gatewayFailures == MAX_GATEWAY_ATTEMPTS) {
+                        OalLog.i(TAG, "Gateway $gatewayIp has not answered on " +
+                                "$COMPANION_PORT after $gatewayFailures tries — it is " +
+                                "probably a router, not a phone hotspot. Relying on " +
+                                "mDNS and discovery instead.")
+                    }
+                } else if (gatewayIp == null) {
                     OalLog.d(TAG, "No WiFi gateway — waiting for mDNS or network...")
                 }
 

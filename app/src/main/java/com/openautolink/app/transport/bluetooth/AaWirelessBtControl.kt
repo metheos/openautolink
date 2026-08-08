@@ -122,6 +122,52 @@ object AaWirelessBtControl {
      * connect. After a network drop the phone believes it is still set up and
      * never re-dials, so the car must make the record disappear and return.
      */
+    /**
+     * Rebuild the advertiser after its RFCOMM socket died.
+     *
+     * Bluetooth going down (ignition off, adapter cycling) kills the listening
+     * socket permanently — accept() then fails forever on an object that still
+     * exists. The accept loop gives up, and without this the car simply stops
+     * advertising: no SDP record, so the phone never dials back and never learns
+     * which network to join. Measured: 12 minutes of silence after one ignition
+     * cycle, through two manual Bluetooth toggles.
+     *
+     * Deliberately delayed. Republishing while the adapter is still coming back
+     * just produces another dead socket.
+     */
+    /**
+     * Make sure the SDP record is published, without disturbing a healthy one.
+     *
+     * Called on ignition ON as a safety net: Bluetooth cycles with the car, and
+     * the advertiser otherwise only (re)starts when the transport preference
+     * changes — so a socket killed during the off period stays dead and the car
+     * never advertises again.
+     */
+    fun ensureAdvertising() {
+        val ctx = appContext ?: return
+        if (btServer?.isRunning == true) return
+        OalLog.i(TAG, "No Bluetooth advertiser running — starting one")
+        scope.launch {
+            runCatching { startFromPreferences(ctx) }
+                .onFailure { OalLog.w(TAG, "ensureAdvertising failed: ${it.message}") }
+        }
+    }
+
+    fun republishAfterSocketDeath() {
+        val ctx = appContext ?: return
+        scope.launch {
+            kotlinx.coroutines.delay(5_000)
+            runCatching {
+                btServer?.stop()
+                btServer = null
+                startFromPreferences(ctx)
+                OalLog.i(TAG, "Republished the SDP record after the Bluetooth socket died")
+            }.onFailure {
+                OalLog.w(TAG, "Republish after socket death failed: ${it.message}")
+            }
+        }
+    }
+
     fun readvertise() {
         val ctx = appContext
         if (ctx == null) {

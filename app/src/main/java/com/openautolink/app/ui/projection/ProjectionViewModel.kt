@@ -1098,21 +1098,36 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 .collect { state ->
                     if (state == null) return@collect
                     val on = state == 4 || state == 5
-                    if (on) { wasOn = true; return@collect }
+                    if (on) {
+                        // Re-arm the advertiser on every ignition ON. Bluetooth
+                        // cycles with the car, and a socket created before that
+                        // is dead — but nothing else notices, because the
+                        // advertiser normally only starts on a preference
+                        // change. Idempotent: a healthy advertiser is left alone.
+                        com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                            .ensureAdvertising()
+                        wasOn = true
+                        return@collect
+                    }
                     // OFF (2) or LOCK (1), and we previously saw ON.
                     if (!wasOn) return@collect
                     if (state != 1 && state != 2) return@collect
                     wasOn = false
-                    if (sessionManager.sessionState.value == SessionState.IDLE) return@collect
-                    OalLog.i(TAG, "Ignition OFF — sending ByeBye before teardown")
-                    sessionManager.shutdownGracefully("ignition_off")
                     // Clear what we learned about the phone's whereabouts. The
                     // telematics AP comes back on a different subnet with a
                     // different phone address, and the companion reopens its
                     // proxy on a different port, so every cached value is known
                     // to be wrong before we even try it.
+                    //
+                    // Runs BEFORE the IDLE check and unconditionally: the reset
+                    // matters most when there is no live session, and gating it
+                    // behind the ByeBye meant an ignition cycle from an idle
+                    // state kept stale addresses and never told the companion.
                     com.openautolink.app.transport.bluetooth.AaWirelessBtControl
                         .resetForNextIgnition()
+                    if (sessionManager.sessionState.value == SessionState.IDLE) return@collect
+                    OalLog.i(TAG, "Ignition OFF — sending ByeBye before teardown")
+                    sessionManager.shutdownGracefully("ignition_off")
                 }
         }
         // Auto-close the phone chooser once we successfully reach STREAMING.
