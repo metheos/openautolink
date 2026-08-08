@@ -154,6 +154,22 @@ class SessionManager(
     @Volatile
     var onDecoderCreated: (() -> Unit)? = null
 
+    /**
+     * The surface the UI last published, kept across decoder recreations.
+     *
+     * The decoder lives in this singleton; the surface belongs to an
+     * activity-scoped ViewModel. Their lifecycles are independent, so a callback
+     * from one into the other loses the surface whenever the ordering flips.
+     */
+    @Volatile
+    private var lastKnownSurface: Triple<android.view.Surface, Int, Int>? = null
+
+    /** Called by the UI whenever a surface becomes available or is destroyed. */
+    fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
+        lastKnownSurface = surface?.let { Triple(it, width, height) }
+        if (surface != null) _videoDecoder?.attach(surface, width, height)
+    }
+
     private var _videoDecoder: VideoDecoder? = null
     val videoDecoder: VideoDecoder? get() = _videoDecoder
     val videoStats: StateFlow<VideoStats>? get() = _videoDecoder?.stats
@@ -597,6 +613,23 @@ class SessionManager(
         // Create video decoder
         _videoDecoder?.release()
         _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
+        // Re-attach the surface the UI last reported, if there is one.
+        //
+        // Holding it here rather than only in the ViewModel removes the ordering
+        // problem entirely: the decoder is created in this singleton, the
+        // surface belongs to an activity-scoped ViewModel, and the two lifecycles
+        // do not line up. After an ignition cycle the surface was recreated a
+        // minute before the decoder and nothing joined them, so video ran into a
+        // decoder with nothing to render to.
+        lastKnownSurface?.let { (surface, w, h) ->
+            if (surface.isValid) {
+                OalLog.i(TAG, "Re-attaching the last known surface to the new decoder")
+                _videoDecoder?.attach(surface, w, h)
+            } else {
+                OalLog.i(TAG, "Last known surface is no longer valid — waiting for a new one")
+                lastKnownSurface = null
+            }
+        }
         // Hand the new decoder whatever surface already exists.
         //
         // The surface can be ready long before the session: after an ignition

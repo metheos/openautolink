@@ -2172,6 +2172,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             Log.d(TAG, "Surface stabilized at ${width}x${height}")
             com.openautolink.app.diagnostics.DiagnosticLog.i("video",
                 "Surface stabilized: ${width}x${height}")
+            // Publish to the SessionManager so the surface survives decoder
+            // recreation regardless of which lifecycle moves first.
+            sessionManager.publishSurface(surface, width, height)
             val decoder = sessionManager.videoDecoder
             if (decoder == null) {
                 // Say so. This is a silent no-op that produced a black screen
@@ -2197,13 +2200,22 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         pendingSurface = null
         pendingSurfaceWidth = 0
         pendingSurfaceHeight = 0
+        sessionManager.publishSurface(null, 0, 0)
         sessionManager.videoDecoder?.detach()
     }
 
     /** Attach pending surface to a newly created decoder. Called by session observer. */
     internal fun attachPendingSurface() {
-        val s = pendingSurface ?: return
-        sessionManager.videoDecoder?.attach(s, pendingSurfaceWidth, pendingSurfaceHeight)
+        val s = pendingSurface
+        val d = sessionManager.videoDecoder
+        if (s == null || d == null) {
+            // Both silent returns produced a black screen with a healthy stream
+            // behind it, and neither left a trace. Say which half was missing.
+            com.openautolink.app.diagnostics.DiagnosticLog.w("video",
+                "Cannot attach surface: pendingSurface=${s != null} decoder=${d != null}")
+            return
+        }
+        d.attach(s, pendingSurfaceWidth, pendingSurfaceHeight)
     }
 
     private fun registerTransportNetworkCallback() {

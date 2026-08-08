@@ -218,6 +218,11 @@ class AasdkSession(
             startTcp(manualIp = known)
             return
         }
+        // NOTE: the ByeBye for this path lives in startTcp(), not here — Save &
+        // Reconnect reaches the transport through connect(), never through
+        // SessionManager.reconnect(), so a goodbye added there is never sent.
+        // Measured: "stop() closing transport WITHOUT ByeBye reason=stopped"
+        // followed by ~50 handshakes in 60s with no reconnection.
 
         // Otherwise wait for the handshake to tell us where to go.
         // Deliberately NOT deciding listen-vs-dial here.
@@ -341,6 +346,20 @@ class AasdkSession(
 
     private fun handleConnection(socket: Socket) {
         _connectionState.value = ConnectionState.CONNECTING
+
+        // Say goodbye to the phone before replacing a live native session.
+        //
+        // Every teardown on this path logged "stop() closing transport WITHOUT
+        // ByeBye", so the phone kept believing the old session was alive and
+        // refused the new one — about 50 handshakes in 60 seconds with no
+        // reconnection. Save & Reconnect reaches the transport through
+        // connect(), never through SessionManager.reconnect(), which is why a
+        // goodbye added there was never sent.
+        if (transportPipe != null) {
+            OalLog.i(TAG, "Replacing a live session — sending ByeBye first")
+            runCatching { AasdkNative.nativeShutdownGracefully("reconnect", 400) }
+            Thread.sleep(400)
+        }
 
         val input = socket.getInputStream()
         val output = socket.getOutputStream()
