@@ -2172,7 +2172,19 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             Log.d(TAG, "Surface stabilized at ${width}x${height}")
             com.openautolink.app.diagnostics.DiagnosticLog.i("video",
                 "Surface stabilized: ${width}x${height}")
-            sessionManager.videoDecoder?.attach(surface, width, height)
+            val decoder = sessionManager.videoDecoder
+            if (decoder == null) {
+                // Say so. This is a silent no-op that produced a black screen
+                // with a perfectly healthy 41fps stream behind it: the surface
+                // was ready 42s before the decoder existed, and nothing later
+                // handed it over. The pending surface is kept and attached when
+                // a decoder appears — the log line matters because "Surface
+                // stabilized" above makes it look like something happened.
+                com.openautolink.app.diagnostics.DiagnosticLog.i("video",
+                    "Surface ready but no decoder yet — will attach when one exists")
+                return@launch
+            }
+            decoder.attach(surface, width, height)
             // Surface may have attached after the bridge's SPS/PPS+IDR replay arrived,
             // meaning the IDR was dropped (codec wasn't configured yet). Request a
             // fresh keyframe so the bridge sends a new IDR now that the codec is ready.

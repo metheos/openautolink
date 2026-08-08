@@ -1087,6 +1087,9 @@ class SessionManager(
         _effectiveDpi.value = effectiveDpi
 
         aasdkSession = session
+        // Same surface guarantee for transport restarts, which reuse the decoder
+        // and so never trigger onDecoderCreated.
+        session.onNativeSessionStarting = { onDecoderCreated?.invoke() }
 
         // Let the Bluetooth handshake dial the companion the instant it selects
         // the loopback endpoint. Waiting until session start is too early — the
@@ -1432,6 +1435,23 @@ class SessionManager(
         // cancelAndJoin and then aasdkSession.stop() which JNI-joins the io_thread).
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
+                // Say goodbye before tearing down, whenever a session exists.
+                //
+                // Without it the phone still believes the old session is live, so
+                // the car's next dial is refused, its session dies, and the
+                // Bluetooth advertiser re-handshakes — about 60 handshakes in 55
+                // seconds in one log, and the car never reconnected.
+                //
+                // Deliberately not gated on whether video is flowing: a session
+                // that exists at all is one the phone has state for.
+                if (aasdkSession != null && sessionState.value != SessionState.IDLE) {
+                    OalLog.i(TAG, "Reconnect — sending ByeBye so the phone tears down cleanly")
+                    runCatching {
+                        aasdkSession?.shutdownGracefully("reconnect", BYEBYE_TIMEOUT_MS)
+                    }
+                    // Give the ByeBye its window before we pull the transport out.
+                    kotlinx.coroutines.delay(BYEBYE_TIMEOUT_MS.toLong())
+                }
                 try {
                     observeJob?.cancelAndJoin()
                     decoderWatchJob?.cancelAndJoin()

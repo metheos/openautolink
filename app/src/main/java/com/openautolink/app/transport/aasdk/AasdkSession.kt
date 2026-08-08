@@ -255,6 +255,13 @@ class AasdkSession(
      * is opened before Android Auto is told to connect - rather than the proxy
      * holding an AA connection open waiting for a car that never dials.
      */
+    /**
+     * Invoked immediately before each native session start, so the UI can make
+     * sure the decoder still has a surface.
+     */
+    @Volatile
+    var onNativeSessionStarting: (() -> Unit)? = null
+
     fun dialCompanion(ip: String) {
         // Only refuse when a dial is genuinely in flight or connected. Refusing
         // whenever a connector merely EXISTS makes a dead one permanent: after a
@@ -317,6 +324,7 @@ class AasdkSession(
         _connectionState.value = ConnectionState.CONNECTING
 
         OalLog.i(TAG, "Starting native aasdk session (USB): ${sdrConfig.videoWidth}x${sdrConfig.videoHeight}")
+        onNativeSessionStarting?.invoke()
 
         transportPipe = pipe
 
@@ -338,6 +346,13 @@ class AasdkSession(
         val output = socket.getOutputStream()
 
         OalLog.i(TAG, "Starting native aasdk session: ${sdrConfig.videoWidth}x${sdrConfig.videoHeight}")
+        // Re-attach the surface on EVERY native session start, not only when a
+        // decoder is constructed. A transport restart (retry, or a dial from the
+        // Bluetooth handshake) reuses the existing decoder, so the
+        // decoder-created hook never fires — and the reused decoder has no
+        // surface after the old one was destroyed. Measured: video ran at 41fps
+        // for 25s into a decoder with nothing to render to.
+        onNativeSessionStarting?.invoke()
 
         transportPipe = AasdkTransportPipe(input, output)
 
