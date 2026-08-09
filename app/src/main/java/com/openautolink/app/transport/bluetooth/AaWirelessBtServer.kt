@@ -304,6 +304,12 @@ class AaWirelessBtServer(
                         handleHandshake(client, remote)
                     } finally {
                         AaWirelessBtControl.handshakeInFlight = false
+                        // Run anything that asked to re-advertise while we were
+                        // busy. The probe usually finds the companion seconds
+                        // after a handshake has already committed to the
+                        // unreachable car-direct endpoint, and dropping that
+                        // request left the connection waiting on discovery.
+                        AaWirelessBtControl.flushPendingReadvertise()
                     }
                 }
                 continue

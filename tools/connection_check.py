@@ -75,6 +75,11 @@ M_IGNITION_OFF = "IGNITION_STATE → 2 (OFF)"
 # dropped while video streamed perfectly).
 M_NATIVE_START = "Starting native aasdk session"
 M_FULL_SETUP = "aasdk JNI session started"
+# 0.1.417 re-adopts the session on a transport restart instead of re-running full
+# setup, so this line covers a native start just as a full setup does. Without it
+# the rule reports every fixed session as broken — a checker that flags the fix is
+# worse than no checker.
+M_READOPT = "Re-adopting the session after a transport restart"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -180,7 +185,7 @@ def parse_log(path: str) -> list[Attempt]:
             elif M_NATIVE_START in line:
                 current.native_starts += 1
                 current.native_start_times.append(t)
-            elif M_FULL_SETUP in line:
+            elif M_FULL_SETUP in line or M_READOPT in line:
                 current.full_setups += 1
                 setup_times.append(t)
             elif M_READVERTISE in line:

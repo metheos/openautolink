@@ -402,9 +402,42 @@ object AaWirelessBtControl {
 
     private val backgroundProbeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * Run a re-advertise that was requested while a handshake was in flight.
+     *
+     * Called once the handshake completes. Only acts if the endpoint that
+     * handshake settled on is still the unreachable one — if it managed to find
+     * the companion itself, there is nothing to repair.
+     */
+    fun flushPendingReadvertise() {
+        val host = pendingReadvertiseHost ?: return
+        pendingReadvertiseHost = null
+        if (!lastEndpointWasCarDirect) {
+            OalLog.i(TAG, "Handshake found the companion itself — dropping the " +
+                    "queued re-advertise for $host")
+            return
+        }
+        OalLog.i(TAG, "Handshake finished — running the queued re-advertise for $host")
+        readvertiseForNewCompanionAddress(host)
+    }
+
     fun readvertiseForNewCompanionAddress(host: String) {
         if (!lastEndpointWasCarDirect) return
-        if (handshakeInFlight) return
+        if (handshakeInFlight) {
+            // Queue it instead of dropping it.
+            //
+            // The handshake that advertised the bad endpoint is usually still
+            // finishing when the probe succeeds — measured at 2s apart — so this
+            // guard threw away the very answer it was waiting for and the
+            // connection then waited 26s for discovery to ask again. Restarting
+            // the advertiser mid-handshake genuinely does destroy the socket the
+            // phone is about to use, so we still must not act now; we just have
+            // to remember.
+            OalLog.i(TAG, "Companion found at $host while a handshake is in " +
+                    "flight — queued, will re-advertise as soon as it finishes")
+            pendingReadvertiseHost = host
+            return
+        }
         // Only a session that is actually CARRYING DATA counts as "working".
         //
         // The previous check was `sessionState != IDLE`, which is true the
@@ -415,12 +448,21 @@ object AaWirelessBtControl {
         // minutes and no re-advertise ever fired.
         if (sessionIsStreaming?.invoke() == true) return
         val now = System.currentTimeMillis()
-        if (now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS) {
+        // The cooldown exists to stop two re-advertises racing and crossing the
+        // phone's connections. It must not apply when the endpoint we are
+        // currently advertising is known to be unreachable: that re-advertise is
+        // not a duplicate, it is the repair, and delaying it costs half a minute.
+        if (!lastEndpointWasCarDirect &&
+            now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS
+        ) {
             // Say so rather than returning silently. This cooldown swallowed the
             // recovery once already: a republish at 20:53:14 started the clock,
             // discovery reported the phone 10.7s later, and the re-advertise that
             // would have fixed an unreachable endpoint was dropped without trace.
-            OalLog.d(TAG, "Skipping re-advertise for $host — only " +
+            // Info, not debug: the uploaded file log only captures I and above,
+            // so at debug level this "explanation" was invisible in exactly the
+            // logs used to diagnose the problem it explains.
+            OalLog.i(TAG, "Skipping re-advertise for $host — only " +
                     "${(now - lastReadvertiseAtMs) / 1000}s since the last one")
             return
         }
@@ -445,6 +487,10 @@ object AaWirelessBtControl {
 
     @Volatile
     private var lastReadvertiseAtMs = 0L
+
+    /** A re-advertise asked for during a handshake, to run when it completes. */
+    @Volatile
+    private var pendingReadvertiseHost: String? = null
 
     fun readvertise() {
         val ctx = appContext
