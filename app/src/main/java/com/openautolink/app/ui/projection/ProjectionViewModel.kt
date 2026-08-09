@@ -179,6 +179,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
 
     // Pending surface — stored when surfaceCreated fires before decoder exists.
     // Attached to decoder on session start or when decoder becomes available.
+    /** Rate-limit for the "no codec dimensions, dropping touch" warning. */
+    private var lastNoTouchSizeWarnAt = 0L
+
     private var pendingSurface: Surface? = null
     private var pendingSurfaceWidth: Int = 0
     private var pendingSurfaceHeight: Int = 0
@@ -2127,7 +2130,20 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         val stats = _videoStats.value
         val codecW = if (stats.width > 0) stats.width else sessionManager.touchWidth.value
         val codecH = if (stats.height > 0) stats.height else sessionManager.touchHeight.value
-        if (codecW <= 0 || codecH <= 0) return
+        if (codecW <= 0 || codecH <= 0) {
+            // The other way touch dies silently: video stats only start being
+            // collected on SessionState.STREAMING, so a session that comes up via
+            // a recovery path without publishing that state leaves these at zero
+            // and every touch returns here. touchWidth/Height default to 1920x1080
+            // so this should be unreachable — say so if it ever is not.
+            val now = System.currentTimeMillis()
+            if (now - lastNoTouchSizeWarnAt > 5_000L) {
+                lastNoTouchSizeWarnAt = now
+                com.openautolink.app.diagnostics.DiagnosticLog.w("input",
+                    "Dropping touch — no codec dimensions yet (${codecW}x${codecH})")
+            }
+            return
+        }
         // When inner+panel are provided, pretend the view is the panel rect
         // and the codec is the inner rect — this maps edge-of-panel to
         // edge-of-AA-UI (codec col innerW, row innerH) regardless of how the

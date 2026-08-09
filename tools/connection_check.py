@@ -69,6 +69,12 @@ M_COMPANION_SCAN_FOUND = "Companion found at"
 M_READVERTISE = "re-advertising so the phone retries"
 M_DISCOVERY_FOUND = "preferred sweep complete: 1 phone"
 M_IGNITION_OFF = "IGNITION_STATE → 2 (OFF)"
+# A native session start without the full setup that normally accompanies it.
+# Three separate in-vehicle failures came from this asymmetry: no decoder (black
+# video), no surface (black video), and no session reference (touch silently
+# dropped while video streamed perfectly).
+M_NATIVE_START = "Starting native aasdk session"
+M_FULL_SETUP = "aasdk JNI session started"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -91,6 +97,11 @@ class Attempt:
     surface_attached: bool = False
     readvertised: bool = False
     retries: int = 0
+    native_starts: int = 0
+    full_setups: int = 0
+    setup_nearby: bool = False
+    native_start_times: list = field(default_factory=list)
+    uncovered_starts: list = field(default_factory=list)
     discovery_found_after: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -110,6 +121,9 @@ def parse_log(path: str) -> list[Attempt]:
     attempts: list[Attempt] = []
     current: Attempt | None = None
     name = os.path.basename(path)
+    # Full-setup timestamps for the whole log. Setup is logged a few ms before the
+    # native start it belongs to, which can straddle an attempt boundary.
+    setup_times: list[float] = []
 
     with open(path, errors="ignore") as fh:
         for line in fh:
@@ -163,11 +177,29 @@ def parse_log(path: str) -> list[Attempt]:
                 current.codec_at = t
             elif M_SURFACE_ATTACH in line:
                 current.surface_attached = True
+            elif M_NATIVE_START in line:
+                current.native_starts += 1
+                current.native_start_times.append(t)
+            elif M_FULL_SETUP in line:
+                current.full_setups += 1
+                setup_times.append(t)
             elif M_READVERTISE in line:
                 current.readvertised = True
             elif M_DISCOVERY_FOUND in line and not current.connected:
                 current.discovery_found_after = True
 
+    # A native start is "covered" if a full setup ran within 2s of it.
+    # Judge EVERY native start on its own. An attempt can span minutes — the one
+    # at 22:33:54 ran until 22:37 — so "does this attempt contain a setup?" lets a
+    # later recovery's setup vouch for an earlier start that never had one, which
+    # is exactly backwards. The first native start after a stop() is the one at
+    # risk, and it is the one that must have its own setup.
+    for a in attempts:
+        a.uncovered_starts = [
+            n for n in a.native_start_times
+            if not any(abs(s - n) <= 2.0 for s in setup_times)
+        ]
+        a.setup_nearby = not a.uncovered_starts
     return attempts
 
 
@@ -218,6 +250,23 @@ def check(a: Attempt) -> list[Finding]:
         out.append(Finding(
             "FAIL", "no-surface",
             "session started but no surface was ever attached (black video)",
+        ))
+
+    # A native session that never ran full setup keeps whatever the last stop()
+    # left behind: null decoder, no surface, or — the one that took longest to
+    # find — a null session reference, which drops every touch while video looks
+    # perfect. Save & Reconnect "fixing" it is the tell: that path does run setup.
+    # Compare within the attempt AND allow a setup that ran just before it: the
+    # full setup is logged a few ms before the native start, so a naive bucket
+    # comparison lands them either side of an attempt boundary and reports the
+    # opposite of the truth. First version of this rule flagged the two HEALTHY
+    # sessions and missed the broken one.
+    if a.connected and a.uncovered_starts:
+        out.append(Finding(
+            "WARN", "session-start-without-setup",
+            f"{len(a.uncovered_starts)} of {a.native_starts} native session "
+            "start(s) had no full setup — decoder, surface and session reference "
+            "may be stale (touch silently dropped while video looks perfect)",
         ))
 
     if a.connected and a.codec_at is None:

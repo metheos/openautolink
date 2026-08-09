@@ -112,6 +112,12 @@ class SessionManager(
     // aasdk JNI session -- native C++ handles AA protocol
     private var aasdkSession: AasdkSession? = null
 
+    /** Rate-limit for the "no session, dropping input" warning. */
+    @Volatile
+    private var lastNoSessionWarnAt = 0L
+
+    private val NO_SESSION_WARN_INTERVAL_MS = 5_000L
+
     // Dedicated single-threaded dispatcher for video decode
     private val videoDispatcher = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "VideoDecodeInput").apply { isDaemon = true }
@@ -1180,7 +1186,23 @@ class SessionManager(
         // and so never trigger onDecoderCreated.
         // A transport restart can begin a native session without re-running the
         // full setup, so make sure a decoder exists rather than assuming one does.
-        session.onNativeSessionStarting = { ensureVideoDecoder() }
+        session.onNativeSessionStarting = {
+            ensureVideoDecoder()
+            // Re-adopt the session on every native start.
+            //
+            // stop() nulls aasdkSession, and the recovery path reaches the
+            // transport through dialCompanion() -> startTcp() without re-running
+            // this setup — so after an ignition cycle the field stayed null while
+            // a perfectly good native session ran. Video was fine (frames go
+            // straight from the native callback to the decoder) but every touch
+            // was dropped by `aasdkSession ?: return` in sendControlMessage.
+            // Measured: five native session starts, two full setups.
+            if (aasdkSession !== session) {
+                OalLog.i(TAG, "Re-adopting the session after a transport restart — " +
+                        "without this, touch input is silently dropped")
+                aasdkSession = session
+            }
+        }
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.sessionIsStreaming = {
             sessionState.value == SessionState.STREAMING
         }
@@ -1997,7 +2019,21 @@ class SessionManager(
     }
 
     suspend fun sendControlMessage(message: ControlMessage) {
-        val session = aasdkSession ?: return
+        val session = aasdkSession
+        if (session == null) {
+            // Say so. This silent return meant every touch vanished while video
+            // streamed perfectly and the log looked healthy — the user could see
+            // maps animating and could not tap anything, and nothing in the log
+            // said why. Rate-limited so a genuinely dead session cannot flood.
+            val now = System.currentTimeMillis()
+            if (now - lastNoSessionWarnAt > NO_SESSION_WARN_INTERVAL_MS) {
+                lastNoSessionWarnAt = now
+                OalLog.w(TAG, "Dropping ${message::class.simpleName} — no session " +
+                        "reference. Input will not reach the phone even if video is " +
+                        "streaming.")
+            }
+            return
+        }
         when (message) {
             is ControlMessage.Touch -> {
                 if (message.pointers != null && message.pointers.isNotEmpty()) {
