@@ -1446,11 +1446,41 @@ private fun ConnectionHud(
 
             when (uiState.sessionState) {
                 SessionState.IDLE -> {
-                    Text(
-                        text = uiState.statusMessage,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color(0xFFB0B0B0)
-                    )
+                    // "Disconnected" on its own reads as "gave up", which is
+                    // wrong: after an ignition cycle the app sits here retrying
+                    // every few seconds and reconnects on its own. Show that it
+                    // is still working rather than leaving the user to guess.
+                    val retrying = uiState.reconnectAttempt > 0 ||
+                        uiState.statusMessage == "Disconnected"
+                    if (retrying) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(28.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            strokeWidth = 3.dp,
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Waiting for your phone\u2026",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (uiState.reconnectAttempt > 1) {
+                                "Reconnecting automatically — attempt ${uiState.reconnectAttempt}"
+                            } else {
+                                "Reconnecting automatically"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9E9E9E),
+                        )
+                    } else {
+                        Text(
+                            text = uiState.statusMessage,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color(0xFFB0B0B0)
+                        )
+                    }
                 }
                 SessionState.CONNECTING -> {
                     CircularProgressIndicator(

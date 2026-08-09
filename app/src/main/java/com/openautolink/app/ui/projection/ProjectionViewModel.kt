@@ -77,6 +77,14 @@ data class ProjectionUiState(
     val fileLoggingEnabled: Boolean = false,
     val uploadEnabled: Boolean = false,
     val uploadState: LogUploadState = LogUploadState.IDLE,
+    /**
+     * Non-zero while the session is retrying after a drop.
+     *
+     * The idle screen showed a bare "Disconnected", which reads as "gave up"
+     * when the app is in fact retrying every few seconds — exactly the state the
+     * car sits in after an ignition cycle while it waits for the phone.
+     */
+    val reconnectAttempt: Int = 0,
     /** Shows the floating "simulate ignition cycle" button. Maintainer tool. */
     val simulateIgnitionButton: Boolean = false,
 )
@@ -241,6 +249,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         preferences.logUploadEnabled,
         _uploadState,
         preferences.simulateIgnitionButton,
+        sessionManager.reconnectAttempt,
     ) { values ->
         ProjectionUiState(
             sessionState = values[0] as SessionState,
@@ -273,6 +282,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             uploadEnabled = values[27] as Boolean,
             uploadState = values[28] as LogUploadState,
             simulateIgnitionButton = values[29] as Boolean,
+            reconnectAttempt = values[30] as Int,
         )
     }.stateIn(
         viewModelScope,
@@ -1208,8 +1218,17 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 _carHotspotSwitching,
                 defaultPhoneId,
                 alwaysAskPhone,
-            ) { mode, state, switching, defId, askMode ->
-                computeCarHotspotStatus(mode, state, switching, defId, askMode)
+                preferences.directTransport,
+            ) { values ->
+                @Suppress("UNCHECKED_CAST")
+                computeCarHotspotStatus(
+                    mode = values[0] as String,
+                    state = values[1] as SessionState,
+                    switching = values[2] as Boolean,
+                    defaultId = values[3] as String,
+                    askMode = values[4] as Boolean,
+                    transportIsWpp = values[5] as String == AppPreferences.DIRECT_TRANSPORT_WPP,
+                )
             }.collect { status ->
                 if (_carHotspotStatus.value != status) {
                     OalLog.d(TAG, "carHotspotStatus: ${_carHotspotStatus.value} -> $status")
@@ -1376,8 +1395,17 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         switching: Boolean,
         defaultId: String,
         askMode: Boolean,
+        transportIsWpp: Boolean,
     ): CarHotspotStatus {
         if (mode != AppPreferences.CONNECTION_MODE_CAR_HOTSPOT) {
+            _carHotspotStatusDetail.value = null
+            return CarHotspotStatus.INACTIVE
+        }
+        // Connection Mode and Transport are separate settings, and Connection
+        // Mode still defaults to Car Hotspot — so on a Wireless (WPP) head unit
+        // this banner appeared anyway, duplicating the status already shown
+        // under the logo and describing a discovery flow WPP does not use.
+        if (transportIsWpp) {
             _carHotspotStatusDetail.value = null
             return CarHotspotStatus.INACTIVE
         }
