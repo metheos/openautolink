@@ -150,13 +150,16 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
         // Addresses the companion has answered on, most recent first.
         //
-        // Measured across 29 sessions and four days, including 20h+ parks: the
-        // car's access point stayed on the same subnet and the phone kept the
-        // same DHCP lease every time. So a remembered address is very likely to
-        // be correct, and trying it costs one fast probe versus a ~5s subnet
-        // scan. Held only in memory before, which meant a fresh install or an
-        // app restart had to scan blind — the failure was visible in the log as
-        // "knownAddrs=none".
+        // An optimisation, never a requirement. On the development phone the
+        // address was identical across 29 sessions and four days, including 20h+
+        // parks — but only because that phone is set to use its real MAC for
+        // this network. Android randomises the MAC per network BY DEFAULT, and a
+        // new MAC means a new DHCP lease, so for most users these addresses will
+        // often be stale.
+        //
+        // So: try them first because a hit costs one fast probe against a ~5s
+        // subnet scan, but never depend on them. The scan and the background
+        // retry remain the paths that have to work.
         val KNOWN_PHONE_IPS = stringPreferencesKey("known_phone_ips")
         val LOG_UPLOAD_URL = stringPreferencesKey("log_upload_url")
         val LOG_UPLOAD_TOKEN = stringPreferencesKey("log_upload_token")

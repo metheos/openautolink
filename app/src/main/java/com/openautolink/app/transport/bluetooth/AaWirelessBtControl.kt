@@ -80,6 +80,15 @@ object AaWirelessBtControl {
      */
     private const val COMPANION_PROBE_ATTEMPTS = 6
 
+    /**
+     * Remembered addresses to try before scanning.
+     *
+     * Kept low because MAC randomisation (Android's default) invalidates them
+     * regularly, and a failed probe costs 2500ms that the handshake does not
+     * have to spare.
+     */
+    private const val MAX_PRESCAN_PROBES = 2
+
     /** A handshake older than this has finished, whatever the flag says. */
     private const val HANDSHAKE_MAX_MS = 30_000L
 
@@ -128,10 +137,16 @@ object AaWirelessBtControl {
     /**
      * Recently-seen phone addresses, newest first.
      *
-     * Bluetooth toggling drops WiFi and the phone reappears on a different subnet,
-     * so the address that worked a minute ago may not be the one that works now —
-     * but the old one is often still valid. Keeping a short history and probing
-     * all of them is cheaper and more reliable than a subnet scan.
+     * A phone's address changes for two reasons: it moved between networks (the
+     * car's access point vs its own hotspot vs home WiFi), and — more often than
+     * I first assumed — Android randomises the WiFi MAC per network by default,
+     * which produces a new DHCP lease. The development phone happens to be set to
+     * use its real MAC for the car's network, which is why its address looked
+     * perfectly stable across four days of logs; that is the exception, not the
+     * rule.
+     *
+     * So this is a hint, not a source of truth. Probing one or two is a cheap bet
+     * against a ~5s scan; the scan is what actually has to work.
      */
     private val recentPhoneIps = mutableListOf<String>()
 
@@ -1248,7 +1263,19 @@ object AaWirelessBtControl {
             //
             // Six attempts at 2s spacing covers ~14s, which is past the point
             // where discovery starts succeeding, and stops the moment one works.
-            for (ip in candidates) {
+            // Probe at most two remembered addresses before falling back to the
+            // scan.
+            //
+            // Android randomises the WiFi MAC per network by default, and a new
+            // MAC means a new DHCP lease — so for most users these addresses go
+            // stale regularly. Walking four of them at 2500ms each would spend
+            // 10s failing before a ~5s scan that was always going to find the
+            // phone anyway, and the handshake is time-critical: take too long and
+            // the phone gives up and waits out its own retry timer.
+            //
+            // One or two probes is a cheap bet on the address being unchanged.
+            // More than that is a tax on everyone whose address did change.
+            for (ip in candidates.take(MAX_PRESCAN_PROBES)) {
                 val p = askCompanion(ip, connectTimeoutMs = 2500)
                 if (p != null) {
                     OalLog.i(TAG, "Companion at $ip reports AA proxy on port $p")
