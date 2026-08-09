@@ -198,6 +198,10 @@ object AaWirelessBtControl {
                 btServer?.stop()
                 btServer = null
                 startFromPreferences(ctx)
+                // Deliberately does NOT touch lastReadvertiseAtMs. This republish
+                // is recovery from a dead Bluetooth socket, not a response to a
+                // newly-learned address, and letting it start that cooldown
+                // blocked the discovery-driven re-advertise that follows it.
                 OalLog.i(TAG, "Republished the SDP record after the Bluetooth socket died")
             }.onFailure {
                 OalLog.w(TAG, "Republish after socket death failed: ${it.message}")
@@ -260,7 +264,15 @@ object AaWirelessBtControl {
         // minutes and no re-advertise ever fired.
         if (sessionIsStreaming?.invoke() == true) return
         val now = System.currentTimeMillis()
-        if (now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS) return
+        if (now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS) {
+            // Say so rather than returning silently. This cooldown swallowed the
+            // recovery once already: a republish at 20:53:14 started the clock,
+            // discovery reported the phone 10.7s later, and the re-advertise that
+            // would have fixed an unreachable endpoint was dropped without trace.
+            OalLog.d(TAG, "Skipping re-advertise for $host — only " +
+                    "${(now - lastReadvertiseAtMs) / 1000}s since the last one")
+            return
+        }
         lastReadvertiseAtMs = now
         OalLog.i(TAG, "Discovery found the companion at $host after we advertised an " +
                 "unreachable endpoint — re-advertising so the phone retries now " +
@@ -365,12 +377,22 @@ object AaWirelessBtControl {
         }.distinct()
         notifyCompanionOfShutdown(targets)
         releaseActivePhone()
-        lastKnownPhoneIp = null
-        synchronized(recentPhoneIps) { recentPhoneIps.clear() }
+        // Keep the addresses. Only the PORT is reliably stale.
+        //
+        // Clearing them made every reconnect start blind, and a blind scan is
+        // exactly what fails on this car: at 20:53:14 the reconnect had no
+        // cached address, scanned for 5.3s, found nothing, and advertised the
+        // car's own unreachable address — Error 21 — while the companion sat at
+        // the same address it had used 90 seconds earlier and discovery found it
+        // three times over the next minute.
+        //
+        // The phone's address on the car AP is usually unchanged across an
+        // ignition cycle. If it has moved, a stale entry costs one probe; having
+        // no entry costs a full blind scan and a failed connection.
         lastGoodProxyPortByPhone.clear()
         handshakeInFlight = false
-        OalLog.i(TAG, "Cleared cached phone addresses and proxy ports — " +
-                "the AP is reassigned a new subnet on every ignition cycle")
+        OalLog.i(TAG, "Cleared cached proxy ports, keeping known addresses " +
+                "(${(listOfNotNull(lastKnownPhoneIp) + recentPhoneIps).distinct().joinToString()})")
     }
 
     /**
