@@ -616,6 +616,15 @@ class SessionManager(
     private val WAKE_DEDUPE_MS = 2_000L
     /** Wake gap beyond which the current TCP socket is presumed dead and we force a reconnect. */
     private val LONG_WAKE_FORCE_RECONNECT_MS = 30_000L
+
+    /**
+     * Video newer than this proves the transport survived the gap.
+     *
+     * Generous, because the phone throttles encoding hard on a static screen —
+     * measured windows of 2s at ~75kbps — so a short threshold would read a
+     * healthy-but-idle stream as dead.
+     */
+    private val TRANSPORT_ALIVE_FRAME_WINDOW_MS = 10_000L
     /** Last elapsedRealtime we ran the full wake handler for. Used for dedupe. */
     @Volatile private var lastWakeHandledAtMs = 0L
 
@@ -1813,13 +1822,35 @@ class SessionManager(
             OalMediaBrowserService.updateSessionToken(token)
         }
 
-        // Long gap means TCP socket is almost certainly dead. Force a clean
-        // reconnect rather than wait for the keepalive watchdog.
+        // A long gap USUALLY means the socket died while the head unit slept, so
+        // reconnecting beats waiting for the keepalive watchdog.
+        //
+        // But elapsed time alone cannot tell "the car was powered down" from "the
+        // user looked at another app for a minute" — backgrounding stops our
+        // Activity, not the socket, the companion, or the phone. Keying on the
+        // gap alone tore down a perfectly healthy session:
+        //
+        //     00:45:41.532  vflow frames=42 ~822kbps      <- streaming fine
+        //     00:44:48.901  Going idle: activity_pause    (user left, 53s)
+        //     00:45:42.027  Long wake gap (53s) — forcing clean reconnect
+        //
+        // Recent video frames are direct evidence the transport survived, so ask
+        // the data rather than the clock. If frames stopped, the gap reading was
+        // right and we reconnect as before.
+        val sinceFrame = SystemClock.elapsedRealtime() - lastVideoFrameArrivedMs
+        val transportLooksAlive = lastVideoFrameArrivedMs > 0 &&
+            sinceFrame < TRANSPORT_ALIVE_FRAME_WINDOW_MS
         if (gap > LONG_WAKE_FORCE_RECONNECT_MS &&
             _sessionState.value != SessionState.IDLE) {
-            OalLog.w(TAG, "Long wake gap ($gapStr) — forcing clean reconnect")
-            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                aasdkSession?.forceReconnect("wake gap $gapStr")
+            if (transportLooksAlive) {
+                OalLog.i(TAG, "Long wake gap ($gapStr) but video arrived " +
+                        "${sinceFrame}ms ago — transport is alive, keeping the session")
+            } else {
+                OalLog.w(TAG, "Long wake gap ($gapStr), no video for ${sinceFrame}ms " +
+                        "— forcing clean reconnect")
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    aasdkSession?.forceReconnect("wake gap $gapStr")
+                }
             }
         }
     }

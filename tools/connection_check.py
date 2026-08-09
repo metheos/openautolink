@@ -92,6 +92,9 @@ M_AUDIO_FLOW = "I/aflow:"
 M_HANDSHAKE_TIMEOUT = "handshake timeout (15s, no SSL/version response)"
 # Dialling the home router: the companion is never at the gateway in WPP mode.
 M_GATEWAY_DIAL = "(gateway)"
+# Handshakes completing over and over with no session: our side advertised the
+# right endpoint every time, and never opened its own half of the connection.
+M_HANDSHAKE_OK_LINE = "Handshake complete"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -123,6 +126,7 @@ class Attempt:
     audio_flows: int = 0
     ssl_timeouts: int = 0
     gateway_dials: int = 0
+    handshakes: int = 0
     discovery_found_after: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -204,6 +208,10 @@ def parse_log(path: str) -> list[Attempt]:
             elif M_FULL_SETUP in line or M_READOPT in line:
                 current.full_setups += 1
                 setup_times.append(t)
+            elif M_HANDSHAKE_OK_LINE in line:
+                current.handshakes += 1
+                if current.handshake_ok_at is None:
+                    current.handshake_ok_at = t
             elif M_HANDSHAKE_TIMEOUT in line:
                 current.ssl_timeouts += 1
             elif M_GATEWAY_DIAL in line:
@@ -296,6 +304,14 @@ def check(a: Attempt) -> list[Finding]:
             f"{len(a.uncovered_starts)} of {a.native_starts} native session "
             "start(s) had no full setup — decoder, surface and session reference "
             "may be stale (touch silently dropped while video looks perfect)",
+        ))
+
+    # The peer keeps re-handshaking because our side never completes its half.
+    if a.handshakes >= 10 and not a.connected:
+        out.append(Finding(
+            "FAIL", "handshake-loop",
+            f"{a.handshakes} completed handshakes and no session — the endpoint "
+            "advertised was right; our side never opened its half",
         ))
 
     # Socket opened, phone never spoke: nothing told Android Auto where to attach.

@@ -469,7 +469,18 @@ class AasdkSession(
         // Restart transport.
         when (transportMode) {
             "usb" -> startUsb()
-            else -> startTcp()
+            "wpp" -> startWpp()
+            else -> {
+                // Same reason as the retry path: without the known address this
+                // falls through to the gateway heuristic and dials the house
+                // router. Measured after a background/resume:
+                //     Connecting to 192.168.0.1:5277 (gateway)   — repeatedly
+                // while the phone re-handshook 90 times in 90 seconds waiting for
+                // a car-side connection that was never going to arrive.
+                val known = com.openautolink.app.transport.bluetooth
+                    .AaWirelessBtControl.lastKnownPhoneIp
+                startTcp(manualIp = known)
+            }
         }
     }
 
