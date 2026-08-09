@@ -71,6 +71,17 @@ object AaWirelessBtControl {
      */
     private const val READVERTISE_MIN_INTERVAL_MS = 20_000L
 
+    /**
+     * Probe attempts before falling back to a blind scan.
+     *
+     * The phone is reachable within roughly 8s of associating, but not at 1-3s,
+     * which is when this probe runs. Six attempts at 2s spacing covers that.
+     */
+    private const val COMPANION_PROBE_ATTEMPTS = 6
+
+    /** Spacing between background probe attempts after a failed handshake. */
+    private const val COMPANION_PROBE_INTERVAL_MS = 2_000L
+
     /** Reserved MACs gearhead rejects outright — see pev.smali validation. */
     private const val ZERO_MAC = "00:00:00:00:00:00"
     private const val BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
@@ -251,6 +262,49 @@ object AaWirelessBtControl {
      *   - never while a handshake is in flight
      *   - never more than once every 20s
      */
+    /**
+     * Keeps probing known addresses after a handshake failed to reach any.
+     *
+     * On success it re-advertises, which makes the phone re-handshake within a
+     * second or two rather than waiting out its own ~40s retry timer. Without
+     * this the car sits on an endpoint the access point will not accept until
+     * the phone happens to try again.
+     */
+    private fun startBackgroundCompanionProbe(candidates: List<String>) {
+        if (candidates.isEmpty()) return
+        if (!backgroundProbeRunning.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                for (attempt in 1..COMPANION_PROBE_ATTEMPTS) {
+                    kotlinx.coroutines.delay(COMPANION_PROBE_INTERVAL_MS)
+                    if (sessionIsStreaming?.invoke() == true) return@launch
+                    for (ip in candidates) {
+                        val port = askCompanion(ip, connectTimeoutMs = 2500)
+                        if (port != null) {
+                            OalLog.i(TAG, "Companion at $ip answered on attempt $attempt " +
+                                    "(proxy port $port) — re-advertising so the phone " +
+                                    "retries now instead of waiting out its own timer")
+                            lastKnownPhoneIp = ip
+                            // Bypass the discovery cooldown. This probe only runs
+                            // after a handshake failed, so its success IS the
+                            // event worth acting on — and at 2s spacing it would
+                            // otherwise land inside the 20s window and be dropped.
+                            lastReadvertiseAtMs = 0L
+                            readvertiseForNewCompanionAddress(ip)
+                            return@launch
+                        }
+                    }
+                }
+                OalLog.w(TAG, "Companion still unreachable after $COMPANION_PROBE_ATTEMPTS " +
+                        "attempts at ${candidates.joinToString()}")
+            } finally {
+                backgroundProbeRunning.set(false)
+            }
+        }
+    }
+
+    private val backgroundProbeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun readvertiseForNewCompanionAddress(host: String) {
         if (!lastEndpointWasCarDirect) return
         if (handshakeInFlight) return
@@ -963,10 +1017,34 @@ object AaWirelessBtControl {
             // own hotspot subnet and home WiFi within a single session — observed
             // in one log: 10.2.110.109, then 10.187.47.73, then the car itself on
             // 192.168.0.104. A single cached value is stale as often as not.
-            val candidates = buildList {
+            // Only consider addresses that could still be valid on the network we
+            // are on NOW.
+            //
+            // The telematics AP is reassigned a new subnet across a long park, so
+            // after one the cached addresses are provably dead — they are on a
+            // /24 the car no longer has an interface on. Probing them anyway
+            // burns the whole retry window before the scan that was always going
+            // to be needed. A short cycle keeps the same subnet, so the cached
+            // address survives and the probe hits immediately.
+            //
+            // This is a fact about the current interfaces, not a guess about how
+            // long the car was off.
+            val localPrefixes = allLocalIpv4().mapNotNull {
+                it.substringBeforeLast('.', "").takeIf(String::isNotEmpty)
+            }.toSet()
+            val allKnown = buildList {
                 lastKnownPhoneIp?.let { add(it) }
                 addAll(recentPhoneIps)
             }.distinct()
+            val candidates = allKnown.filter { ip ->
+                ip.substringBeforeLast('.', "") in localPrefixes
+            }
+            val dropped = allKnown - candidates.toSet()
+            if (dropped.isNotEmpty()) {
+                OalLog.i(TAG, "Ignoring ${dropped.joinToString()} — not on any subnet " +
+                        "this car is currently on (${localPrefixes.joinToString()}); " +
+                        "the access point was reassigned while we were off")
+            }
             // companionIp tracks WHICH address answered, from either path. It has
             // to be set everywhere proxyPort is, or the dial below is skipped and
             // the car listens forever while the phone waits for a car socket.
@@ -978,8 +1056,20 @@ object AaWirelessBtControl {
             // are worth waiting on: the telematics bridge is slow and 1200ms is
             // marginal for a real round trip, which is exactly why a companion
             // that discovery reached seconds earlier can look absent here.
+            // Retry over a window rather than probing once, immediately.
+            //
+            // This probe runs 1-3s after the phone dialled back, i.e. seconds
+            // after it re-associated to the car's access point — and the bridge
+            // does not pass traffic to a just-associated client that quickly.
+            // Measured: the handshake probe to 10.2.110.109 failed at 21:03:01
+            // while discovery reached the SAME address at 21:03:06 and every 16s
+            // before and after, all evening. The address was never wrong; we were
+            // asking too early.
+            //
+            // Six attempts at 2s spacing covers ~14s, which is past the point
+            // where discovery starts succeeding, and stops the moment one works.
             for (ip in candidates) {
-                val p = askCompanion(ip, connectTimeoutMs = 4000)
+                val p = askCompanion(ip, connectTimeoutMs = 2500)
                 if (p != null) {
                     OalLog.i(TAG, "Companion at $ip reports AA proxy on port $p")
                     proxyPort = p
@@ -1050,6 +1140,14 @@ object AaWirelessBtControl {
                     // Flagged so discovery can trigger a re-advertise the moment
                     // it learns where the companion actually is.
                     lastEndpointWasCarDirect = true
+                    // Keep probing in the background. The handshake itself must
+                    // stay fast — it completes in 0-9s in every successful run —
+                    // so it cannot sit and retry. But the reason it failed is
+                    // usually that it asked too early: this probe runs 1-3s after
+                    // the phone associated, and the AP bridge is not carrying
+                    // traffic for it yet. Measured, the same address answers
+                    // discovery reliably about 8s later.
+                    startBackgroundCompanionProbe(candidates)
                     // No companion: advertise our own address, and pick the one on
                     // the SAME network as the phone. The head unit has two radios
                     // on different networks (telematics AP vs its own wlan0), so
