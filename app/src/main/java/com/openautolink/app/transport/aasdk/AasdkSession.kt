@@ -216,6 +216,22 @@ class AasdkSession(
             OalLog.i(TAG, "WPP restart with a known companion at $known — dialling " +
                     "rather than waiting for a handshake that is not coming")
             startTcp(manualIp = known)
+            // Dialling the companion is only half the connection.
+            //
+            // The TCP link to the companion comes up fine, but nothing has told
+            // Android Auto which loopback port to attach to — that instruction is
+            // carried by the Bluetooth handshake, and a reconnect does not run
+            // one. Worse, the companion opens a NEW proxy port whenever its
+            // bridge closes, so any port AA still remembers is already wrong:
+            //
+            //     00:36:25.538  Proxy listening on localhost:43053   (was 36943)
+            //     00:36:41.924  Connected to companion               (car side, fine)
+            //     00:36:33-49   AA didn't connect to proxy — retry #1 #2 #3
+            //     00:36:56.938  Session abort: handshake timeout
+            //
+            // Both halves waiting, neither wrong on its own. Re-advertising makes
+            // the phone re-dial, and that handshake hands AA the current port.
+            com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
             return
         }
         // NOTE: the ByeBye for this path lives in startTcp(), not here — Save &
@@ -622,7 +638,18 @@ class AasdkSession(
                     OalLog.i(TAG, "Restarting transport connector")
                     when (transportMode) {
                         "usb" -> startUsb()
-                        else -> startTcp()
+                        else -> {
+                            // Keep the companion's address on a retry.
+                            //
+                            // Without it startTcp() falls through to the gateway
+                            // heuristic, which on a head unit sitting on home
+                            // WiFi means repeatedly dialling the house router:
+                            //     Connecting to 192.168.0.1:5277 (gateway)  x10
+                            // The companion is never at the gateway in WPP mode.
+                            val known = com.openautolink.app.transport.bluetooth
+                                .AaWirelessBtControl.lastKnownPhoneIp
+                            startTcp(manualIp = known)
+                        }
                     }
                 }
             }

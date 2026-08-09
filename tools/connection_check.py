@@ -86,6 +86,12 @@ M_READOPT = "Re-adopting the session after a transport restart"
 # stats showing no audio at all.
 M_AUDIO_START = "Audio start (type="
 M_AUDIO_FLOW = "I/aflow:"
+# The car opened a socket to the companion and the phone never answered. Means
+# Android Auto was never told which loopback port to attach to — the Bluetooth
+# handshake carries that, and a reconnect does not run one.
+M_HANDSHAKE_TIMEOUT = "handshake timeout (15s, no SSL/version response)"
+# Dialling the home router: the companion is never at the gateway in WPP mode.
+M_GATEWAY_DIAL = "(gateway)"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -115,6 +121,8 @@ class Attempt:
     uncovered_starts: list = field(default_factory=list)
     audio_starts: int = 0
     audio_flows: int = 0
+    ssl_timeouts: int = 0
+    gateway_dials: int = 0
     discovery_found_after: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -196,6 +204,10 @@ def parse_log(path: str) -> list[Attempt]:
             elif M_FULL_SETUP in line or M_READOPT in line:
                 current.full_setups += 1
                 setup_times.append(t)
+            elif M_HANDSHAKE_TIMEOUT in line:
+                current.ssl_timeouts += 1
+            elif M_GATEWAY_DIAL in line:
+                current.gateway_dials += 1
             elif M_AUDIO_START in line:
                 current.audio_starts += 1
             elif M_AUDIO_FLOW in line:
@@ -284,6 +296,21 @@ def check(a: Attempt) -> list[Finding]:
             f"{len(a.uncovered_starts)} of {a.native_starts} native session "
             "start(s) had no full setup — decoder, surface and session reference "
             "may be stale (touch silently dropped while video looks perfect)",
+        ))
+
+    # Socket opened, phone never spoke: nothing told Android Auto where to attach.
+    if a.ssl_timeouts > 0:
+        out.append(Finding(
+            "FAIL", "connected-but-no-handshake",
+            f"{a.ssl_timeouts} session(s) timed out waiting for the phone — the "
+            "TCP link came up but Android Auto was never pointed at the proxy",
+        ))
+
+    if a.gateway_dials >= 3:
+        out.append(Finding(
+            "WARN", "gateway-dialling",
+            f"{a.gateway_dials} attempts to the network gateway — in WPP mode the "
+            "companion is never the gateway, this is usually the house router",
         ))
 
     # The phone started sending audio and none of it reached the player.
