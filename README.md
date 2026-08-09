@@ -11,45 +11,38 @@
 
 > # Android Auto 17.4 broke wireless — OpenAutoLink has it working again
 >
-> **Wireless projection is restored on Android Auto 17.4, with sustained video.** It needs a few setup changes, and expect some rough edges while it settles — see below.
+> **Wireless projection is restored, with sustained video and touch.** It needs a few setup changes, and recovery after a disconnect is still being smoothed out.
 >
-> Google disabled the entry point every wireless implementation depended on. In 17.4 the `WirelessStartupReceiver` ships `android:enabled="false"`, and the `WirelessStartupActivity` it forwards to is `android:exported="false"` — so the broadcast is silently swallowed (`result=0`, no log, no error) and the activity cannot be launched by another app. Confirmed on-device: `cmd package query-receivers` reports **"No receivers found"**, and even `adb pm enable` is refused with a `SecurityException`.
+> 17.4 ships `WirelessStartupReceiver` with `android:enabled="false"`, and the activity it forwards to is not exported. The broadcast every third-party wireless implementation relied on is now silently swallowed — `result=0`, no log, no error. Even `adb pm enable` is refused.
 >
-> That broke **every** third-party wireless implementation, not just OpenAutoLink.
->
-> ### How it works now
->
-> The disabled receiver was never the only way in. Android Auto still fully supports the path real factory head units use — a Bluetooth service advertisement followed by Google's own WiFi Projection Protocol (WPP) — and that path is completely untouched in 17.4. OpenAutoLink now speaks it.
+> That receiver was never the only way in. Factory head units start projection over Bluetooth using Google's own WiFi Projection Protocol, and 17.4 leaves that path untouched. OpenAutoLink now speaks it.
 >
 > ### What you need to change
 >
-> **1. Bluetooth pairing to the car is now mandatory.** It is not optional or a convenience any more: the Bluetooth handshake is the only remaining way to tell Android Auto to start and where to connect. No Bluetooth, no wireless.
+> **Update both apps**, then:
 >
-> **2. Forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service, so it will never begin the handshake. Do this after updating both apps.
+> 1. **Pair the car over Bluetooth.** The Bluetooth handshake is now the only way to tell Android Auto to start and where to connect. No Bluetooth, no wireless.
+> 2. **Forget the car and pair again** after updating. Your phone caches which services a paired device offers, and will not see the new one until it re-reads that list.
+> 3. **Settings → Transport → Wireless (WPP).** The older Wi-Fi mode uses the startup path Google disabled.
+> 4. **Leave Phone Calls enabled** in the car's Bluetooth settings (Media Audio can stay off). The hands-free profile holds the link up; without it the connection drops before the handshake finishes.
+> 5. **Clear the companion app's car Wi-Fi setup.** Android Auto joins the car's network itself now — having the companion do it too means both fight over the same radio.
+> 6. *Recommended:* set the car's Wi-Fi network to **Use device MAC** (Wi-Fi settings → the car's network → Privacy). Android randomises it by default, which changes your phone's address on the car's network and makes the car search for it every time. Optional, but noticeably quicker.
 >
-> **3. Select Wireless (WPP) as the transport** — Settings → Transport → **Wireless (WPP)**. The older Wi-Fi mode uses the startup path Google disabled and will not work on 17.4.
->
-> **4. Turn off randomised MAC for the car's Wi-Fi network.** On your phone, open Wi-Fi settings, tap the car's network, and set **Privacy** (or **MAC address type**) to **Use device MAC**. Android randomises it by default, which hands the phone a different IP address on the car's network each time and makes the car search for it on every connection. Using the real MAC keeps the address stable and the connection noticeably quicker. Not required — it works either way — but recommended.
->
-> **5. Do not use the companion app's car Wi-Fi connection feature.** Android Auto now joins the car's network itself as part of the handshake, and having the companion app do it as well means both are fighting over the same radio — the connection drops repeatedly. The option is hidden for new installs; if you configured it previously it is still shown so you can remove your entries. Clear it.
->
-> The companion app is still required in this mode. It holds the network path open on the phone side.
->
-> A walkthrough video covering the new setup is coming shortly.
+> The companion app is required in this mode — it holds the network path open on the phone side. A walkthrough video is coming shortly.
 >
 > ### Expect some bumps
 >
-> The core path is working and streaming, but recovery around disconnects is still being smoothed out — dropping Wi-Fi, toggling Bluetooth or updating mid-drive may need a retry or a Bluetooth reconnect. Reports and logs are welcome. USB mode remains the reliable fallback: Settings → Transport → USB.
+> Connecting is reliable. Recovering from a disconnect is better than it was but not finished — an ignition cycle may show a brief error before it connects, and dropping Wi-Fi or toggling Bluetooth may need a retry. Logs are welcome: [open an issue](https://github.com/mossyhub/openautolink/issues).
 >
-> Tracking: [#66](https://github.com/mossyhub/openautolink/issues/66)
+> USB remains the reliable fallback: Settings → Transport → USB. *(On GM head units USB re-prompts for permission on every connect — a separate, known GM AAOS bug.)*
 >
-> *(On GM head units USB re-prompts for permission on every connect — a separate, known GM AAOS bug.)*
+> Background: [#66](https://github.com/mossyhub/openautolink/issues/66)
 
 [![CI](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml/badge.svg)](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml)
 [![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg)](https://github.com/mossyhub/openautolink/releases/latest)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?logo=buymeacoffee&logoColor=white)](https://buymeacoffee.com/mossyhub)
 
-OpenAutoLink runs the full Android Auto protocol stack natively on an AAOS head unit using the [aasdk](https://github.com/opencardev/aasdk) C++ library via JNI. No SBC, no USB adapter, no extra hardware — the car and phone talk directly over WiFi.
+OpenAutoLink runs the full Android Auto protocol stack natively on an AAOS head unit using the [aasdk](https://github.com/opencardev/aasdk) C++ library via JNI. No SBC, no USB adapter, no extra hardware — the car and phone talk directly over WiFi, set up over Bluetooth or by cable.
 
 
 <p align="center">
@@ -83,9 +76,7 @@ See the full installation and setup walkthrough video on YouTube:
 - [What You Need](#what-you-need)
 - [Quick Start](#quick-start)
 - [Video and Display](#video-and-display)
-- [Repository Layout](#repository-layout)
 - [Documentation](#documentation)
-- [Status](#status)
 - [Known Issues](#known-issues)
 - [Compatibility](#compatibility)
 - [Acknowledgments](#acknowledgments)
@@ -93,7 +84,7 @@ See the full installation and setup walkthrough video on YouTube:
 
 ## Why This Exists
 
-Starting with the 2024 model year, GM dropped Apple CarPlay and Android Auto from its electric vehicles in favor of Google built-in infotainment. OpenAutoLink brings Android Auto back — the car app runs the AA protocol directly, connecting to the phone over WiFi with no intermediate hardware.
+Starting with the 2024 model year, GM dropped Apple CarPlay and Android Auto from its electric vehicles in favor of Google built-in infotainment. OpenAutoLink brings Android Auto back — the car app runs the AA protocol directly, connecting to the phone over WiFi or USB with no intermediate hardware.
 
 ## How It Works
 
@@ -101,12 +92,15 @@ OpenAutoLink embeds the [aasdk](https://github.com/opencardev/aasdk) v1.6 C++ li
 
 ### Connection Modes
 
-OpenAutoLink supports two connection modes. Pick one in Settings → Connection on **both** apps (they must match).
+Pick the transport in Settings on the car app.
 
-**Car Hotspot mode (default, recommended):**
+**Wireless (WPP) — required on Android Auto 17.4 and newer:**
+The car publishes a Bluetooth service advertisement; the phone dials back and the two exchange the network details over Bluetooth, the same way factory head units do. The companion app holds the network path open on the phone side. This is the only wireless mode that works on 17.4+ — see the [notice above](#aa174).
+
+**Car Hotspot mode (Android Auto 17.3 and older):**
 The car's built-in WiFi hotspot is the network. One or more phones join it as clients. The companion app on each phone advertises itself via mDNS and a tiny identity probe; the car app discovers all connected phones, picks the preferred one (or shows a picker), and dials it directly over TCP.
 
-- ✅ **Multi-phone**: two drivers' phones can be connected to the car at once. Switch active phone with one tap.
+- ✅ **Multi-phone**: two drivers' phones can be connected to the car at once. Switch active phone with one tap. *(On 17.4+ you switch phones in the car's own Bluetooth settings instead — the privileged APIs an app would need are closed.)*
 - ✅ **Zero hotspot toggling**: phones treat the car's WiFi like home WiFi — saved once, auto-rejoins forever.
 - ✅ **Fast cold-start**: car wakes → AP comes up immediately → phones auto-rejoin → projection resumes.
 - Requires a vehicle with a built-in WiFi hotspot (most modern GM EVs include one).
@@ -131,14 +125,15 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 
 ## Features
 
-- **Car Hotspot mode (default)** — phones join the car's built-in WiFi like home WiFi. Multi-phone support: switch the active phone with one tap, no hotspot toggling
+- **Wireless (WPP)** — Bluetooth handshake plus Google's WiFi Projection Protocol, the path factory head units use. Required on Android Auto 17.4+
+- **Car Hotspot mode** — phones join the car's built-in WiFi like home WiFi. Multi-phone support, no hotspot toggling (Android Auto 17.3 and older)
 - **Phone Hotspot mode** — phone is the AP, car is the client. Simpler single-phone fallback for cars without a built-in hotspot
 - **USB cable support** — AOA v2 direct connection for wired setups
 - **aasdk v1.6 native protocol** — battle-tested C++ AA library via JNI, not a reimplementation
 - **EV battery data in Android Auto** — battery %, range, fuel type, charge port forwarded from VHAL into AA. Google Maps shows battery level alongside navigation
 - **H.264, H.265, and VP9** video with auto-negotiation. Up to 4K with AA Developer Mode
 - **PCM and AAC-LC audio** — PCM for compatibility, AAC-LC for ~10× WiFi bandwidth reduction
-- **Pixel-perfect display adaptation** — (Still a work in progress) auto-computed AA scaling for wide and ultra-wide AAOS screens to the full screen isused without stretching UI.
+- **Display adaptation** *(work in progress)* — auto-computed AA scaling so wide and ultra-wide AAOS screens use the full panel without stretching the UI
 - **Per-purpose audio volume** — separate sliders for media, navigation, and assistant
 - **Custom key remapping** — map any physical button to any AA action
 - **Microphone enhancement** — NoiseSuppressor, AGC, AcousticEchoCanceler
@@ -147,7 +142,7 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 - **Steering wheel controls** — media, voice, and DPAD forwarded to AA
 - **Configurable display** — fullscreen/windowed, safe area insets, DPI, margins, scaling mode
 - **Stats overlay** — codec, resolution, FPS, bitrate, WiFi band, decoder info
-- **Automatic reconnect** — car sleep → wake → projection resumes with no user interaction
+- **Automatic reconnect** — car sleep → wake → projection resumes on its own (see the 17.4 notice for current rough edges)
 - **Built-in diagnostics** — USB device scanner, network probe, remote log server (TCP 6555), VHAL browser
 
 ## EV Range Estimates
@@ -185,17 +180,18 @@ Install the **OpenAutoLink Companion** app on your phone. It handles:
 - Starting the TCP server for the head unit to discover and connect to automatically.
 - Android Auto auto-start once TCP connection from the car is made.
 
-You can either download a prebuilt APK from [GitHub Actions](https://github.com/mossyhub/openautolink/actions/workflows/build-companion.yml) (click the latest run → Artifacts → `companion-debug-apk`) or build it yourself from the `companion/` directory.
+Download it from [Releases](https://github.com/mossyhub/openautolink/releases/latest) — grab `openautolink-companion-vX.Y.Z.apk` — or build it yourself from the `companion/` directory.
 
 ## Quick Start
 
 ### 1. Install the Companion App (Phone)
 
-**Option A — Download prebuilt APK:**
-1. Go to [Build Companion APK](https://github.com/mossyhub/openautolink/actions/workflows/build-companion.yml) on GitHub Actions.
-2. Click the latest successful run.
-3. Download the `companion-debug-apk` artifact.
-4. Unzip and install the APK on your phone (enable "Install from unknown sources" if prompted).
+**Option A — Download the release APK:**
+1. Open [Releases](https://github.com/mossyhub/openautolink/releases/latest).
+2. Download `openautolink-companion-vX.Y.Z.apk`.
+3. Install it on your phone (enable "Install from unknown sources" if prompted).
+
+Release APKs are signed with the project's key, so updates install over each other. A debug build from source uses a different signature and needs the release build uninstalled first.
 
 **Option B — Build from source:**
 ```powershell
@@ -211,7 +207,7 @@ cd companion
 adb install -r build/outputs/apk/debug/*.apk
 ```
 
-The companion APK is signed with the Android debug key, which is fine for sideloading.
+Debug builds are signed with the Android debug key, which is fine for sideloading but will not install over a release build.
 
 ### 2. Build and Publish the Car App (AAOS)
 
@@ -240,7 +236,7 @@ Because this is an AAOS app, installation on the car goes through your own Googl
 
 ### 3. Connect
 
-OpenAutoLink defaults to **Car Hotspot mode** on both apps.
+**On Android Auto 17.4 or newer, use Wireless (WPP)** — Settings → Transport → Wireless (WPP) on the car app. The steps below cover it; the [notice at the top](#aa174) is the short version.
 
 #### One-Time Setup
 
@@ -260,22 +256,26 @@ OpenAutoLink defaults to **Car Hotspot mode** on both apps.
 
    > **On 17.4+, leave Phone Calls enabled.** The hands-free profile is what keeps the Bluetooth link up between the phone and the car. Turning it off lets the link drop, and the handshake that starts projection never runs. On older Android Auto versions you could disable both.
 
-5. **Open OpenAutoLink on the car.** The phone chooser appears with every phone the car can see. Tap your phone to connect — that phone is saved as your default for future drives.
+5. **On 17.4+: forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service and the handshake never starts. Do this *after* updating both apps.
+
+6. **On 17.4+: set the car's WiFi network to use your real MAC.** Phone WiFi settings → the car's network → **Privacy** (or **MAC address type**) → **Use device MAC**. Android randomises it per network by default, which gives the phone a new address on the car's network each time and makes the car search for it on every connection. Optional, but noticeably quicker.
+
+7. **Open OpenAutoLink on the car.** On 17.4+ set Settings → Transport → **Wireless (WPP)**; projection starts once the Bluetooth handshake completes. On older versions the phone chooser appears — tap your phone, and it is saved as your default.
 
 #### Day-to-Day
 
 Once setup is complete, the daily experience is fully automatic:
 
 1. Get in the car and start it.
-2. Bluetooth pairs automatically → companion service starts.
-3. The app connects your phone to the car's WiFi (even if you're still on home WiFi).
-4. The car discovers the phone → Android Auto projection appears.
+2. Bluetooth connects → the companion service starts.
+3. Android Auto joins the car's WiFi as part of the Bluetooth handshake (17.4+), or the companion app does it (older versions).
+4. The car finds the phone → projection appears.
 
-No interaction needed. If your phone was already on the car's WiFi (e.g. you weren't near your home network), it connects even faster since no WiFi switch is needed.
+No interaction needed.
 
-**Multiple drivers?** Both phones can be on the car's WiFi at the same time. The car connects to your default phone automatically. Tap the floating phone icon on the projection screen to switch — the chooser shows every visible phone with online/offline status.
+**Multiple drivers?** On 17.4+ the car projects to whichever phone it is currently connected to over Bluetooth, so switching phones means switching the connection in the **car's own Bluetooth settings** — the APIs an app would need to do that are privileged and closed to us. The phone list on the projection screen still shows every phone it can see, and tapping one retries the connection to it.
 
-**Changing the default phone.** Tap a different phone in the chooser to switch for this drive, or go to Settings → Connection → Known Phones → "Set Default" to change it permanently.
+On Android Auto 17.3 and older, both phones can be on the car's WiFi at once and the floating phone icon switches between them directly. Settings → Connection → Known Phones → "Set Default" changes the preferred phone permanently.
 
 > **Tip:** The companion app has a built-in **Setup Guide** (tap the info button next to "Car WiFi") that walks you through these steps.
 
@@ -306,9 +306,9 @@ If your car doesn't have a built-in WiFi hotspot:
 - **Uninstall or disable music apps on the head unit.** If Spotify, YouTube Music, or another music app is installed on both the AAOS head unit and the phone, media controls (steering wheel buttons, play/pause, skip) can get confused — the car may try to control the AAOS app and the AA app simultaneously. Uninstall or disable the AAOS versions (Settings → Apps) so media controls go exclusively to the phone's AA session.
 - **Disable the car's "Hey Google" detection.** The AAOS built-in Google Assistant and Android Auto's assistant will both try to respond to "Hey Google," causing conflicts. Turn off "Hey Google" detection in the car's Settings → Google → Google Assistant. The steering wheel voice button will still trigger the car's built-in assistant (this can't be changed), but "Hey Google" will go exclusively to the AA session on the phone.
 
-### Video and Display
+## Video and Display
 
-## Resolution Tiers
+### Resolution Tiers
 
 | Resolution | Codec | Notes |
 |-----------|-------|-------|
@@ -320,9 +320,11 @@ If your car doesn't have a built-in WiFi hotspot:
 
 By default, the app uses auto-negotiation — the phone picks the best codec and resolution it supports.
 
-## Display Adaptation
+### Display Adaptation
 
-OpenAutoLink tries to auto-compute a good  scale for AA UI to use for your screen, but you will want to play with and adjust it for your cars screen. This can be done using the DPI setting in the app. this controls the scale of the AA UI. There is no way to directly tell AA what layout to use, but you will notice by making changes to the DPI there are certain scales at which AA will change the layout...so choose a scale that is visually good on your screen, but also makes AA choose the wide side-by-side layout vs portrait layout (maps is a single wide banner at the top).
+OpenAutoLink auto-computes a scale for the Android Auto UI, but you will want to tune it for your car's screen using the **DPI** setting.
+
+There is no way to tell Android Auto which layout to use directly. What you can do is change the DPI — at certain scales AA switches layout. Aim for a scale that both looks right on your panel and gets AA into the wide side-by-side layout rather than the portrait one (in the wide layout, Maps is a single banner across the top).
 
 > **Blazer EV tip:** Pull the top safe area inset down ~50px.
 
@@ -344,7 +346,8 @@ The original architecture used an SBC (single-board computer) running a C++ brid
 
 ## Known Issues
 
-- **Android Auto 17.4 broke wireless startup — fixed, with setup changes** — Google shipped `WirelessStartupReceiver` disabled and `WirelessStartupActivity` unexported, so the broadcast-based startup every wireless implementation used no longer works. Affects all third-party implementations. OpenAutoLink now uses the Bluetooth + WiFi Projection Protocol path instead (the one factory head units use, untouched in 17.4). Requires Bluetooth pairing to the car, re-pairing after the update, and the Wireless (WPP) transport — see the [notice at the top](#aa174). Setting the car's Wi-Fi network to use your phone's real MAC rather than a randomised one keeps its address stable and makes connecting quicker. Recovery around disconnects is still being smoothed out; USB remains the reliable fallback.
+- **Android Auto 17.4+ needs the new setup** — wireless works, but only over Wireless (WPP) with Bluetooth paired and the car re-paired after updating. See the [notice at the top](#aa174).
+- **Recovery after a disconnect is imperfect** — an ignition cycle may show a brief error before it connects, and dropping WiFi or toggling Bluetooth may need a retry. Being worked on; USB is the reliable fallback.
 - **H.265 video may appear green-tinted** on first connection for 30–45 seconds. May be Qualcomm-specific — not yet confirmed on other SoCs
 
 If you encounter other problems, please [open an issue](https://github.com/mossyhub/openautolink/issues).
@@ -369,7 +372,7 @@ The companion app runs on any Android phone over WiFi. The car app and the phone
 
 - **[opencardev/openauto](https://github.com/opencardev/openauto)** — head unit emulator architecture.
 - **[nickel110/WirelessAndroidAutoDongle](https://github.com/nickel110/WirelessAndroidAutoDongle)** — BT pairing and WiFi credential exchange reference.
-- **[andrerinas/headunit-revived](https://github.com/nickel110/headunit-revived)** — AA receiver app reference for protocol implementation and feature ideas.
+- **[headunit-revived](https://github.com/andrerinas/headunit-revived)** — AA receiver app reference for protocol implementation and feature ideas.
 
 ### On AI Assistance
 
