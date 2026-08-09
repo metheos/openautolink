@@ -200,7 +200,17 @@ class SessionManager(
      * go through the full setup and therefore built a decoder.
      */
     fun ensureVideoDecoder() {
-        if (_videoDecoder != null) return
+        if (_videoDecoder != null) {
+            // Say the decoder is fine AND whether it can draw. A decoder with no
+            // surface produced a black screen behind a perfectly healthy stream,
+            // and nothing in the log said so.
+            val hasSurface = lastKnownSurface != null
+            if (!hasSurface) {
+                OalLog.w(TAG, "CONNECT SUMMARY: decoder exists but has NO SURFACE — " +
+                        "video will decode to nothing (black screen)")
+            }
+            return
+        }
         OalLog.i(TAG, "No video decoder for this session — creating one")
         _videoDecoder = MediaCodecDecoder(lastCodecPreference, lastScalingMode)
         lastKnownSurface?.let { (surface, w, h) ->
@@ -1782,6 +1792,55 @@ class SessionManager(
             kotlinx.coroutines.delay(durationMs)
             OalLog.i(TAG, "DEBUG: simulating car wake (after ${formatGap(durationMs)})")
             markWake("debug_wake_sim")
+        }
+    }
+
+    /**
+     * Reproduces a full ignition cycle without turning the car off.
+     *
+     * The existing sleep simulation only stops the session, which exercises none
+     * of the parts that actually break. A real cycle also tears down Bluetooth,
+     * loses the access point, and forces the advertiser to republish — and every
+     * failure in this area has been in that sequence, not in the session stop.
+     *
+     * So this runs the same steps ignition-off does, in the same order:
+     *   1. graceful shutdown (ByeBye to the phone)
+     *   2. reset for the next ignition: tell the companion, clear stale ports
+     *   3. stop the Bluetooth advertiser, as losing the radio would
+     *   4. wait, so the phone's state times out the way it does in a real park
+     *   5. bring the advertiser back, exactly as the ignition-ON path does
+     *
+     * Doing this in the driveway turns a one-per-drive experiment into a
+     * repeatable thirty-second test.
+     */
+    fun debugSimulateIgnitionCycle(offDurationMs: Long = 45_000) {
+        OalLog.i(TAG, "DEBUG: simulating an ignition cycle — off for ${formatGap(offDurationMs)}")
+        scope.launch {
+            runCatching {
+                OalLog.i(TAG, "DEBUG ignition sim: step 1 — graceful shutdown")
+                if (sessionState.value != SessionState.IDLE) {
+                    shutdownGracefully("debug_ignition_sim")
+                    kotlinx.coroutines.delay(BYEBYE_TIMEOUT_MS.toLong() + 200)
+                }
+
+                OalLog.i(TAG, "DEBUG ignition sim: step 2 — reset for next ignition")
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                    .resetForNextIgnition()
+
+                OalLog.i(TAG, "DEBUG ignition sim: step 3 — stopping the Bluetooth advertiser")
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.stopAdvertising()
+
+                OalLog.i(TAG, "DEBUG ignition sim: step 4 — off for ${formatGap(offDurationMs)}")
+                markGoingIdle("debug_ignition_sim")
+                kotlinx.coroutines.delay(offDurationMs)
+
+                OalLog.i(TAG, "DEBUG ignition sim: step 5 — ignition back on")
+                markWake("debug_ignition_sim")
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.ensureAdvertising()
+                OalLog.i(TAG, "DEBUG ignition sim: complete — watching for reconnect")
+            }.onFailure {
+                OalLog.e(TAG, "DEBUG ignition sim failed: ${it.message}")
+            }
         }
     }
 

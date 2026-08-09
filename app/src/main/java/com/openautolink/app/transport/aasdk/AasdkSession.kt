@@ -517,6 +517,10 @@ class AasdkSession(
 
     override fun onSessionStarted() {
         OalLog.i(TAG, "AA session started (native)")
+        // The outcome line. Everything before this is intent; this says the
+        // session actually came up, which is what a log reader needs to see.
+        OalLog.i(TAG, "CONNECT SUMMARY: result=session started — " +
+                "video should follow within a few seconds")
         // Cancel any pending auto-reconnect timer: this session is now healthy,
         // so a leftover retry from an earlier teardown must NOT fire and restart
         // the transport underneath us (the deep-sleep reconnect-storm root cause).

@@ -56,6 +56,7 @@ data class SettingsUiState(
     val logPersistEnabled: Boolean = AppPreferences.DEFAULT_LOG_PERSIST_ENABLED,
     // Maintainer log upload (off by default)
     val logUploadEnabled: Boolean = AppPreferences.DEFAULT_LOG_UPLOAD_ENABLED,
+    val simulateIgnitionButton: Boolean = AppPreferences.DEFAULT_SIMULATE_IGNITION_BUTTON,
     val logUploadUrl: String = AppPreferences.DEFAULT_LOG_UPLOAD_URL,
     val logUploadToken: String = AppPreferences.DEFAULT_LOG_UPLOAD_TOKEN,
     val logUploadDeviceLabel: String = AppPreferences.DEFAULT_LOG_UPLOAD_DEVICE_LABEL,
@@ -139,6 +140,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         preferences.logUploadDeviceLabel,
         preferences.logPersistEnabled,
         preferences.alwaysInPark,
+        preferences.simulateIgnitionButton,
     ) { values: Array<Any> ->
         SettingsUiState(
             videoAutoNegotiate = values[0] as Boolean,
@@ -188,6 +190,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             logUploadDeviceLabel = values[44] as String,
             logPersistEnabled = values[45] as Boolean,
             alwaysInPark = values[46] as Boolean,
+            simulateIgnitionButton = values[47] as Boolean,
         )
     }.stateIn(
         viewModelScope,
@@ -471,6 +474,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateLogUploadEnabled(enabled: Boolean) {
         viewModelScope.launch { preferences.setLogUploadEnabled(enabled) }
+    }
+
+    fun updateSimulateIgnitionButton(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSimulateIgnitionButton(enabled) }
     }
 
     fun updateLogUploadUrl(url: String) {

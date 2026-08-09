@@ -163,6 +163,23 @@ object AaWirelessBtControl {
      * changes — so a socket killed during the off period stays dead and the car
      * never advertises again.
      */
+    /**
+     * Tear down the SDP record, as losing the Bluetooth radio would.
+     *
+     * Used by the ignition-cycle simulation so the advertiser genuinely has to
+     * come back, rather than the test quietly skipping the step where every
+     * real-world failure has happened.
+     */
+    fun stopAdvertising() {
+        scope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching {
+                btServer?.stop()
+                btServer = null
+                OalLog.i(TAG, "Advertiser stopped on request")
+            }.onFailure { OalLog.w(TAG, "stopAdvertising failed: ${it.message}") }
+        }
+    }
+
     fun ensureAdvertising() {
         val ctx = appContext ?: return
         if (btServer?.isRunning == true) return
@@ -1123,6 +1140,9 @@ object AaWirelessBtControl {
                     // phone so the UI can mark it in the discovery list.
                     activePhoneCompanionIp = companionIp
                     lastEndpointWasCarDirect = false
+                    OalLog.i(TAG, "CONNECT SUMMARY: endpoint=loopback proxy " +
+                            "127.0.0.1:$proxyPort via companion at $companionIp " +
+                            "phone=$phoneBtAddress — this is the working path")
                     val dialTarget = companionIp
                     if (dialTarget.isNullOrBlank()) {
                         OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
@@ -1141,6 +1161,9 @@ object AaWirelessBtControl {
                 // the next handshake resolve the new address.
                 lastGoodProxyPortByPhone[phoneBtAddress] != null -> {
                     lastEndpointWasCarDirect = false
+                    OalLog.i(TAG, "CONNECT SUMMARY: endpoint=loopback proxy (remembered " +
+                            "port) phone=$phoneBtAddress — companion did not answer this " +
+                            "time but its port is stable across reconnects")
                     val port = lastGoodProxyPortByPhone.getValue(phoneBtAddress)
                     OalLog.i(TAG, "Companion for $phoneBtAddress not found this time, " +
                             "but it was on port $port — keeping the loopback endpoint " +
@@ -1148,6 +1171,15 @@ object AaWirelessBtControl {
                     AaWirelessBtServer.Endpoint.PhoneLoopback(port)
                 }
                 else -> {
+                    // One line that says what this attempt decided and why, so a
+                    // failure is legible without reconstructing it from three
+                    // hundred scattered lines. Both of the last two bugs hid in
+                    // the gap between logging intent and logging outcome.
+                    OalLog.w(TAG, "CONNECT SUMMARY: endpoint=car-direct (UNREACHABLE " +
+                            "through the car's AP) phone=$phoneBtAddress " +
+                            "knownAddrs=${allKnown.joinToString().ifEmpty { "none" }} " +
+                            "usable=${candidates.joinToString().ifEmpty { "none" }} " +
+                            "— projection will not start until the companion is found")
                     // This is the endpoint the car's AP will not accept inbound.
                     // Flagged so discovery can trigger a re-advertise the moment
                     // it learns where the companion actually is.

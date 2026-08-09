@@ -2623,6 +2623,28 @@ private fun DiagnosticsSettingsTab(
             )
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Simulate Ignition Cycle (maintainer)", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Off by default. When on, a floating power button appears on the " +
+                        "projection screen. Tapping it disconnects, drops the Bluetooth " +
+                        "advertisement, waits, then reconnects — the same sequence as " +
+                        "switching the car off and on, without actually doing it. Useful " +
+                        "for testing reconnection in the driveway.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = uiState.simulateIgnitionButton,
+                onCheckedChange = { viewModel.updateSimulateIgnitionButton(it) },
+                modifier = Modifier.testTag("simulateIgnitionToggle"),
+            )
+        }
+
         if (uiState.logUploadEnabled) {
             LocalEchoTextField(
                 value = uiState.logUploadUrl,

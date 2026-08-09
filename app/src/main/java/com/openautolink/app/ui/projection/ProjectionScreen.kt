@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
@@ -635,6 +636,25 @@ fun ProjectionScreen(
                         containerColor = uploadContainer,
                         tint = uploadTint,
                         modifier = Modifier.testTag("uploadLogsButton"),
+                        maxBoundsX = maxBoundsX,
+                        maxBoundsY = maxBoundsY,
+                    )
+                }
+
+                // Simulate ignition cycle — maintainer tool, off by default.
+                // Runs the shutdown -> Bluetooth loss -> republish -> reconnect
+                // sequence without turning the car off, so the path where the
+                // reconnect failures actually happen can be tested in the
+                // driveway instead of once per drive.
+                if (uiState.simulateIgnitionButton) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    DraggableOverlayButton(
+                        icon = Icons.Default.PowerSettingsNew,
+                        contentDescription = "Simulate ignition cycle",
+                        onClick = { viewModel.simulateIgnitionCycle() },
+                        positionKey = "overlay_simulate_ignition",
+                        modifier = Modifier.testTag("simulateIgnitionButton"),
                         maxBoundsX = maxBoundsX,
                         maxBoundsY = maxBoundsY,
                     )

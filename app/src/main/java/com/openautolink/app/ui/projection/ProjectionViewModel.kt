@@ -77,6 +77,8 @@ data class ProjectionUiState(
     val fileLoggingEnabled: Boolean = false,
     val uploadEnabled: Boolean = false,
     val uploadState: LogUploadState = LogUploadState.IDLE,
+    /** Shows the floating "simulate ignition cycle" button. Maintainer tool. */
+    val simulateIgnitionButton: Boolean = false,
 )
 
 /** State of the maintainer log-upload action, drives the floating button color. */
@@ -235,6 +237,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         preferences.fileLoggingEnabled,
         preferences.logUploadEnabled,
         _uploadState,
+        preferences.simulateIgnitionButton,
     ) { values ->
         ProjectionUiState(
             sessionState = values[0] as SessionState,
@@ -266,6 +269,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             fileLoggingEnabled = values[26] as Boolean,
             uploadEnabled = values[27] as Boolean,
             uploadState = values[28] as LogUploadState,
+            simulateIgnitionButton = values[29] as Boolean,
         )
     }.stateIn(
         viewModelScope,
@@ -2156,6 +2160,16 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     /** Handle a steering wheel key event. Returns true if consumed. */
     fun onKeyEvent(event: KeyEvent): Boolean {
         return steeringWheelController.onKeyEvent(event)
+    }
+
+    /**
+     * Run a simulated ignition cycle: shutdown, Bluetooth loss, then reconnect.
+     *
+     * Exists so the sequence where every recent failure has occurred can be
+     * exercised in the driveway, repeatedly, instead of once per drive.
+     */
+    fun simulateIgnitionCycle() {
+        sessionManager.debugSimulateIgnitionCycle()
     }
 
     /** Called when the SurfaceView surface is created or changed. */

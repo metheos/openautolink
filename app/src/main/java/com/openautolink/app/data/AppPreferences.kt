@@ -141,6 +141,12 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         // recent log files and POSTs them. Never imposed on other users — the
         // button and the feature are entirely gated behind LOG_UPLOAD_ENABLED.
         val LOG_UPLOAD_ENABLED = booleanPreferencesKey("log_upload_enabled")
+
+        // Floating "simulate ignition cycle" button. OFF by default, maintainer
+        // tool. Reproduces the shutdown -> Bluetooth loss -> republish ->
+        // reconnect path in the driveway, so that sequence can be exercised in
+        // seconds instead of needing a real ignition cycle per attempt.
+        val SIMULATE_IGNITION_BUTTON = booleanPreferencesKey("simulate_ignition_button")
         val LOG_UPLOAD_URL = stringPreferencesKey("log_upload_url")
         val LOG_UPLOAD_TOKEN = stringPreferencesKey("log_upload_token")
         val LOG_UPLOAD_DEVICE_LABEL = stringPreferencesKey("log_upload_device_label")
@@ -295,6 +301,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_LOGCAT_CAPTURE_ENABLED = false
         const val DEFAULT_LOG_PERSIST_ENABLED = false
         const val DEFAULT_LOG_UPLOAD_ENABLED = false
+        const val DEFAULT_SIMULATE_IGNITION_BUTTON = false
         const val DEFAULT_LOG_UPLOAD_URL = ""
         const val DEFAULT_LOG_UPLOAD_TOKEN = ""
         const val DEFAULT_LOG_UPLOAD_DEVICE_LABEL = "" // empty -> Build.MODEL fallback at runtime
@@ -523,6 +530,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[LOG_UPLOAD_ENABLED] ?: DEFAULT_LOG_UPLOAD_ENABLED
     }
 
+    val simulateIgnitionButton: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[SIMULATE_IGNITION_BUTTON] ?: DEFAULT_SIMULATE_IGNITION_BUTTON
+    }
+
     val logUploadUrl: Flow<String> = dataStore.data.map { prefs ->
         prefs[LOG_UPLOAD_URL] ?: DEFAULT_LOG_UPLOAD_URL
     }
@@ -645,6 +656,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setLogUploadEnabled(value: Boolean) {
         dataStore.edit { it[LOG_UPLOAD_ENABLED] = value }
+    }
+
+    suspend fun setSimulateIgnitionButton(value: Boolean) {
+        dataStore.edit { it[SIMULATE_IGNITION_BUTTON] = value }
     }
 
     suspend fun setLogUploadUrl(value: String) {
