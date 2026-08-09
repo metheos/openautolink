@@ -593,6 +593,24 @@ class AaWirelessBtServer(
 
             OalLog.i(TAG, "Handshake complete — phone should now associate and open the projection socket")
 
+            // The protocol exchange is done, so anything waiting on it can run.
+            //
+            // This flag used to be cleared in the coroutine's `finally`, which is
+            // reached only when the RFCOMM socket closes — and that socket is
+            // deliberately held open below for the life of the session. So
+            // "handshake in flight" meant "the control link is open", while every
+            // guard using it assumed "the protobuf exchange is mid-flight". The
+            // difference is 140ms versus half a minute:
+            //
+            //     00:09:44.686  Handshake complete
+            //     00:09:47.582  companion found — queued, waiting for the handshake
+            //     00:10:20.339  handshake "finished" — queued re-advertise finally ran
+            //
+            // The window the guard protects ends here: the phone has the endpoint
+            // and is about to dial it.
+            AaWirelessBtControl.handshakeInFlight = false
+            AaWirelessBtControl.flushPendingReadvertise()
+
             // Hold the RFCOMM socket open. The phone keeps it as the control link
             // while it associates and dials TCP; dropping it here makes the phone
             // treat the head unit as having gone away mid-setup.

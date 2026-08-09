@@ -268,6 +268,12 @@ class AasdkSession(
     var onNativeSessionStarting: (() -> Unit)? = null
 
     fun dialCompanion(ip: String) {
+        // The ignition-cycle simulation holds the session down deliberately;
+        // reconnecting mid-window makes the test meaningless.
+        if (com.openautolink.app.transport.bluetooth.AaWirelessBtControl.simulatedIgnitionOff) {
+            OalLog.i(TAG, "Ignition simulation is in its off window — not dialling $ip")
+            return
+        }
         // Only refuse when a dial is genuinely in flight or connected. Refusing
         // whenever a connector merely EXISTS makes a dead one permanent: after a
         // disconnect the stale connector blocked every retry, so the session could

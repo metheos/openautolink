@@ -2630,11 +2630,15 @@ private fun DiagnosticsSettingsTab(
             Column(modifier = Modifier.weight(1f)) {
                 Text("Simulate Ignition Cycle (maintainer)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Off by default. When on, a floating power button appears on the " +
-                        "projection screen. Tapping it disconnects, drops the Bluetooth " +
-                        "advertisement, waits, then reconnects — the same sequence as " +
-                        "switching the car off and on, without actually doing it. Useful " +
-                        "for testing reconnection in the driveway.",
+                    "Off by default. When on, a floating power button appears on " +
+                        "the projection screen. Tapping it disconnects, drops the " +
+                        "Bluetooth advertisement, waits 45 seconds, then brings it " +
+                        "back.\n\n" +
+                        "It cannot switch off the head unit's Bluetooth radio, so " +
+                        "your phone's connection is never broken and it will not " +
+                        "re-dial on its own the way it does after a real ignition " +
+                        "cycle. Use it to test teardown and reconnection on the car " +
+                        "side; a real ignition cycle is still the only full test.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

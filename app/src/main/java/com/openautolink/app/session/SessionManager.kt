@@ -1854,15 +1854,45 @@ class SessionManager(
 
                 OalLog.i(TAG, "DEBUG ignition sim: step 4 — off for ${formatGap(offDurationMs)}")
                 markGoingIdle("debug_ignition_sim")
+                // Hold the session down for the whole window.
+                //
+                // markGoingIdle() alone is not enough: the app stays fully awake,
+                // so the ordinary reconnect logic fired 23s into the "off" period,
+                // dialled the companion and started a native session while the
+                // simulation still believed the car was off. markWake() then saw a
+                // 45s gap and force-reconnected, tearing down the session that had
+                // just come up. The simulation was breaking the thing it was
+                // supposed to be testing.
+                //
+                // A real ignition cycle does not have this problem because AAOS
+                // actually suspends the app.
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                    .simulatedIgnitionOff = true
+                stop()
                 kotlinx.coroutines.delay(offDurationMs)
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                    .simulatedIgnitionOff = false
 
                 OalLog.i(TAG, "DEBUG ignition sim: step 5 — ignition back on")
-                markWake("debug_ignition_sim")
+                // Deliberately NOT markWake(): its long-gap handler force-
+                // reconnects, which is right after a real sleep but here would
+                // just tear down whatever the advertiser is about to establish.
                 com.openautolink.app.transport.bluetooth.AaWirelessBtControl.ensureAdvertising()
                 OalLog.i(TAG, "DEBUG ignition sim: complete — watching for reconnect")
+                OalLog.i(TAG, "DEBUG ignition sim: NOTE — this cannot drop the head " +
+                        "unit's Bluetooth radio (BluetoothAdapter.disable() is a " +
+                        "system API), so the phone's link was never broken and it " +
+                        "has no reason to re-dial on its own. Use this to exercise " +
+                        "teardown and endpoint recovery; a real ignition cycle is " +
+                        "still the only way to test the phone re-dialling.")
             }.onFailure {
                 OalLog.e(TAG, "DEBUG ignition sim failed: ${it.message}")
             }
+            // Always clear it. A flag that suppresses reconnects and is only
+            // cleared on the happy path would leave wireless dead until the app
+            // restarts — the same latch shape that cost a session earlier.
+            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                .simulatedIgnitionOff = false
         }
     }
 

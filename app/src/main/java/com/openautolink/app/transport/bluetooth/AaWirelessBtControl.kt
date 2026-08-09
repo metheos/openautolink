@@ -238,6 +238,16 @@ object AaWirelessBtControl {
      * come back, rather than the test quietly skipping the step where every
      * real-world failure has happened.
      */
+    /**
+     * Set while the ignition-cycle simulation is in its "off" window.
+     *
+     * The app stays awake during the simulation, so without this the ordinary
+     * reconnect logic dials the companion partway through the "off" period and
+     * the simulation ends up tearing down a session it just created.
+     */
+    @Volatile
+    var simulatedIgnitionOff = false
+
     fun stopAdvertising() {
         scope.launch(kotlinx.coroutines.NonCancellable) {
             runCatching {
