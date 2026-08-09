@@ -89,6 +89,15 @@ object AaWirelessBtControl {
      */
     private const val MAX_PRESCAN_PROBES = 2
 
+    /**
+     * How long a confirmed proxy port stays trustworthy.
+     *
+     * Long enough to ride out a probe that fails transiently mid-session, short
+     * enough that a companion restart — which always changes the port — is not
+     * papered over with a stale one.
+     */
+    private const val PROXY_PORT_TRUST_MS = 90_000L
+
     /** A handshake older than this has finished, whatever the flag says. */
     private const val HANDSHAKE_MAX_MS = 30_000L
 
@@ -363,11 +372,21 @@ object AaWirelessBtControl {
                                     "(proxy port $port) — re-advertising so the phone " +
                                     "retries now instead of waiting out its own timer")
                             lastKnownPhoneIp = ip
-                            // Bypass the discovery cooldown. This probe only runs
-                            // after a handshake failed, so its success IS the
-                            // event worth acting on — and at 2s spacing it would
-                            // otherwise land inside the 20s window and be dropped.
-                            lastReadvertiseAtMs = 0L
+                            // Deliberately does NOT reset the cooldown.
+                            //
+                            // It used to, on the reasoning that this probe only
+                            // runs after a failure so its success is worth acting
+                            // on immediately. But that let this re-advertise and a
+                            // discovery-driven one both fire for the same
+                            // recovery, 29s apart, and the phone dialled back for
+                            // each. The car ended up dialling the companion for
+                            // one connection while Android Auto attached to the
+                            // other: seed IDR arrived, then the picture froze
+                            // with both halves crossed.
+                            //
+                            // One endpoint change at a time. If the cooldown is
+                            // active a re-advertise has already been issued, and
+                            // a second one can only confuse the phone.
                             readvertiseForNewCompanionAddress(ip)
                             return@launch
                         }
@@ -474,6 +493,9 @@ object AaWirelessBtControl {
 
     /** The address each phone's companion last answered on, keyed by BT MAC. */
     private val lastAddressByPhone = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** When each phone's proxy port was last confirmed by an actual reply. */
+    private val lastPortConfirmedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * The phone currently holding the projection session, by BT address.
@@ -1318,6 +1340,7 @@ object AaWirelessBtControl {
                     // skipping the dial is the failure this caused — the car
                     // listened forever while the phone waited for a car socket.
                     lastGoodProxyPortByPhone[phoneBtAddress] = proxyPort!!
+                    lastPortConfirmedAt[phoneBtAddress] = System.currentTimeMillis()
                     // Remember which companion belongs to the Bluetooth-connected
                     // phone so the UI can mark it in the discovery list.
                     activePhoneCompanionIp = companionIp
@@ -1341,7 +1364,22 @@ object AaWirelessBtControl {
                 // endpoint the phone cannot reach through the car's AP, and every
                 // later attempt inherits it. Keep the loopback endpoint and let
                 // the next handshake resolve the new address.
-                lastGoodProxyPortByPhone[phoneBtAddress] != null -> {
+                // Only reuse a remembered port while it is plausibly still open.
+                //
+                // The companion picks a fresh ephemeral port every time its
+                // service restarts, so the port is the one value guaranteed to be
+                // wrong afterwards. Reusing it advertised 127.0.0.1:38485 when the
+                // companion had moved to 40715, and the phone got Error 21 dialling
+                // a port nothing was listening on.
+                //
+                // The branch is still right for what it was written for — a probe
+                // that blips mid-session, where falling back to the car-direct
+                // endpoint would be worse. That case resolves in seconds. A port
+                // that has not been confirmed for minutes is a different thing, and
+                // guessing wrong costs a failed connection rather than a slow one.
+                lastGoodProxyPortByPhone[phoneBtAddress] != null &&
+                        System.currentTimeMillis() - (lastPortConfirmedAt[phoneBtAddress] ?: 0L)
+                        < PROXY_PORT_TRUST_MS -> {
                     lastEndpointWasCarDirect = false
                     OalLog.i(TAG, "CONNECT SUMMARY: endpoint=loopback proxy (remembered " +
                             "port) phone=$phoneBtAddress — companion did not answer this " +

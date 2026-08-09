@@ -32,6 +32,16 @@ class MediaCodecDecoder(
 
     companion object {
         private const val TAG = "MediaCodecDecoder"
+
+        /**
+         * How long to drop P-frames waiting for a fresh IDR after re-attach.
+         *
+         * There is no reliable way to ask the phone for one: the request is a
+         * VideoFocusIndication, which gearhead ignores for this purpose. Past
+         * this point a brief patch of blockiness is much better than a picture
+         * frozen indefinitely.
+         */
+        private const val AWAITING_IDR_TIMEOUT_MS = 3_000L
         private const val INPUT_TIMEOUT_US = 16000L // 16ms — one frame period at 60fps
         private const val INPUT_TIMEOUT_BEHIND_US = 5000L // 5ms — shorter when catching up
         private const val OUTPUT_TIMEOUT_US = 1000L // 1ms timeout for output drain
@@ -197,6 +207,9 @@ class MediaCodecDecoder(
     // Instead, drop all P-frames until a fresh real IDR arrives from the
     // phone, showing a frozen-but-clean cached frame in the meantime.
     @Volatile private var awaitingFreshIdr = false
+
+    /** When [awaitingFreshIdr] was armed, so the gate cannot latch forever. */
+    @Volatile private var awaitingFreshIdrSince = 0L
     // Skip first few frames after codec init to avoid green hue from resolution
     // transition. When codec is configured at 1920x1080 but video is 2560x1440,
     // the first frames decode with wrong color plane alignment until the codec
@@ -232,6 +245,7 @@ class MediaCodecDecoder(
                     // arrives — shows a frozen-but-clean cached frame
                     // instead of progressively-corrupting blocky garbage.
                     awaitingFreshIdr = true
+                    awaitingFreshIdrSince = System.currentTimeMillis()
                     _needsKeyframe = false
                     _needsKeyframeFlow.value = true
                 } else {
@@ -500,9 +514,29 @@ class MediaCodecDecoder(
             // we never decoded (missed during backgrounding). Feeding them
             // would produce progressively-worse blockiness. Drop until a
             // fresh real IDR from the phone re-anchors the reference chain.
-            framesDropped.incrementAndGet()
-            updateDropStats()
-            return
+            //
+            // Bounded, because nothing guarantees that IDR ever arrives. Our
+            // only way to ask is a VideoFocusIndication, which gearhead does not
+            // treat as a keyframe request — as our own log line says, it is a
+            // protocol no-op. On a static screen the phone may not emit an IDR
+            // for a very long time, and until it does this drops every frame
+            // while the stats still report healthy decoding. Observed in-vehicle
+            // as video and touch frozen while the app itself stayed responsive.
+            //
+            // Blockiness for a moment is a far better failure than an
+            // indefinitely frozen picture, so after the timeout we let P-frames
+            // through and let the stream repair itself on the next natural IDR.
+            val waitedMs = System.currentTimeMillis() - awaitingFreshIdrSince
+            if (waitedMs < AWAITING_IDR_TIMEOUT_MS) {
+                framesDropped.incrementAndGet()
+                updateDropStats()
+                return
+            }
+            Log.w(TAG, "No fresh IDR after ${waitedMs}ms — releasing the frame gate " +
+                    "rather than staying frozen")
+            DiagnosticLog.w("video", "No fresh IDR after ${waitedMs}ms — releasing the " +
+                    "frame gate; brief artifacts are preferable to a frozen picture")
+            awaitingFreshIdr = false
         }
         if (codec == null) {
             framesDropped.incrementAndGet()
