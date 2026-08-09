@@ -1,5 +1,6 @@
 package com.openautolink.app.transport.bluetooth
 
+import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -456,6 +457,9 @@ object AaWirelessBtControl {
      */
     private val lastGoodProxyPortByPhone = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    /** The address each phone's companion last answered on, keyed by BT MAC. */
+    private val lastAddressByPhone = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /**
      * The phone currently holding the projection session, by BT address.
      *
@@ -580,6 +584,47 @@ object AaWirelessBtControl {
     }
 
     /** Release the session claim so another phone can take it. */
+    /**
+     * Release the session claim as soon as the holding phone leaves Bluetooth.
+     *
+     * Without this the only way a claim ended was a 120s timeout, so switching
+     * phones in the car's own Bluetooth settings — the only way to switch, since
+     * the privileged APIs are closed to us — was ignored for up to two minutes.
+     * The car's Bluetooth stack knows the moment the phone disconnects; we just
+     * were not asking.
+     *
+     * Deliberately only releases the claim. It does not stop the session: a brief
+     * Bluetooth flap should not tear down working projection, and if the phone
+     * really is gone the session dies on its own.
+     */
+    private fun registerBtDisconnectReceiver(context: Context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                if (intent?.action != BluetoothDevice.ACTION_ACL_DISCONNECTED) return
+                val device = intent.getParcelableExtra<BluetoothDevice>(
+                    BluetoothDevice.EXTRA_DEVICE,
+                )
+                val addr = runCatching { device?.address }.getOrNull() ?: return
+                val holder = activePhoneBt
+                if (holder != null && holder.equals(addr, ignoreCase = true)) {
+                    OalLog.i(TAG, "$addr left Bluetooth — releasing its session claim " +
+                            "so another phone can connect immediately")
+                    releaseActivePhone()
+                }
+            }
+        }
+        runCatching {
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED),
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }.onFailure {
+            OalLog.w(TAG, "Could not watch for Bluetooth disconnects: ${it.message}")
+        }
+    }
+
     fun releaseActivePhone() {
         activePhoneBt?.let { OalLog.i(TAG, "Released the session claim held by $it") }
         activePhoneBt = null
@@ -609,6 +654,7 @@ object AaWirelessBtControl {
     fun init(context: Context) {
         appContext = context.applicationContext
         restoreKnownIps(context)
+        registerBtDisconnectReceiver(context)
         synchronized(this) {
             if (started) return
             started = true
@@ -1092,17 +1138,31 @@ object AaWirelessBtControl {
             // connect, so an old claim should lose to a live handshake.
             val claimed = activePhoneBt
             val claimAgeMs = System.currentTimeMillis() - activePhoneClaimedAt
+            // A claim only outranks a live handshake while projection is actually
+            // running. Otherwise the phone dialling now has the better evidence of
+            // being present: the claim describes a session that may have ended,
+            // while the handshake is happening in front of us.
+            //
+            // This matters for the only way a phone can be switched — the car's
+            // own Bluetooth settings, since the APIs to do it ourselves are
+            // privileged. Refusing the new phone for up to two minutes made a
+            // deliberate user action look broken.
+            val holderIsStreaming = sessionIsStreaming?.invoke() == true
             if (claimed != null &&
                 !claimed.equals(phoneBtAddress, ignoreCase = true) &&
-                claimAgeMs < CLAIM_TIMEOUT_MS
+                claimAgeMs < CLAIM_TIMEOUT_MS &&
+                holderIsStreaming
             ) {
-                OalLog.i(TAG, "Ignoring handshake from $phoneBtAddress — " +
-                        "$claimed has the session (claimed ${claimAgeMs / 1000}s ago)")
+                OalLog.i(TAG, "Not switching to $phoneBtAddress — $claimed is " +
+                        "streaming (claimed ${claimAgeMs / 1000}s ago). Switch phones " +
+                        "in the car's Bluetooth settings; disconnecting $claimed " +
+                        "releases the session immediately.")
                 return@setEndpointResolver null
             }
             if (claimed != null && !claimed.equals(phoneBtAddress, ignoreCase = true)) {
-                OalLog.i(TAG, "Claim by $claimed is ${claimAgeMs / 1000}s old — " +
-                        "handing the session to $phoneBtAddress, which is dialling now")
+                OalLog.i(TAG, "Handing the session from $claimed to $phoneBtAddress, " +
+                        "which is dialling now (previous claim ${claimAgeMs / 1000}s old, " +
+                        "streaming=$holderIsStreaming)")
             }
             activePhoneBt = phoneBtAddress
             activePhoneClaimedAt = System.currentTimeMillis()
@@ -1144,9 +1204,18 @@ object AaWirelessBtControl {
             val localPrefixes = allLocalIpv4().mapNotNull {
                 it.substringBeforeLast('.', "").takeIf(String::isNotEmpty)
             }.toSet()
+            // The address this phone used last time goes first.
+            //
+            // The address history is shared across phones, so with two phones in
+            // the car the other one's address can sit at the front of the list
+            // and waste a probe. Keying the preferred address by Bluetooth MAC
+            // costs nothing and makes the common case — same phone, same
+            // address — a single fast probe.
+            val preferredForThisPhone = lastAddressByPhone[phoneBtAddress]
             val allKnown = buildList {
+                preferredForThisPhone?.let { add(it) }
                 lastKnownPhoneIp?.let { add(it) }
-                addAll(recentPhoneIps)
+                synchronized(recentPhoneIps) { addAll(recentPhoneIps) }
             }.distinct()
             val candidates = allKnown.filter { ip ->
                 ip.substringBeforeLast('.', "") in localPrefixes
@@ -1186,6 +1255,7 @@ object AaWirelessBtControl {
                     proxyPort = p
                     companionIp = ip
                     lastKnownPhoneIp = ip
+                    lastAddressByPhone[phoneBtAddress] = ip
                     break
                 }
             }
@@ -1201,6 +1271,9 @@ object AaWirelessBtControl {
                 // slow round trip over the telematics bridge.
                 findCompanionOnAnySubnet(manualIp)?.let { (ip, port) ->
                     lastKnownPhoneIp = ip
+                    // Record it against this phone too, or the next handshake
+                    // from it starts from the shared list again.
+                    lastAddressByPhone[phoneBtAddress] = ip
                     proxyPort = port
                     companionIp = ip
                 }
