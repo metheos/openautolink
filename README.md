@@ -29,7 +29,9 @@
 >
 > **3. Select Wireless (WPP) as the transport** — Settings → Transport → **Wireless (WPP)**. The older Wi-Fi mode uses the startup path Google disabled and will not work on 17.4.
 >
-> **4. Do not use the companion app's car Wi-Fi connection feature.** Android Auto now joins the car's network itself as part of the handshake, and having the companion app do it as well means both are fighting over the same radio — the connection drops repeatedly. The option is hidden for new installs; if you configured it previously it is still shown so you can remove your entries. Clear it.
+> **4. Turn off randomised MAC for the car's Wi-Fi network.** On your phone, open Wi-Fi settings, tap the car's network, and set **Privacy** (or **MAC address type**) to **Use device MAC**. Android randomises it by default, which hands the phone a different IP address on the car's network each time and makes the car search for it on every connection. Using the real MAC keeps the address stable and the connection noticeably quicker. Not required — it works either way — but recommended.
+>
+> **5. Do not use the companion app's car Wi-Fi connection feature.** Android Auto now joins the car's network itself as part of the handshake, and having the companion app do it as well means both are fighting over the same radio — the connection drops repeatedly. The option is hidden for new installs; if you configured it previously it is still shown so you can remove your entries. Clear it.
 >
 > The companion app is still required in this mode. It holds the network path open on the phone side.
 >
@@ -342,7 +344,7 @@ The original architecture used an SBC (single-board computer) running a C++ brid
 
 ## Known Issues
 
-- **Android Auto 17.4 broke wireless startup — fixed, with setup changes** — Google shipped `WirelessStartupReceiver` disabled and `WirelessStartupActivity` unexported, so the broadcast-based startup every wireless implementation used no longer works. Affects all third-party implementations. OpenAutoLink now uses the Bluetooth + WiFi Projection Protocol path instead (the one factory head units use, untouched in 17.4). Requires Bluetooth pairing to the car, re-pairing after the update, and the Wireless (WPP) transport — see the [notice at the top](#aa174). Recovery around disconnects is still being smoothed out; USB remains the reliable fallback.
+- **Android Auto 17.4 broke wireless startup — fixed, with setup changes** — Google shipped `WirelessStartupReceiver` disabled and `WirelessStartupActivity` unexported, so the broadcast-based startup every wireless implementation used no longer works. Affects all third-party implementations. OpenAutoLink now uses the Bluetooth + WiFi Projection Protocol path instead (the one factory head units use, untouched in 17.4). Requires Bluetooth pairing to the car, re-pairing after the update, and the Wireless (WPP) transport — see the [notice at the top](#aa174). Setting the car's Wi-Fi network to use your phone's real MAC rather than a randomised one keeps its address stable and makes connecting quicker. Recovery around disconnects is still being smoothed out; USB remains the reliable fallback.
 - **H.265 video may appear green-tinted** on first connection for 30–45 seconds. May be Qualcomm-specific — not yet confirmed on other SoCs
 
 If you encounter other problems, please [open an issue](https://github.com/mossyhub/openautolink/issues).
