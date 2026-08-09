@@ -79,6 +79,9 @@ object AaWirelessBtControl {
      */
     private const val COMPANION_PROBE_ATTEMPTS = 6
 
+    /** A handshake older than this has finished, whatever the flag says. */
+    private const val HANDSHAKE_MAX_MS = 30_000L
+
     /** Spacing between background probe attempts after a failed handshake. */
     private const val COMPANION_PROBE_INTERVAL_MS = 2_000L
 
@@ -117,6 +120,7 @@ object AaWirelessBtControl {
                     recentPhoneIps.add(0, value)
                     while (recentPhoneIps.size > 4) recentPhoneIps.removeAt(recentPhoneIps.size - 1)
                 }
+                persistKnownIps()
             }
         }
 
@@ -129,6 +133,45 @@ object AaWirelessBtControl {
      * all of them is cheaper and more reliable than a subnet scan.
      */
     private val recentPhoneIps = mutableListOf<String>()
+
+    /**
+     * Persist the addresses so a restart does not start blind.
+     *
+     * These lived only in memory, so a fresh install or an app restart had
+     * nothing to try and fell straight through to a ~5s subnet scan — logged as
+     * "knownAddrs=none" on the run where a freshly-installed 0.1.413 failed to
+     * reconnect. The car AP and the phone's DHCP lease have been stable across
+     * every measured session, so a remembered address is worth keeping.
+     */
+    private fun persistKnownIps() {
+        val ctx = appContext ?: return
+        val ips = (listOfNotNull(lastKnownPhoneIp) +
+                synchronized(recentPhoneIps) { recentPhoneIps.toList() }).distinct()
+        scope.launch {
+            runCatching {
+                com.openautolink.app.data.AppPreferences.getInstance(ctx)
+                    .setKnownPhoneIps(ips.joinToString(","))
+            }
+        }
+    }
+
+    /** Reload persisted addresses at startup, before the first handshake. */
+    fun restoreKnownIps(context: Context) {
+        scope.launch {
+            runCatching {
+                val saved = com.openautolink.app.data.AppPreferences.getInstance(context)
+                    .knownPhoneIps.first()
+                    .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                if (saved.isEmpty()) return@runCatching
+                synchronized(recentPhoneIps) {
+                    saved.forEach { if (it !in recentPhoneIps) recentPhoneIps.add(it) }
+                    while (recentPhoneIps.size > 4) recentPhoneIps.removeAt(recentPhoneIps.size - 1)
+                }
+                if (lastKnownPhoneIp == null) lastKnownPhoneIp = saved.first()
+                OalLog.i(TAG, "Restored known phone addresses: ${saved.joinToString()}")
+            }
+        }
+    }
 
 
     @Volatile
@@ -428,7 +471,38 @@ object AaWirelessBtControl {
      * landed 150ms into a handshake and tore the listener down underneath it.
      */
     @Volatile
-    var handshakeInFlight: Boolean = false
+    private var handshakeStartedAtMs: Long = 0L
+
+    /**
+     * True while a Bluetooth handshake is genuinely running.
+     *
+     * Backed by a timestamp rather than a plain flag, because the flag was
+     * cleared in a coroutine's `finally` — and stopping the advertiser cancels
+     * that coroutine, which can happen before the body is ever dispatched, so
+     * the finally never ran and the flag latched on. Everything guarded by it
+     * then stopped working silently: discovery found the phone four times after
+     * a failed handshake and no re-advertise fired, because this still read true
+     * from a handshake that had ended a minute earlier.
+     *
+     * A handshake takes 0-9s in every successful run, so anything older than 30s
+     * is finished regardless of what set it.
+     */
+    var handshakeInFlight: Boolean
+        get() {
+            val started = handshakeStartedAtMs
+            if (started == 0L) return false
+            if (System.currentTimeMillis() - started > HANDSHAKE_MAX_MS) {
+                OalLog.w(TAG, "handshakeInFlight was still set from " +
+                        "${(System.currentTimeMillis() - started) / 1000}s ago — " +
+                        "treating it as finished")
+                handshakeStartedAtMs = 0L
+                return false
+            }
+            return true
+        }
+        set(value) {
+            handshakeStartedAtMs = if (value) System.currentTimeMillis() else 0L
+        }
 
     @Volatile
     var activePhoneBt: String? = null
@@ -534,6 +608,7 @@ object AaWirelessBtControl {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        restoreKnownIps(context)
         synchronized(this) {
             if (started) return
             started = true
@@ -1050,14 +1125,22 @@ object AaWirelessBtControl {
             // are on NOW.
             //
             // The telematics AP is reassigned a new subnet across a long park, so
-            // after one the cached addresses are provably dead — they are on a
-            // /24 the car no longer has an interface on. Probing them anyway
-            // burns the whole retry window before the scan that was always going
-            // to be needed. A short cycle keeps the same subnet, so the cached
-            // address survives and the probe hits immediately.
+            // if that ever happens the cached addresses are provably dead, being
+            // on a /24 the car no longer has an interface on, and probing them
+            // just burns time before the scan that was always going to be needed.
             //
-            // This is a fact about the current interfaces, not a guess about how
-            // long the car was off.
+            // Worth being precise about how likely that is: measured across 29
+            // sessions and four days, including parks of 20h and 23h, the access
+            // point stayed on 10.2.110.66 and the phone kept 10.2.110.109 every
+            // single time. The one sighting of a different subnet
+            // (172.16.101.100) was our own cold-start bug picking a vt*
+            // telematics interface before ap_br_swlan0 existed, fixed in 0.1.401
+            // — not the access point being reassigned.
+            //
+            // So this filter is insurance, not the common case. It stays because
+            // it is a cheap fact about the current interfaces rather than a guess
+            // about elapsed time, but the fast path — try the remembered address
+            // first — is what actually matters.
             val localPrefixes = allLocalIpv4().mapNotNull {
                 it.substringBeforeLast('.', "").takeIf(String::isNotEmpty)
             }.toSet()
@@ -1071,8 +1154,7 @@ object AaWirelessBtControl {
             val dropped = allKnown - candidates.toSet()
             if (dropped.isNotEmpty()) {
                 OalLog.i(TAG, "Ignoring ${dropped.joinToString()} — not on any subnet " +
-                        "this car is currently on (${localPrefixes.joinToString()}); " +
-                        "the access point was reassigned while we were off")
+                        "this car is currently on (${localPrefixes.joinToString()})")
             }
             // companionIp tracks WHICH address answered, from either path. It has
             // to be set everywhere proxyPort is, or the dial below is skipped and

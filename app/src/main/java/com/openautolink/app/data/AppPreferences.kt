@@ -147,6 +147,17 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         // reconnect path in the driveway, so that sequence can be exercised in
         // seconds instead of needing a real ignition cycle per attempt.
         val SIMULATE_IGNITION_BUTTON = booleanPreferencesKey("simulate_ignition_button")
+
+        // Addresses the companion has answered on, most recent first.
+        //
+        // Measured across 29 sessions and four days, including 20h+ parks: the
+        // car's access point stayed on the same subnet and the phone kept the
+        // same DHCP lease every time. So a remembered address is very likely to
+        // be correct, and trying it costs one fast probe versus a ~5s subnet
+        // scan. Held only in memory before, which meant a fresh install or an
+        // app restart had to scan blind — the failure was visible in the log as
+        // "knownAddrs=none".
+        val KNOWN_PHONE_IPS = stringPreferencesKey("known_phone_ips")
         val LOG_UPLOAD_URL = stringPreferencesKey("log_upload_url")
         val LOG_UPLOAD_TOKEN = stringPreferencesKey("log_upload_token")
         val LOG_UPLOAD_DEVICE_LABEL = stringPreferencesKey("log_upload_device_label")
@@ -302,6 +313,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_LOG_PERSIST_ENABLED = false
         const val DEFAULT_LOG_UPLOAD_ENABLED = false
         const val DEFAULT_SIMULATE_IGNITION_BUTTON = false
+        const val DEFAULT_KNOWN_PHONE_IPS = ""
         const val DEFAULT_LOG_UPLOAD_URL = ""
         const val DEFAULT_LOG_UPLOAD_TOKEN = ""
         const val DEFAULT_LOG_UPLOAD_DEVICE_LABEL = "" // empty -> Build.MODEL fallback at runtime
@@ -534,6 +546,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[SIMULATE_IGNITION_BUTTON] ?: DEFAULT_SIMULATE_IGNITION_BUTTON
     }
 
+    val knownPhoneIps: Flow<String> = dataStore.data.map { prefs ->
+        prefs[KNOWN_PHONE_IPS] ?: DEFAULT_KNOWN_PHONE_IPS
+    }
+
     val logUploadUrl: Flow<String> = dataStore.data.map { prefs ->
         prefs[LOG_UPLOAD_URL] ?: DEFAULT_LOG_UPLOAD_URL
     }
@@ -660,6 +676,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setSimulateIgnitionButton(value: Boolean) {
         dataStore.edit { it[SIMULATE_IGNITION_BUTTON] = value }
+    }
+
+    suspend fun setKnownPhoneIps(value: String) {
+        dataStore.edit { it[KNOWN_PHONE_IPS] = value }
     }
 
     suspend fun setLogUploadUrl(value: String) {
