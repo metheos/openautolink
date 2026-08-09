@@ -80,6 +80,12 @@ M_FULL_SETUP = "aasdk JNI session started"
 # the rule reports every fixed session as broken — a checker that flags the fix is
 # worse than no checker.
 M_READOPT = "Re-adopting the session after a transport restart"
+# Audio: the phone announcing playback vs frames actually reaching the player.
+# "Audio start" with no aflow means every upstream signal is healthy — channel
+# open, codec agreed, phone sending — and nothing arrives. Silent playback with
+# stats showing no audio at all.
+M_AUDIO_START = "Audio start (type="
+M_AUDIO_FLOW = "I/aflow:"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -107,6 +113,8 @@ class Attempt:
     setup_nearby: bool = False
     native_start_times: list = field(default_factory=list)
     uncovered_starts: list = field(default_factory=list)
+    audio_starts: int = 0
+    audio_flows: int = 0
     discovery_found_after: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -188,6 +196,10 @@ def parse_log(path: str) -> list[Attempt]:
             elif M_FULL_SETUP in line or M_READOPT in line:
                 current.full_setups += 1
                 setup_times.append(t)
+            elif M_AUDIO_START in line:
+                current.audio_starts += 1
+            elif M_AUDIO_FLOW in line:
+                current.audio_flows += 1
             elif M_READVERTISE in line:
                 current.readvertised = True
             elif M_DISCOVERY_FOUND in line and not current.connected:
@@ -272,6 +284,14 @@ def check(a: Attempt) -> list[Finding]:
             f"{len(a.uncovered_starts)} of {a.native_starts} native session "
             "start(s) had no full setup — decoder, surface and session reference "
             "may be stale (touch silently dropped while video looks perfect)",
+        ))
+
+    # The phone started sending audio and none of it reached the player.
+    if a.audio_starts > 0 and a.audio_flows == 0:
+        out.append(Finding(
+            "FAIL", "audio-started-but-silent",
+            f"{a.audio_starts} audio start(s) and no frames delivered — "
+            "channel negotiated, codec agreed, nothing played",
         ))
 
     if a.connected and a.codec_at is None:

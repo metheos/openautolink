@@ -184,6 +184,15 @@ class SessionManager(
     @Volatile
     private var lastScalingMode: String = AppPreferences.DEFAULT_VIDEO_SCALING_MODE
 
+    @Volatile
+    private var lastVolumeOffsetMedia: Int = 0
+
+    @Volatile
+    private var lastVolumeOffsetNavigation: Int = 0
+
+    @Volatile
+    private var lastVolumeOffsetAssistant: Int = 0
+
     /** Called by the UI whenever a surface becomes available or is destroyed. */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
         lastKnownSurface = surface?.let { Triple(it, width, height) }
@@ -205,6 +214,92 @@ class SessionManager(
      * stream. Save & Reconnect appeared to "fix" it only because that path does
      * go through the full setup and therefore built a decoder.
      */
+    /**
+     * Guarantee an audio player exists before a session starts.
+     *
+     * stop() releases and nulls it, and the recovery path never re-runs the full
+     * setup that creates one — the same asymmetry that left the video decoder
+     * null. Frames would then arrive and be dropped by `_audioPlayer?.` with no
+     * trace, and audioStats (which reads from the player) would show nothing,
+     * making it look as though no audio was ever sent.
+     */
+    private fun ensureAudioPlayer() {
+        if (_audioPlayer != null) return
+        OalLog.i(TAG, "No audio player for this session — creating one")
+        _audioPlayer = audioManager?.let { AudioPlayerImpl(it) }
+        _audioPlayer?.initialize()
+        (_audioPlayer as? AudioPlayerImpl)?.coordinator?.let { coord ->
+            coord.volumeOffsetMedia = lastVolumeOffsetMedia
+            coord.volumeOffsetNavigation = lastVolumeOffsetNavigation
+            coord.volumeOffsetAssistant = lastVolumeOffsetAssistant
+        }
+        _telemetryCollector?.audioPlayer = _audioPlayer
+    }
+
+    /** Collectors bound to one AasdkSession, cancelled when it is replaced. */
+    private var sessionCollectors: kotlinx.coroutines.Job? = null
+
+    /**
+     * Subscribe to everything a session produces: frames, control messages,
+     * codec negotiation, reconnect counters.
+     *
+     * These used to be launched inline in the full session setup, which meant
+     * they bound to whichever AasdkSession existed at that moment. A transport
+     * restart creates a new native session without re-running that setup, so the
+     * collectors stayed attached to the old one and the new session's output went
+     * nowhere. Audio was the visible symptom — channels negotiated, codec agreed,
+     * "Audio start" received, and not one frame reaching the player — but it is
+     * the same fault that produced a black screen (no decoder), a blank screen
+     * (no surface), and dead touch (no session reference) in earlier releases.
+     *
+     * Four instances of one pattern. Rebinding in a single place means the next
+     * thing added to a session cannot silently miss a restart.
+     */
+    private fun bindSessionCollectors(session: AasdkSession) {
+        sessionCollectors?.cancel()
+        sessionCollectors = scope.launch {
+            // Mirror per-session reconnect-attempt counter so observers (UI
+            // banner, 3-failure picker escalation) don't have to track
+            // AasdkSession identity.
+            launch {
+                session.reconnectAttempt.collect { attempt ->
+                    _reconnectAttempt.value = attempt
+                    // Also refresh the status message so the banner updates when
+                    // the attempt counter advances without an accompanying state
+                    // change.
+                    if (attempt > 0 && _sessionState.value != SessionState.STREAMING) {
+                        _statusMessage.value = "Reconnecting (attempt $attempt)…"
+                    }
+                }
+            }
+            launch {
+                session.controlMessages.collect { message ->
+                    lastActiveTimestamp = SystemClock.elapsedRealtime()
+                    handleControlMessage(message)
+                }
+            }
+            launch(videoDispatcher) {
+                session.videoFrames.collect { frame ->
+                    lastVideoFrameArrivedMs = SystemClock.elapsedRealtime()
+                    _videoDecoder?.onFrame(frame)
+                }
+            }
+            launch {
+                session.negotiatedCodecType.collect { codecType ->
+                    if (codecType > 0) {
+                        (_videoDecoder as? com.openautolink.app.video.MediaCodecDecoder)
+                            ?.setNegotiatedCodec(codecType)
+                    }
+                }
+            }
+            launch(audioDispatcher) {
+                session.audioFrames.collect { frame ->
+                    _audioPlayer?.onAudioFrame(frame)
+                }
+            }
+        }
+    }
+
     fun ensureVideoDecoder() {
         if (_videoDecoder != null) {
             // Say the decoder is fine AND whether it can draw. A decoder with no
@@ -674,6 +769,11 @@ class SessionManager(
         // needs one without re-running this setup.
         lastCodecPreference = codecPreference
         lastScalingMode = scalingMode
+        // Remembered for the same reason: an audio player rebuilt on a transport
+        // restart must keep the user's volume offsets.
+        lastVolumeOffsetMedia = volumeOffsetMedia
+        lastVolumeOffsetNavigation = volumeOffsetNavigation
+        lastVolumeOffsetAssistant = volumeOffsetAssistant
         _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
         // Re-attach the surface the UI last reported, if there is one.
         //
@@ -1188,6 +1288,12 @@ class SessionManager(
         // full setup, so make sure a decoder exists rather than assuming one does.
         session.onNativeSessionStarting = {
             ensureVideoDecoder()
+            ensureAudioPlayer()
+            // Re-subscribe to this session's flows. A transport restart makes a
+            // new native session; without this the collectors stay bound to the
+            // previous one and its frames go nowhere — silent audio with every
+            // upstream signal reporting healthy.
+            bindSessionCollectors(session)
             // Re-adopt the session on every native start.
             //
             // stop() nulls aasdkSession, and the recovery path reaches the
@@ -1252,53 +1358,7 @@ class SessionManager(
             }
         }
 
-        // Mirror per-session reconnect-attempt counter so observers (UI banner,
-        // 3-failure picker escalation) don't have to track AasdkSession identity.
-        scope.launch {
-            session.reconnectAttempt.collect { attempt ->
-                _reconnectAttempt.value = attempt
-                // Also refresh the status message so the banner updates when
-                // the attempt counter advances without an accompanying state
-                // change (the connection-state collector above only fires on
-                // state transitions).
-                if (attempt > 0 && _sessionState.value != SessionState.STREAMING) {
-                    _statusMessage.value = "Reconnecting (attempt $attempt)…"
-                }
-            }
-        }
-
-        // Observe control messages
-        scope.launch {
-            session.controlMessages.collect { message ->
-                lastActiveTimestamp = SystemClock.elapsedRealtime()
-                handleControlMessage(message)
-            }
-        }
-
-        // Collect video frames
-        scope.launch(videoDispatcher) {
-            session.videoFrames.collect { frame ->
-                lastVideoFrameArrivedMs = SystemClock.elapsedRealtime()
-                _videoDecoder?.onFrame(frame)
-            }
-        }
-
-        // Update decoder when phone negotiates codec type
-        scope.launch {
-            session.negotiatedCodecType.collect { codecType ->
-                if (codecType > 0) {
-                    (_videoDecoder as? com.openautolink.app.video.MediaCodecDecoder)
-                        ?.setNegotiatedCodec(codecType)
-                }
-            }
-        }
-
-        // Collect audio frames
-        scope.launch(audioDispatcher) {
-            session.audioFrames.collect { frame ->
-                _audioPlayer?.onAudioFrame(frame)
-            }
-        }
+        bindSessionCollectors(session)
 
         // Observe USB status (only in usb mode)
         if (directTransport == "usb") {
