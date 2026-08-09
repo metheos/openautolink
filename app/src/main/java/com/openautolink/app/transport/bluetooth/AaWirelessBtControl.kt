@@ -62,6 +62,15 @@ object AaWirelessBtControl {
      */
     private const val CLAIM_TIMEOUT_MS = 120_000L
 
+    /**
+     * Minimum spacing between discovery-triggered re-advertisements.
+     *
+     * Discovery reports on every sweep, so without this a companion whose
+     * address flaps would bounce the SDP record repeatedly and prevent the
+     * handshake it is trying to provoke.
+     */
+    private const val READVERTISE_MIN_INTERVAL_MS = 20_000L
+
     /** Reserved MACs gearhead rejects outright — see pev.smali validation. */
     private const val ZERO_MAC = "00:00:00:00:00:00"
     private const val BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
@@ -223,6 +232,51 @@ object AaWirelessBtControl {
         }
         return false
     }
+
+    /**
+     * Re-advertise because discovery just learned the companion's address.
+     *
+     * Only useful when the last handshake could NOT find the companion and
+     * therefore advertised the car's own address, which the car's access point
+     * will not accept inbound. In that state the phone is waiting out its own
+     * retry timer — up to 40s — while we already know where to point it.
+     *
+     * Heavily guarded, because re-advertising during a healthy session would
+     * tear down a working connection:
+     *   - only when the last endpoint was the unusable car-direct one
+     *   - never while a handshake is in flight
+     *   - never more than once every 20s
+     */
+    fun readvertiseForNewCompanionAddress(host: String) {
+        if (!lastEndpointWasCarDirect) return
+        if (handshakeInFlight) return
+        // A live session means the car-direct endpoint is moot — something is
+        // working. Bouncing the record now would break it to fix nothing.
+        if (sessionIsLive?.invoke() == true) return
+        val now = System.currentTimeMillis()
+        if (now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS) return
+        lastReadvertiseAtMs = now
+        OalLog.i(TAG, "Discovery found the companion at $host after we advertised an " +
+                "unreachable endpoint — re-advertising so the phone retries now " +
+                "instead of waiting out its own timer")
+        readvertise()
+    }
+
+    @Volatile
+    private var lastEndpointWasCarDirect = false
+
+    /**
+     * Reports whether a projection session is currently up.
+     *
+     * Set by SessionManager so the re-advertise guard can tell "stalled waiting
+     * for the phone" from "already connected", without this class needing to
+     * know about sessions.
+     */
+    @Volatile
+    var sessionIsLive: (() -> Boolean)? = null
+
+    @Volatile
+    private var lastReadvertiseAtMs = 0L
 
     fun readvertise() {
         val ctx = appContext
@@ -929,6 +983,7 @@ object AaWirelessBtControl {
                     // Remember which companion belongs to the Bluetooth-connected
                     // phone so the UI can mark it in the discovery list.
                     activePhoneCompanionIp = companionIp
+                    lastEndpointWasCarDirect = false
                     val dialTarget = companionIp
                     if (dialTarget.isNullOrBlank()) {
                         OalLog.e(TAG, "Have proxy port $proxyPort but no companion address — " +
@@ -946,6 +1001,7 @@ object AaWirelessBtControl {
                 // later attempt inherits it. Keep the loopback endpoint and let
                 // the next handshake resolve the new address.
                 lastGoodProxyPortByPhone[phoneBtAddress] != null -> {
+                    lastEndpointWasCarDirect = false
                     val port = lastGoodProxyPortByPhone.getValue(phoneBtAddress)
                     OalLog.i(TAG, "Companion for $phoneBtAddress not found this time, " +
                             "but it was on port $port — keeping the loopback endpoint " +
@@ -953,6 +1009,10 @@ object AaWirelessBtControl {
                     AaWirelessBtServer.Endpoint.PhoneLoopback(port)
                 }
                 else -> {
+                    // This is the endpoint the car's AP will not accept inbound.
+                    // Flagged so discovery can trigger a re-advertise the moment
+                    // it learns where the companion actually is.
+                    lastEndpointWasCarDirect = true
                     // No companion: advertise our own address, and pick the one on
                     // the SAME network as the phone. The head unit has two radios
                     // on different networks (telematics AP vs its own wlan0), so
