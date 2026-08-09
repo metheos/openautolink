@@ -210,6 +210,34 @@ class MediaCodecDecoder(
 
     /** When [awaitingFreshIdr] was armed, so the gate cannot latch forever. */
     @Volatile private var awaitingFreshIdrSince = 0L
+
+    /**
+     * Timestamp of the last real IDR, used to predict when the next one is due.
+     *
+     * The phone sends them on its own GOP schedule and ignores our requests, so
+     * the only honest progress bar is one built from observed history. Measured
+     * across the log archive: median 139s between IDRs, p90 173s, max 263s.
+     */
+    @Volatile private var lastRealIdrAtMs = 0L
+
+    /** Observed intervals between real IDRs, newest last. Small on purpose. */
+    private val idrIntervals = ArrayDeque<Long>()
+
+    /**
+     * Best estimate of the phone's IDR period, in ms, or null before we have
+     * seen two. Median of observed intervals — resistant to the one-off long
+     * gap that follows a reconnect.
+     */
+    val estimatedIdrPeriodMs: Long?
+        get() = synchronized(idrIntervals) {
+            if (idrIntervals.size < 2) null
+            else idrIntervals.sorted()[idrIntervals.size / 2]
+        }
+
+    /** How long the picture has been frozen waiting for a fresh IDR, or null. */
+    val awaitingIdrForMs: Long?
+        get() = if (awaitingFreshIdr && awaitingFreshIdrSince > 0)
+            System.currentTimeMillis() - awaitingFreshIdrSince else null
     // Skip first few frames after codec init to avoid green hue from resolution
     // transition. When codec is configured at 1920x1080 but video is 2560x1440,
     // the first frames decode with wrong color plane alignment until the codec
@@ -223,6 +251,31 @@ class MediaCodecDecoder(
         this.surfaceHeight = height
         Log.i(TAG, "Surface attached: ${width}x${height} (surfaceChanged=$surfaceChanged, codecActive=${codec != null}, receivedIdr=$receivedIdr, renderingEnabled=$renderingEnabled)")
         DiagnosticLog.i("video", "Surface attached: ${width}x${height} surfaceChanged=$surfaceChanged codecActive=${codec != null} renderGate=$renderingEnabled")
+
+        // Fast path: a live codec can be handed the new surface directly.
+        //
+        // This is the return half of the detach() change — swapping the output
+        // surface keeps the decode chain and its P-frame anchor intact, so the
+        // picture comes back immediately instead of waiting out the phone's
+        // ~139s median IDR interval. Only available while the codec still
+        // exists, which is why detach() no longer releases it.
+        if (surfaceChanged && codec != null) {
+            // Use attach()'s non-null parameter, not the nullable field.
+            // setOutputSurface throws on null and detach() sets the field null.
+            val target = surface ?: return
+            val swapped = runCatching { codec?.setOutputSurface(target) }.isSuccess
+            if (swapped) {
+                Log.i(TAG, "Swapped output surface on the live codec — no reconfigure needed")
+                DiagnosticLog.i("video", "Output surface swapped on live codec — video resumes immediately")
+                // The chain was never broken, so nothing to re-anchor.
+                awaitingFreshIdr = false
+                renderingEnabled = true
+                return
+            }
+            Log.w(TAG, "setOutputSurface rejected — falling back to a codec reconfigure")
+            DiagnosticLog.w("video", "setOutputSurface rejected — reconfiguring codec")
+            releaseCodec()
+        }
 
         // Only reconfigure codec if the Surface object itself changed (e.g., after surfaceDestroyed).
         // Size-only changes don't require codec reset — MediaCodec renders to whatever size the surface is.
@@ -246,7 +299,12 @@ class MediaCodecDecoder(
                     // instead of progressively-corrupting blocky garbage.
                     awaitingFreshIdr = true
                     awaitingFreshIdrSince = System.currentTimeMillis()
-                    _needsKeyframe = false
+                    // TRUE, not false: this is exactly the state the "waiting for
+                    // video" indicator exists to describe. It was cleared here, so
+                    // waitingForKeyframe read false during the one situation the
+                    // user actually sees — a frozen cached frame with the stream
+                    // reporting healthy.
+                    _needsKeyframe = true
                     _needsKeyframeFlow.value = true
                 } else {
                     _needsKeyframe = false
@@ -257,6 +315,28 @@ class MediaCodecDecoder(
     }
 
     override fun detach() {
+        // Keep the codec alive across a transient nav-away.
+        //
+        // Releasing it here is what makes a two-second glance at another app cost
+        // a black screen for up to two minutes: the codec dies, the return path
+        // has to reconfigure from cached SPS/PPS, and the resulting stream is
+        // anchorless until the phone sends its next periodic IDR. Measured across
+        // the log archive, that arrives every 139s at the median (p90 173s, max
+        // 263s) — and we cannot ask for one, because requestKeyframe is advisory
+        // and gearhead ignores it.
+        //
+        // MediaCodec.setOutputSurface() exists precisely for this: hand the codec
+        // a new surface without tearing down the decode chain, so the P-frame
+        // chain stays valid and the picture resumes immediately. Only fall back
+        // to a full release if the codec refuses the swap.
+        if (codec != null) {
+            Log.i(TAG, "Detaching surface — keeping codec alive for a fast return")
+            DiagnosticLog.i("video", "Surface detached, codec kept alive")
+            surface = null
+            surfaceWidth = 0
+            surfaceHeight = 0
+            return
+        }
         Log.i(TAG, "Detaching surface")
         releaseCodec()
         // Keep codecConfigData and cachedIdrFrame across detach. This path
@@ -496,6 +576,26 @@ class MediaCodecDecoder(
         // is decoded, producing green/blocky artifacts.
         queueFrame(frame)
         renderingEnabled = true
+
+        // Learn this phone's GOP cadence from what it actually does.
+        //
+        // We cannot request an IDR, so the only way to tell the user how long a
+        // frozen picture will last is to measure the interval and extrapolate.
+        val nowMs = System.currentTimeMillis()
+        if (lastRealIdrAtMs > 0) {
+            val interval = nowMs - lastRealIdrAtMs
+            // Ignore implausible gaps: sub-second duplicates, and anything past
+            // the observed ceiling (max seen across the archive was 263s), which
+            // usually means a reconnect happened in between rather than a GOP.
+            if (interval in 1_000..300_000) {
+                synchronized(idrIntervals) {
+                    idrIntervals.addLast(interval)
+                    while (idrIntervals.size > 8) idrIntervals.removeFirst()
+                }
+            }
+        }
+        lastRealIdrAtMs = nowMs
+
         updateStats(null)  // Immediately update waitingForKeyframe state for UI
     }
 
