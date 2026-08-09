@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -471,7 +472,16 @@ fun ProjectionScreen(
         // Waiting-for-keyframe indicator — subtle spinner during STREAMING when
         // the decoder has no IDR yet (black video). Disappears as soon as first
         // frame is decoded. Placed bottom-center to avoid blocking the projection.
-        if (uiState.sessionState == SessionState.STREAMING && uiState.videoStats.waitingForKeyframe) {
+        // Also show while CONNECTED, not only STREAMING.
+        //
+        // The 112-second black screen measured in-vehicle happened with the
+        // session healthy but no frames rendering yet, and gating on STREAMING
+        // alone meant the one indicator that explains the wait stayed hidden for
+        // the whole of it.
+        if ((uiState.sessionState == SessionState.STREAMING ||
+                uiState.sessionState == SessionState.CONNECTED) &&
+            uiState.videoStats.waitingForKeyframe
+        ) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -491,11 +501,44 @@ fun ProjectionScreen(
                         color = Color.White,
                         strokeWidth = 2.dp
                     )
-                    Text(
-                        text = "Loading video\u2026",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White
-                    )
+                    Column {
+                        Text(
+                            text = "Waiting for video\u2026",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White
+                        )
+                        // Real progress, not a spinner that says nothing.
+                        //
+                        // We cannot ask the phone for a keyframe — the request is
+                        // advisory and gearhead ignores it — so the honest readout
+                        // is how long we have waited against how often this phone
+                        // actually sends them, learned from the stream.
+                        val waited = uiState.videoStats.waitingForKeyframeMs
+                        val period = uiState.videoStats.estimatedKeyframePeriodMs
+                        if (waited > 1500) {
+                            val waitedS = waited / 1000
+                            val detail = if (period > 0) {
+                                val remain = ((period - waited) / 1000).coerceAtLeast(0)
+                                "${waitedS}s \u00b7 usually every ${period / 1000}s" +
+                                    if (remain > 0) " \u00b7 ~${remain}s left" else ""
+                            } else {
+                                "${waitedS}s \u00b7 the phone sends these on its own schedule"
+                            }
+                            Text(
+                                text = detail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFB0B0B0)
+                            )
+                            if (period > 0) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { (waited.toFloat() / period).coerceIn(0f, 1f) },
+                                    modifier = Modifier.width(220.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

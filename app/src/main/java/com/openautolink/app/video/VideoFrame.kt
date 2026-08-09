@@ -54,6 +54,15 @@ data class VideoStats(
     val codecResets: Int = 0,
     val bitrateKbps: Float = 0f,
     val waitingForKeyframe: Boolean = false,
+    /** How long we have been waiting for a keyframe, ms. 0 when not waiting. */
+    val waitingForKeyframeMs: Long = 0L,
+    /**
+     * Learned interval between the phone's keyframes, ms, or 0 if unknown.
+     *
+     * The phone sends them on its own schedule and ignores our requests, so this
+     * is measured from the stream rather than assumed.
+     */
+    val estimatedKeyframePeriodMs: Long = 0L,
 )
 
 enum class DecoderState {

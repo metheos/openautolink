@@ -220,6 +220,17 @@ class MediaCodecDecoder(
      */
     @Volatile private var lastRealIdrAtMs = 0L
 
+    /**
+     * True while the surface is detached and the codec must not be fed.
+     *
+     * Queueing into a codec whose output surface was destroyed throws on every
+     * call and leaves it unusable, which defeats the point of keeping it.
+     */
+    @Volatile private var inputPaused = false
+
+    /** When the current keyframe wait started, for the progress readout. */
+    @Volatile private var keyframeWaitSince = 0L
+
     /** Observed intervals between real IDRs, newest last. Small on purpose. */
     private val idrIntervals = ArrayDeque<Long>()
 
@@ -265,6 +276,7 @@ class MediaCodecDecoder(
             val target = surface ?: return
             val swapped = runCatching { codec?.setOutputSurface(target) }.isSuccess
             if (swapped) {
+                inputPaused = false
                 Log.i(TAG, "Swapped output surface on the live codec — no reconfigure needed")
                 DiagnosticLog.i("video", "Output surface swapped on live codec — video resumes immediately")
                 // The chain was never broken, so nothing to re-anchor.
@@ -272,6 +284,7 @@ class MediaCodecDecoder(
                 renderingEnabled = true
                 return
             }
+            inputPaused = false
             Log.w(TAG, "setOutputSurface rejected — falling back to a codec reconfigure")
             DiagnosticLog.w("video", "setOutputSurface rejected — reconfiguring codec")
             releaseCodec()
@@ -305,10 +318,20 @@ class MediaCodecDecoder(
                     // user actually sees — a frozen cached frame with the stream
                     // reporting healthy.
                     _needsKeyframe = true
+                    if (keyframeWaitSince == 0L) keyframeWaitSince = System.currentTimeMillis()
                     _needsKeyframeFlow.value = true
+                    // Publish immediately. updateStats() normally runs off the
+                    // decode path, and during a black screen nothing decodes —
+                    // so the flag the "waiting for video" indicator reads was
+                    // only ever pushed once video was already back.
+                    updateStats(null)
                 } else {
-                    _needsKeyframe = false
+                    // No cached IDR to replay: the screen is blank until the
+                    // phone sends one, which is exactly the wait to advertise.
+                    _needsKeyframe = true
+                    if (keyframeWaitSince == 0L) keyframeWaitSince = System.currentTimeMillis()
                     _needsKeyframeFlow.value = true  // Signal caller to request IDR
+                    updateStats(null)
                 }
             }
         }
@@ -330,8 +353,23 @@ class MediaCodecDecoder(
         // chain stays valid and the picture resumes immediately. Only fall back
         // to a full release if the codec refuses the swap.
         if (codec != null) {
-            Log.i(TAG, "Detaching surface — keeping codec alive for a fast return")
-            DiagnosticLog.i("video", "Surface detached, codec kept alive")
+            // Stop feeding it FIRST.
+            //
+            // Keeping the codec alive is only useful if it is still usable when
+            // we come back. Left running, the drain thread keeps queueing frames
+            // into a codec whose output surface has been destroyed, and every
+            // call throws IllegalStateException — thousands of them across a
+            // 17-second nav-away, after which setOutputSurface() is rejected
+            // because the codec is already in an error state. Measured:
+            //
+            //     01:12:39.022  Surface detached, codec kept alive
+            //     01:12:50…55   W Codec in bad state (IllegalStateException) xN
+            //     01:12:56.303  setOutputSurface rejected — reconfiguring codec
+            //
+            // Pausing input keeps it in a state the swap can actually accept.
+            inputPaused = true
+            Log.i(TAG, "Detaching surface — pausing input, keeping codec alive for a fast return")
+            DiagnosticLog.i("video", "Surface detached, codec kept alive (input paused)")
             surface = null
             surfaceWidth = 0
             surfaceHeight = 0
@@ -353,6 +391,22 @@ class MediaCodecDecoder(
     }
 
     override fun onFrame(frame: VideoFrame) {
+        // While detached, keep the codec untouched so the surface swap can
+        // succeed on return. Frames arriving now are for a screen nobody can
+        // see; queueing them only throws and poisons the codec.
+        if (inputPaused) {
+            // Still cache config and the newest IDR — they are what lets the
+            // fallback reconfigure path work if the swap is refused.
+            if (frame.isKeyframe && frame.data.size >= MIN_REAL_IDR_BYTES) {
+                cachedIdrFrame = frame
+            }
+            framesDropped.incrementAndGet()
+            // Keeps the elapsed-wait readout ticking once a second while nothing
+            // decodes — otherwise the progress text freezes at its first value.
+            updateDropStats()
+            return
+        }
+
         // Track video dimensions from frame headers
         if (frame.width > 0 && frame.height > 0) {
             pendingWidth = frame.width
@@ -595,6 +649,7 @@ class MediaCodecDecoder(
             }
         }
         lastRealIdrAtMs = nowMs
+        keyframeWaitSince = 0L
 
         updateStats(null)  // Immediately update waitingForKeyframe state for UI
     }
@@ -1097,6 +1152,10 @@ class MediaCodecDecoder(
                 current.release()
             } catch (_: Exception) {}
             codecResetCount++
+            // Never leave input paused across a codec teardown: the flag only
+            // means "the current codec has no surface", and there is no current
+            // codec any more. Latching it would silently drop every frame.
+            inputPaused = false
             DiagnosticLog.i("video", "Codec released (reset #$codecResetCount), renderGate -> false")
             codec = null
             activeDecoderName = null
@@ -1174,6 +1233,9 @@ class MediaCodecDecoder(
             codecResets = codecResetCount,
             bitrateKbps = currentBitrateKbps,
             waitingForKeyframe = _needsKeyframe,
+            waitingForKeyframeMs = if (_needsKeyframe && keyframeWaitSince > 0)
+                System.currentTimeMillis() - keyframeWaitSince else 0L,
+            estimatedKeyframePeriodMs = estimatedIdrPeriodMs ?: 0L,
         )
     }
 }
