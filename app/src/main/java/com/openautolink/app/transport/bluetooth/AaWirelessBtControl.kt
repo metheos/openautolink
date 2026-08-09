@@ -205,7 +205,8 @@ object AaWirelessBtControl {
                 OalLog.w(TAG, "Bluetooth did not come back — cannot republish the SDP record")
                 return@launch
             }
-            runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+              runCatching {
                 btServer?.stop()
                 btServer = null
                 startFromPreferences(ctx)
@@ -214,8 +215,9 @@ object AaWirelessBtControl {
                 // newly-learned address, and letting it start that cooldown
                 // blocked the discovery-driven re-advertise that follows it.
                 OalLog.i(TAG, "Republished the SDP record after the Bluetooth socket died")
-            }.onFailure {
+              }.onFailure {
                 OalLog.w(TAG, "Republish after socket death failed: ${it.message}")
+              }
             }
         }
     }
@@ -355,12 +357,22 @@ object AaWirelessBtControl {
             OalLog.w(TAG, "Cannot re-advertise — no context yet")
             return
         }
-        scope.launch {
+        // NonCancellable: this is stop-then-start, and the stop used to cancel
+        // the very coroutine performing it, so the restart never ran and nothing
+        // said why. The advertiser must come back even if something cancels us
+        // mid-sequence.
+        scope.launch(kotlinx.coroutines.NonCancellable) {
             runCatching {
+                OalLog.i(TAG, "Re-advertising: stopping the current SDP record")
                 btServer?.stop()
                 btServer = null
                 kotlinx.coroutines.delay(1_000)
                 startFromPreferences(ctx)
+                if (btServer?.isRunning == true) {
+                    OalLog.i(TAG, "Re-advertise complete — SDP record is live again")
+                } else {
+                    OalLog.w(TAG, "Re-advertise ran but no advertiser is running")
+                }
             }.onFailure { OalLog.w(TAG, "Re-advertise failed: ${it.message}") }
         }
     }

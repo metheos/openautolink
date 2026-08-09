@@ -89,8 +89,20 @@ class AaWirelessBtServer(
     private val context: Context,
     parentScope: CoroutineScope,
 ) {
-    private val scope =
-        CoroutineScope(parentScope.coroutineContext + SupervisorJob() + Dispatchers.IO)
+    // Deliberately does NOT inherit parentScope.coroutineContext.
+    //
+    // Inheriting it made this SupervisorJob a child of the caller's job, so
+    // stop() -> scope.cancel() tore down the caller too. A re-advertise, which
+    // is "stop the server, wait, start it again" running on the control's scope,
+    // therefore cancelled itself at the first suspension point and silently
+    // never restarted the advertiser:
+    //
+    //     21:13:31  Companion answered on attempt 2 — re-advertising
+    //     (nothing — no "advertiser stopped", no "Listening on ... UUID")
+    //
+    // Only the dispatcher is taken from the parent. Lifecycle is ours, and stop()
+    // now affects nothing but this server.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var aaServerSocket: BluetoothServerSocket? = null
     private var hfpServerSocket: BluetoothServerSocket? = null
