@@ -1171,8 +1171,8 @@ class SessionManager(
         // A transport restart can begin a native session without re-running the
         // full setup, so make sure a decoder exists rather than assuming one does.
         session.onNativeSessionStarting = { ensureVideoDecoder() }
-        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.sessionIsLive = {
-            sessionState.value != SessionState.IDLE
+        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.sessionIsStreaming = {
+            sessionState.value == SessionState.STREAMING
         }
 
         // Let the Bluetooth handshake dial the companion the instant it selects

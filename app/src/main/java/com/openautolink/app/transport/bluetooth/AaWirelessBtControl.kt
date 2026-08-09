@@ -250,9 +250,15 @@ object AaWirelessBtControl {
     fun readvertiseForNewCompanionAddress(host: String) {
         if (!lastEndpointWasCarDirect) return
         if (handshakeInFlight) return
-        // A live session means the car-direct endpoint is moot — something is
-        // working. Bouncing the record now would break it to fix nothing.
-        if (sessionIsLive?.invoke() == true) return
+        // Only a session that is actually CARRYING DATA counts as "working".
+        //
+        // The previous check was `sessionState != IDLE`, which is true the
+        // instant a session object exists — including while it sits listening
+        // for a phone that will never arrive. That is precisely the stall this
+        // function exists to break, so the guard blocked the only case it was
+        // meant to help: discovery reported the phone eight times across two
+        // minutes and no re-advertise ever fired.
+        if (sessionIsStreaming?.invoke() == true) return
         val now = System.currentTimeMillis()
         if (now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS) return
         lastReadvertiseAtMs = now
@@ -266,14 +272,13 @@ object AaWirelessBtControl {
     private var lastEndpointWasCarDirect = false
 
     /**
-     * Reports whether a projection session is currently up.
+     * Reports whether projection is actually running.
      *
-     * Set by SessionManager so the re-advertise guard can tell "stalled waiting
-     * for the phone" from "already connected", without this class needing to
-     * know about sessions.
+     * Must mean "data is flowing", not "a session object exists" — a session
+     * that is merely listening is the stalled state we need to break out of.
      */
     @Volatile
-    var sessionIsLive: (() -> Boolean)? = null
+    var sessionIsStreaming: (() -> Boolean)? = null
 
     @Volatile
     private var lastReadvertiseAtMs = 0L
@@ -945,9 +950,16 @@ object AaWirelessBtControl {
             // the car listens forever while the phone waits for a car socket.
             var proxyPort: Int? = null
             var companionIp: String? = null
+            // Known addresses get a much longer budget than a blind scan host.
+            //
+            // These came from discovery actually talking to the phone, so they
+            // are worth waiting on: the telematics bridge is slow and 1200ms is
+            // marginal for a real round trip, which is exactly why a companion
+            // that discovery reached seconds earlier can look absent here.
             for (ip in candidates) {
-                val p = companionProxyPort(ip)
+                val p = askCompanion(ip, connectTimeoutMs = 4000)
                 if (p != null) {
+                    OalLog.i(TAG, "Companion at $ip reports AA proxy on port $p")
                     proxyPort = p
                     companionIp = ip
                     lastKnownPhoneIp = ip
@@ -957,7 +969,10 @@ object AaWirelessBtControl {
             if (proxyPort == null) {
                 if (candidates.isNotEmpty()) {
                     OalLog.i(TAG, "Companion did not answer at ${candidates.joinToString()} — re-scanning")
-                    lastKnownPhoneIp = null
+                    // Deliberately NOT clearing lastKnownPhoneIp. A failed probe
+                    // here usually means the bridge was slow, not that the phone
+                    // moved — and discarding the one address discovery gave us
+                    // leaves the next attempt with nothing but a blind scan.
                 }
                 // The scan returns the port too — asking again would cost another
                 // slow round trip over the telematics bridge.

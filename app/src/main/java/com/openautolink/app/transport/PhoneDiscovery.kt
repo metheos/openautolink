@@ -170,7 +170,6 @@ class PhoneDiscovery private constructor(private val context: Context) {
      */
     private fun publishPhoneAddress(host: String) {
         val bt = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
-        val isNew = bt.lastKnownPhoneIp != host
         bt.lastKnownPhoneIp = host
         // Learning the companion's address late is the whole cause of the ~40s
         // stall. The handshake fires promptly (median 3s from publishing the SDP
@@ -186,7 +185,13 @@ class PhoneDiscovery private constructor(private val context: Context) {
         // Discovery had the answer 19s before the phone tried again. Bouncing the
         // SDP record now makes the phone re-handshake immediately: measured
         // republish-to-dial-back is 0-4s, median 0.5s.
-        if (isNew) bt.readvertiseForNewCompanionAddress(host)
+        // Deliberately NOT gated on the address having changed. lastKnownPhoneIp
+        // lives in a singleton and survives sessions, so after any previous run
+        // the address is already correct and "changed" is false forever — the
+        // stall is that the HANDSHAKE could not reach the companion, not that we
+        // learned something new. Measured: discovery reported the phone eight
+        // times over two minutes and this never fired once.
+        bt.readvertiseForNewCompanionAddress(host)
     }
 
     private val _isDiscovering = MutableStateFlow(false)
