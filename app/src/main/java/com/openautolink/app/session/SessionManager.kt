@@ -1116,6 +1116,24 @@ class SessionManager(
         }
         OalLog.i(TAG, "BT MAC for SDR: ${if (btMac.isNotEmpty()) btMac else "(none)"}")
 
+        // One-line capability probe for picture-in-picture.
+        //
+        // PiP would be a better answer to "I switched apps and came back" than
+        // any reconnect logic: the session would never be torn down at all. But
+        // it is an OPTIONAL platform feature and automotive builds have
+        // historically not shipped it. Rather than infer it from the Android
+        // version, ask this head unit and record the answer in the log we already
+        // collect, so the decision is made on evidence from the actual vehicle.
+        runCatching {
+            val pm = context?.packageManager ?: return@runCatching
+            val pip = pm.hasSystemFeature(
+                android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)
+            val freeform = pm.hasSystemFeature(
+                android.content.pm.PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT)
+            OalLog.i(TAG, "Windowing support: pictureInPicture=$pip " +
+                    "freeform=$freeform sdk=${android.os.Build.VERSION.SDK_INT}")
+        }.onFailure { OalLog.w(TAG, "Windowing probe failed: ${it.message}") }
+
         // Vehicle identity from VHAL.
         val vd = _vehicleDataForwarder?.latestVehicleData?.value
         val driverPos = if (driveSide == "right") 1 else 0
