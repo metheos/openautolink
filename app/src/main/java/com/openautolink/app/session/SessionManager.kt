@@ -631,6 +631,12 @@ class SessionManager(
     /** Reentrancy guard for reconnect() so rapid Save&Reconnect taps coalesce. */
     @Volatile private var reconnectInProgress = false
 
+    /** When the current reconnect began, so the guard above cannot latch. */
+    @Volatile private var reconnectStartedAt = 0L
+
+    /** Longest a reconnect can plausibly take before it is presumed dead. */
+    private val RECONNECT_MAX_MS = 60_000L
+
     /** SCREEN_OFF/_ON receiver registration tracker. */
     private var screenReceiver: android.content.BroadcastReceiver? = null
 
@@ -1617,6 +1623,20 @@ class SessionManager(
 
         OalLog.i(TAG, "Reconnect requested")
         // Reentrancy guard: rapid Save&Reconnect taps used to fire 20+ in <30ms.
+        //
+        // Self-expiring: the `finally` that clears it can be skipped if the
+        // coroutine is cancelled, and a latched guard would make Save & Reconnect
+        // permanently dead — the same failure that took the advertiser out for
+        // eight hours on 2026-08-10.
+        if (reconnectInProgress &&
+            reconnectStartedAt != 0L &&
+            System.currentTimeMillis() - reconnectStartedAt > RECONNECT_MAX_MS
+        ) {
+            OalLog.w(TAG, "reconnect() has been 'in progress' for " +
+                    "${(System.currentTimeMillis() - reconnectStartedAt) / 1000}s — " +
+                    "assuming it died and allowing a new one")
+            reconnectInProgress = false
+        }
         if (reconnectInProgress) {
             OalLog.w(TAG, "reconnect() already in progress — ignoring duplicate call")
             return
@@ -1634,6 +1654,7 @@ class SessionManager(
             return
         }
         reconnectInProgress = true
+        reconnectStartedAt = System.currentTimeMillis()
         OalLog.i(TAG, "Reconnecting AA session with new settings (minimal restart)")
         micSource = micSourcePreference
 
@@ -1682,6 +1703,7 @@ class SessionManager(
             } finally {
                 // Always clear the guard so a future reconnect attempt can run.
                 reconnectInProgress = false
+                reconnectStartedAt = 0L
             }
         }
     }

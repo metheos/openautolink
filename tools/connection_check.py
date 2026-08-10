@@ -100,6 +100,11 @@ M_HANDSHAKE_OK_LINE = "Handshake complete"
 # session the handshake was for. Distinct from a session that ran and then failed.
 M_NATIVE_START_LINE = "Starting native aasdk session"
 M_SELF_TEARDOWN = "stop() closing transport WITHOUT ByeBye reason=reconnect"
+# Ignition ON with no advertiser activity afterwards: the SDP record is never
+# published, so the phone is never told which network to join and simply stays
+# where it is. Produces a totally silent failure — no error, no retry, nothing.
+M_IGNITION_ON = "IGNITION_STATE → 4 (ON)"
+M_ADVERTISER_ANY = "AaWirelessBt"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -362,6 +367,43 @@ def check(a: Attempt) -> list[Finding]:
     return out
 
 
+def check_silent_advertiser(path: str) -> list:
+    """Ignition ON, then no advertiser activity at all.
+
+    Distinct from every other failure here because there is no error to find —
+    the guard that refuses to start returns before it logs anything. Measured
+    2026-08-10 16:46: ignition ON, 4 minutes of discovery sweeps, and not one
+    AaWirelessBt line, because an in-flight flag had been latched since 08:50.
+    """
+    out = []
+    try:
+        with open(path, errors="ignore") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return out
+    # Only meaningful for builds that HAVE a Bluetooth advertiser. 48 of the 59
+    # logs this first flagged were pre-WPP builds with no advertiser at all —
+    # a rule that fires on four-fifths noise is a rule nobody reads.
+    if not any(M_ADVERTISER_ANY in l for l in lines):
+        return out
+    for i, line in enumerate(lines):
+        if M_IGNITION_ON not in line:
+            continue
+        after = lines[i + 1:]
+        # A log that simply ends after ignition ON proves nothing.
+        if len(after) < 40:
+            continue
+        if not any(M_ADVERTISER_ANY in l for l in after):
+            out.append(Finding(
+                "FAIL", "advertiser-never-started",
+                f"ignition ON at {line[:12].strip()} and no advertiser activity "
+                "afterwards — no SDP record, so the phone is never told which "
+                "network to join",
+            ))
+            break
+    return out
+
+
 def check_log_level(attempts: list) -> list:
     """Findings that only show up across a whole log, not one attempt.
 
@@ -403,7 +445,7 @@ def main() -> int:
 
     for path in paths:
         log_attempts = parse_log(path)
-        for f in check_log_level(log_attempts):
+        for f in check_silent_advertiser(path) + check_log_level(log_attempts):
             (fails if f.severity == "FAIL" else warns)[f.rule] = \
                 (fails if f.severity == "FAIL" else warns).get(f.rule, 0) + 1
             reported.append(f"{os.path.basename(path)}  (whole log)")

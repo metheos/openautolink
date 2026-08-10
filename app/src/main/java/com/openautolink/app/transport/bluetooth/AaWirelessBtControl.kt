@@ -268,7 +268,30 @@ object AaWirelessBtControl {
         // Single-flight: ignition ON arrives as 4 -> 5 -> 4 within ~350ms, which
         // fired this three times in one cycle. Each one raced the others into a
         // Bluetooth stack that was still down.
-        if (!ensureInFlight.compareAndSet(false, true)) return
+        //
+        // Self-expiring, because the `finally` that clears it is not guaranteed
+        // to run. Measured 2026-08-10: the flag was set at ignition-off while
+        // waiting for the Bluetooth radio, the car then sat parked for 7h56m, and
+        // the coroutine died without reaching its finally. On the next ignition
+        // ON the compareAndSet below refused — silently, before the first log
+        // line — so the advertiser never started, no SDP record was published,
+        // and the phone was never told to join the car's network. Eight hours of
+        // latch from one skipped cleanup.
+        val startedAt = ensureInFlightSince
+        if (startedAt != 0L && System.currentTimeMillis() - startedAt > ENSURE_MAX_MS) {
+            OalLog.w(TAG, "Advertiser start has been 'in flight' for " +
+                    "${(System.currentTimeMillis() - startedAt) / 1000}s — assuming it " +
+                    "died and starting a new one")
+            ensureInFlight.set(false)
+            ensureInFlightSince = 0L
+        }
+        if (!ensureInFlight.compareAndSet(false, true)) {
+            // Say so. This returned silently, which is why an eight-hour failure
+            // produced no evidence at all.
+            OalLog.i(TAG, "Advertiser start already in flight — not starting another")
+            return
+        }
+        ensureInFlightSince = System.currentTimeMillis()
         OalLog.i(TAG, "No Bluetooth advertiser running — starting one")
         scope.launch {
             try {
@@ -284,11 +307,22 @@ object AaWirelessBtControl {
                     .onFailure { OalLog.w(TAG, "ensureAdvertising failed: ${it.message}") }
             } finally {
                 ensureInFlight.set(false)
+                ensureInFlightSince = 0L
             }
         }
     }
 
     private val ensureInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** When the in-flight advertiser start began, so the guard cannot latch. */
+    @Volatile
+    private var ensureInFlightSince = 0L
+
+    /**
+     * Longest a start attempt can plausibly take: the Bluetooth wait is capped at
+     * 180s, plus room for the publish itself. Anything past this is a corpse.
+     */
+    private const val ENSURE_MAX_MS = 240_000L
 
     fun republishAfterSocketDeath() {
         val ctx = appContext ?: return
@@ -373,7 +407,18 @@ object AaWirelessBtControl {
      */
     private fun startBackgroundCompanionProbe(candidates: List<String>) {
         if (candidates.isEmpty()) return
+        // Self-expiring for the same reason as ensureInFlight: a `finally` is not
+        // a guarantee. A probe that is cancelled at its delay() never clears the
+        // flag, and every later probe is refused for the life of the process.
+        val probeStarted = backgroundProbeSince
+        if (probeStarted != 0L && System.currentTimeMillis() - probeStarted > PROBE_MAX_MS) {
+            OalLog.w(TAG, "Background probe has been 'running' for " +
+                    "${(System.currentTimeMillis() - probeStarted) / 1000}s — assuming it died")
+            backgroundProbeRunning.set(false)
+            backgroundProbeSince = 0L
+        }
         if (!backgroundProbeRunning.compareAndSet(false, true)) return
+        backgroundProbeSince = System.currentTimeMillis()
         scope.launch {
             try {
                 for (attempt in 1..COMPANION_PROBE_ATTEMPTS) {
@@ -410,11 +455,19 @@ object AaWirelessBtControl {
                         "attempts at ${candidates.joinToString()}")
             } finally {
                 backgroundProbeRunning.set(false)
+                backgroundProbeSince = 0L
             }
         }
     }
 
     private val backgroundProbeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** When the current background probe began, so the guard cannot latch. */
+    @Volatile
+    private var backgroundProbeSince = 0L
+
+    /** Longest a probe sweep can plausibly take before it is presumed dead. */
+    private const val PROBE_MAX_MS = 120_000L
 
     /**
      * Run a re-advertise that was requested while a handshake was in flight.
