@@ -283,6 +283,19 @@ class AasdkSession(
     @Volatile
     var onNativeSessionStarting: (() -> Unit)? = null
 
+    /** The companion address the current native session was dialled for. */
+    @Volatile
+    private var lastDialledCompanionIp: String? = null
+
+    /**
+     * True briefly around a deliberate session replacement.
+     *
+     * The native error that follows our own teardown looks identical to a real
+     * protocol rejection, and misreading it inflates the reconnect backoff.
+     */
+    @Volatile
+    private var selfInflictedTeardown = false
+
     fun dialCompanion(ip: String) {
         // The ignition-cycle simulation holds the session down deliberately;
         // reconnecting mid-window makes the test meaningless.
@@ -299,6 +312,27 @@ class AasdkSession(
             OalLog.d(TAG, "Already dialling/connected — ignoring dial request for $ip")
             return
         }
+        // A live native session outranks a fresh handshake asking us to dial.
+        //
+        // Re-advertising (0.1.422) makes the phone re-dial over Bluetooth, which
+        // produces a new handshake, which resolves the endpoint and calls back
+        // here. Dialling then tears down the session that handshake was for —
+        // handleConnection() replaces the live pipe — which surfaces as a
+        // protocol error, schedules a retry, and the retry re-advertises again.
+        // Measured 2026-08-10 08:21-08:24: 13 endpoint resolutions, 21 session
+        // deaths, sessions dying 8ms after being created, for three minutes.
+        //
+        // It only stopped because the backoff grew to 30s and finally left a gap
+        // long enough for one session to outlive the next handshake.
+        //
+        // If a session is already carrying data to this same companion, the
+        // handshake is telling us something we have already acted on.
+        if (transportPipe != null && ip == lastDialledCompanionIp) {
+            OalLog.i(TAG, "Already connected to $ip — ignoring the re-dial from " +
+                    "this handshake rather than tearing down a live session")
+            return
+        }
+        lastDialledCompanionIp = ip
         if (existing != null) {
             OalLog.i(TAG, "Replacing a dead connector to dial $ip")
             existing.stop()
@@ -379,8 +413,15 @@ class AasdkSession(
         // goodbye added there was never sent.
         if (transportPipe != null) {
             OalLog.i(TAG, "Replacing a live session — sending ByeBye first")
+            selfInflictedTeardown = true
             runCatching { AasdkNative.nativeShutdownGracefully("reconnect", 400) }
             Thread.sleep(400)
+            // Give the native error that follows our own stop() a moment to be
+            // attributed correctly, then go back to trusting Error 30.
+            scope.launch {
+                kotlinx.coroutines.delay(1500)
+                selfInflictedTeardown = false
+            }
         }
 
         val input = socket.getInputStream()
@@ -906,7 +947,14 @@ class AasdkSession(
         }
         // Flag protocol/handshake errors so reconnect uses extended backoff.
         // AASDK Error 30 = SSL handshake rejected (phone still holds old session).
-        if ("AASDK Error: 30" in message) {
+        //
+        // But not when WE caused it. Replacing a live session in
+        // handleConnection() tears down the old transport, and the native layer
+        // reports that as Error 30 milliseconds later — indistinguishable from a
+        // genuine rejection. Treating our own teardown as a protocol failure
+        // escalated the backoff to 5s, 10s, 20s, 30s during the 08:21-08:24 loop,
+        // punishing a session that had nothing wrong with it.
+        if ("AASDK Error: 30" in message && !selfInflictedTeardown) {
             lastFailureWasProtocolError = true
         }
         // Only emit at most once per second (matches the log coalescing). Auto-reconnect

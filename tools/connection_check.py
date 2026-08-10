@@ -95,6 +95,11 @@ M_GATEWAY_DIAL = "(gateway)"
 # Handshakes completing over and over with no session: our side advertised the
 # right endpoint every time, and never opened its own half of the connection.
 M_HANDSHAKE_OK_LINE = "Handshake complete"
+# A session torn down within a second of being created is us fighting ourselves:
+# a re-advertise triggers a handshake, the handshake dials, the dial replaces the
+# session the handshake was for. Distinct from a session that ran and then failed.
+M_NATIVE_START_LINE = "Starting native aasdk session"
+M_SELF_TEARDOWN = "stop() closing transport WITHOUT ByeBye reason=reconnect"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
 
@@ -127,6 +132,7 @@ class Attempt:
     ssl_timeouts: int = 0
     gateway_dials: int = 0
     handshakes: int = 0
+    self_teardowns: int = 0
     discovery_found_after: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -216,6 +222,8 @@ def parse_log(path: str) -> list[Attempt]:
                 current.ssl_timeouts += 1
             elif M_GATEWAY_DIAL in line:
                 current.gateway_dials += 1
+            elif M_SELF_TEARDOWN in line:
+                current.self_teardowns += 1
             elif M_AUDIO_START in line:
                 current.audio_starts += 1
             elif M_AUDIO_FLOW in line:
@@ -354,6 +362,25 @@ def check(a: Attempt) -> list[Finding]:
     return out
 
 
+def check_log_level(attempts: list) -> list:
+    """Findings that only show up across a whole log, not one attempt.
+
+    The reconnect feedback loop spreads thinly — measured 20 self-inflicted
+    teardowns across 9 attempts, never more than 4 in any one — so a per-attempt
+    threshold misses it entirely. The signal is the total.
+    """
+    out = []
+    total = sum(a.self_teardowns for a in attempts)
+    if total >= 8:
+        out.append(Finding(
+            "FAIL", "reconnect-feedback-loop",
+            f"{total} self-inflicted teardowns across {len(attempts)} attempts — "
+            "a re-advertise triggers a handshake whose dial destroys the session "
+            "that handshake was for",
+        ))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -375,7 +402,13 @@ def main() -> int:
     reported: list[str] = []
 
     for path in paths:
-        for a in parse_log(path):
+        log_attempts = parse_log(path)
+        for f in check_log_level(log_attempts):
+            (fails if f.severity == "FAIL" else warns)[f.rule] = \
+                (fails if f.severity == "FAIL" else warns).get(f.rule, 0) + 1
+            reported.append(f"{os.path.basename(path)}  (whole log)")
+            reported.append(f"    {f.severity}  {f.rule}: {f.detail}")
+        for a in log_attempts:
             total += 1
             if a.connected:
                 connected += 1
