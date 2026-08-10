@@ -248,6 +248,10 @@ object AaWirelessBtControl {
     @Volatile
     var simulatedIgnitionOff = false
 
+    /** Set by the session layer so slow startup phases can be shown on screen. */
+    @Volatile
+    var onStatus: ((String) -> Unit)? = null
+
     fun stopAdvertising() {
         scope.launch(kotlinx.coroutines.NonCancellable) {
             runCatching {
@@ -949,11 +953,23 @@ object AaWirelessBtControl {
                     ?.hostAddress
             }.getOrNull()
             if (addr != null) {
-                if (waited) OalLog.i(TAG, "$apInterface is up at $addr — advertising now")
+                if (waited) {
+                    OalLog.i(TAG, "$apInterface is up at $addr — advertising now")
+                    onStatus?.invoke("Car WiFi ready \u2014 connecting\u2026")
+                }
                 return
             }
             if (!waited) {
                 OalLog.i(TAG, "Waiting for $apInterface — the car's hotspot is not serving yet")
+                // Tell the user too.
+                //
+                // Measured 2026-08-10: ignition ON at 08:20:08, the AP interface
+                // did not hold an address until 08:21:54 — 106 seconds during
+                // which the screen showed an idle state and the phone was never
+                // asked to switch networks, because the SSID and key only travel
+                // inside the Bluetooth handshake we cannot publish yet. Looked
+                // exactly like nothing was happening.
+                onStatus?.invoke("Waiting for the car's WiFi\u2026")
                 waited = true
             }
             kotlinx.coroutines.delay(1_000)

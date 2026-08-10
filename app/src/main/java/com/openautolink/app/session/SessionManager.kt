@@ -1313,6 +1313,12 @@ class SessionManager(
         // and so never trigger onDecoderCreated.
         // A transport restart can begin a native session without re-running the
         // full setup, so make sure a decoder exists rather than assuming one does.
+        // Surface slow wireless startup phases on the projection screen.
+        com.openautolink.app.transport.bluetooth.AaWirelessBtControl.onStatus = { msg ->
+            if (_sessionState.value != SessionState.STREAMING) {
+                _statusMessage.value = msg
+            }
+        }
         session.onNativeSessionStarting = {
             ensureVideoDecoder()
             ensureAudioPlayer()
