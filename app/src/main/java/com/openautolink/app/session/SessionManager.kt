@@ -1028,7 +1028,14 @@ class SessionManager(
 
             // Watch for video-arrival stall (frames stop coming entirely)
             videoStallWatchJob?.cancel()
-            videoStallWatchJob = launch { watchVideoStall() }
+            // IO, not Main. This watchdog calls into the native session
+            // (requestKeyframe -> nativeRequestKeyframe), and SessionManager's
+            // scope is Dispatchers.Main. Measured 2026-08-11 09:13:44: the
+            // watchdog escalated to forceReconnect, which began tearing the
+            // native session down on IO, and the main thread's next native call
+            // blocked behind that teardown for 16.4 seconds — ANR, tombstone,
+            // app restart. Nothing on the main thread should enter JNI.
+            videoStallWatchJob = launch(kotlinx.coroutines.Dispatchers.IO) { watchVideoStall() }
 
             // Watch call state for mic purpose routing
             callStateJob?.cancel()
@@ -1765,7 +1772,14 @@ class SessionManager(
         observeJob = scope.launch {
             decoderWatchJob = launch { watchDecoderState() }
             keyframeWatchJob = launch { watchKeyframeNeeds() }
-            videoStallWatchJob = launch { watchVideoStall() }
+            // IO, not Main. This watchdog calls into the native session
+            // (requestKeyframe -> nativeRequestKeyframe), and SessionManager's
+            // scope is Dispatchers.Main. Measured 2026-08-11 09:13:44: the
+            // watchdog escalated to forceReconnect, which began tearing the
+            // native session down on IO, and the main thread's next native call
+            // blocked behind that teardown for 16.4 seconds — ANR, tombstone,
+            // app restart. Nothing on the main thread should enter JNI.
+            videoStallWatchJob = launch(kotlinx.coroutines.Dispatchers.IO) { watchVideoStall() }
             callStateJob = launch { watchCallState() }
 
             startSession(directTransport, hotspotSsid, hotspotPassword,
@@ -2186,6 +2200,14 @@ class SessionManager(
     }
 
     suspend fun sendControlMessage(message: ControlMessage) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) sendCtl@{
+        // Never enter JNI from the main thread.
+        //
+        // Callers use viewModelScope, which is Dispatchers.Main, so every touch
+        // and key event was a blocking native call on the UI thread. Harmless
+        // while the session is healthy; when a teardown holds the native lock it
+        // parks the main thread behind it. That is what produced the 16.4-second
+        // main-thread stall and ANR on 2026-08-11.
         val session = aasdkSession
         if (session == null) {
             // Say so. This silent return meant every touch vanished while video
@@ -2199,7 +2221,7 @@ class SessionManager(
                         "reference. Input will not reach the phone even if video is " +
                         "streaming.")
             }
-            return
+            return@sendCtl
         }
         when (message) {
             is ControlMessage.Touch -> {
@@ -2213,8 +2235,8 @@ class SessionManager(
                         ids, xs, ys
                     )
                 } else {
-                    val x = message.x ?: return
-                    val y = message.y ?: return
+                    val x = message.x ?: return@sendCtl
+                    val y = message.y ?: return@sendCtl
                     session.sendTouchEvent(
                         message.action, message.pointerId ?: 0, x, y, 1
                     )
@@ -2246,6 +2268,7 @@ class SessionManager(
                 // GPS forwarded via LocationListener, not control messages
             }
             else -> {}
+        }
         }
     }
 

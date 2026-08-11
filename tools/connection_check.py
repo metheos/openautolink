@@ -110,6 +110,9 @@ M_SELF_TEARDOWN = "stop() closing transport WITHOUT ByeBye reason=reconnect"
 # published, so the phone is never told which network to join and simply stays
 # where it is. Produces a totally silent failure — no error, no retry, nothing.
 M_IGNITION_ON = "IGNITION_STATE → 4 (ON)"
+# The app stopped responding: Android dumped every thread to tombstoned. Reads as
+# a crash to the user (the app restarts), but it is a blocked main thread.
+M_ANR = "Wrote stack traces to tombstoned"
 M_ADVERTISER_ANY = "AaWirelessBt"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
@@ -379,6 +382,14 @@ def check_transport_agnostic(path: str) -> list:
             text = fh.read()
     except OSError:
         return out
+    # The ANR marker is emitted by the platform, so it only appears in the paired
+    # logcat capture — scanning the app's own file log alone would never see it.
+    logcat_path = path.replace("/oal_", "/logcat_")
+    try:
+        with open(logcat_path, errors="ignore") as fh:
+            logcat_text = fh.read()
+    except OSError:
+        logcat_text = ""
 
     # A native session start that never re-ran full setup keeps whatever the last
     # stop() left behind: null decoder, no surface, stale session reference.
@@ -394,6 +405,15 @@ def check_transport_agnostic(path: str) -> list:
                 "full setup — decoder, surface, session reference or audio "
                 "collectors may be stale",
             ))
+
+    # Main thread stopped responding.
+    anrs = logcat_text.count(M_ANR)
+    if anrs:
+        out.append(Finding(
+            "FAIL", "app-not-responding",
+            f"{anrs} ANR(s) — the main thread stopped responding long enough for "
+            "Android to dump threads; the app restarts and looks like a crash",
+        ))
 
     # The phone announced audio and none of it reached the player.
     a_start = text.count(M_AUDIO_START)

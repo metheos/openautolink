@@ -197,6 +197,33 @@ object IgnitionMonitor {
                     val wasOn = prev == 4 || prev == 5
                     val isOn = v == 4 || v == 5
                     if (wasOn && !isOn) ignitionOffStampMs = SystemClock.elapsedRealtime()
+
+                    // Re-arm the Bluetooth advertiser from HERE, not from the UI.
+                    //
+                    // The re-arm used to live in ProjectionViewModel on
+                    // viewModelScope — which dies with the Activity. After an
+                    // overnight park the Activity is stopped, and the ignition
+                    // transition lands BEFORE it restarts:
+                    //
+                    //     09:10:54.346  IGNITION_STATE -> 4 (ON) [was 2]
+                    //     09:10:55.972  MainActivity.onStart      (1.6s later)
+                    //
+                    // so nothing was listening when it mattered. Measured over
+                    // three cycles on 2026-08-11: three ignition ONs, zero
+                    // advertiser starts, no SDP record, and the phone therefore
+                    // never told which network to join.
+                    //
+                    // This object is an application-lifetime singleton, so it is
+                    // listening whether or not any Activity exists.
+                    if (!wasOn && isOn) {
+                        DiagnosticLog.i(TAG, "Ignition ON — re-arming the Bluetooth advertiser")
+                        runCatching {
+                            com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                                .ensureAdvertising()
+                        }.onFailure {
+                            DiagnosticLog.w(TAG, "Advertiser re-arm failed: ${it.message}")
+                        }
+                    }
                 }
                 GEAR_SELECTION_ID -> {
                     val v = value as? Int ?: return
