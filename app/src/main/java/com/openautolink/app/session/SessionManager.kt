@@ -390,6 +390,26 @@ class SessionManager(
     @Volatile private var renderRectHPx: Int = 0
     @Volatile private var panelDensityDpi: Int = 0
     @Volatile private var lastDisplayMode: String = AppPreferences.DEFAULT_DISPLAY_MODE
+    /** True once the renderer has measured, so auto-DPI can be computed. */
+    val hasRenderRect: Boolean get() = renderRectWPx > 0 && renderRectHPx > 0
+
+    /**
+     * Wait (briefly) for the renderer to report its size.
+     *
+     * Auto-DPI needs the render rect, which Compose measures. Starting a session
+     * before that ships the user's MANUAL dpi to the phone instead, and the whole
+     * projected UI comes up at the wrong scale until something forces a rebuild.
+     */
+    suspend fun awaitRenderRect(timeoutMs: Long = 3_000): Boolean {
+        if (hasRenderRect) return true
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(50)
+            if (hasRenderRect) return true
+        }
+        return false
+    }
+
     fun setRenderRect(widthPx: Int, heightPx: Int, panelDpi: Int, displayMode: String? = null) {
         renderRectWPx = widthPx.coerceAtLeast(0)
         renderRectHPx = heightPx.coerceAtLeast(0)
@@ -1245,8 +1265,20 @@ class SessionManager(
             } else aaDpi
             effectiveDpi = auto
             computedTargetLayoutWidthDp = aaTargetLayoutWidthDp
-            OalLog.i(TAG, "Auto-DPI: renderRect=${rrW}x${rrH} panelDpi=$pDpi " +
-                    "innerW=$innerW → DPI $effectiveDpi (user manual=$aaDpi ignored)")
+            if (rrW <= 0) {
+                // Say so, loudly. Auto-DPI is on but the renderer has not
+                // measured yet, so this silently shipped the MANUAL value to the
+                // phone and the whole UI came up at the wrong scale. Measured
+                // 2026-08-11: the first two sessions after launch sent dpi=175,
+                // every later one sent the correct auto value of 131 — and the
+                // only difference was whether Compose had run by then.
+                OalLog.w(TAG, "Auto-DPI requested but the render rect is not " +
+                        "measured yet — falling back to manual $aaDpi. Will " +
+                        "re-apply once the renderer reports.")
+            } else {
+                OalLog.i(TAG, "Auto-DPI: renderRect=${rrW}x${rrH} panelDpi=$pDpi " +
+                        "innerW=$innerW → DPI $effectiveDpi (user manual=$aaDpi ignored)")
+            }
         } else {
             // Manual: user picked the DPI; honour exactly.
             effectiveDpi = aaDpi

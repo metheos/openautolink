@@ -742,6 +742,16 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val defaultPhone = preferences.defaultPhoneName.first()
             sessionManager.setDefaultPhoneName(defaultPhone)
 
+            // Auto-DPI needs the renderer's measured size. Starting before
+            // Compose has measured ships the user's MANUAL dpi to the phone
+            // instead, and the projected UI comes up at the wrong scale until
+            // something forces a rebuild — measured 2026-08-11, dpi=175 on the
+            // first two sessions after launch and 131 on every one after.
+            if (aaAutoDpi && !sessionManager.awaitRenderRect()) {
+                OalLog.w(TAG, "Renderer never reported a size — starting with " +
+                        "manual DPI; scaling may be wrong until reconnect")
+            }
+
             sessionManager.start(
                 codecPreference = codec,
                 micSourcePreference = micSrc,
