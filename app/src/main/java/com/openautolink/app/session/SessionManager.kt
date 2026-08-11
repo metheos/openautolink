@@ -212,7 +212,12 @@ class SessionManager(
     /** Called by the UI whenever a surface becomes available or is destroyed. */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
         lastKnownSurface = surface?.let { Triple(it, width, height) }
-        if (surface != null) _videoDecoder?.attach(surface, width, height)
+        // attach() configures or swaps the MediaCodec output surface, which
+        // blocks on the codec — and this is called from SurfaceView callbacks on
+        // the main thread. One archived ANR's last main-thread line is exactly
+        // "Surface attached", immediately after a forced reconnect began tearing
+        // the session down on another thread.
+        if (surface != null) scope.launch { _videoDecoder?.attach(surface, width, height) }
     }
 
     /**
@@ -1857,7 +1862,11 @@ class SessionManager(
         val session = aasdkSession ?: return
         lastSentNightMode = night
         OalLog.i(TAG, "UI night mode → $night (forwarding to phone)")
-        session.sendNightMode(night)
+        // Off the caller's thread: MainActivity calls this directly from
+        // onCreate/onResume, so sendNightMode() — a blocking JNI call — ran on
+        // the UI thread. Two archived ANRs have a night-mode line immediately
+        // before the last main-thread entry.
+        scope.launch { session.sendNightMode(night) }
     }
 
     /**

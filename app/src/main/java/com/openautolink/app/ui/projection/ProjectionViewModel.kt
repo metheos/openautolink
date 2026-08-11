@@ -481,7 +481,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 connectInFlight = true
                 hasConnected = true
             }
-            viewModelScope.launch {
+            // IO: this block reaches SessionManager.start(), which does a
+            // runBlocking DataStore read and brings up the whole session. On
+            // Dispatchers.Main that is a UI-thread stall waiting on disk.
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 var settle = false
                 try {
                     val mode = preferences.connectionMode.first()
@@ -786,7 +789,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      * mode has no fallback.
      */
     fun reconnect() {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             OalLog.i(TAG, "reconnect(): tearing down current session")
             sessionManager.stop()
             hasConnected = false
@@ -795,7 +798,11 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun disconnect() {
-        sessionManager.stop()
+        // stop() closes the native transport, which blocks until the native side
+        // releases its lock. viewModelScope is Dispatchers.Main, so this was the
+        // UI thread sitting inside JNI teardown — five archived ANRs have
+        // "JniTransport stopping" as their last main-thread line.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { sessionManager.stop() }
     }
 
     // --- Multi-phone: Phone Chooser ---
@@ -1457,7 +1464,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     /** Show the phone chooser: disconnect, restart discovery showing all phones. */
     fun showPhoneChooser() {
         _showPhoneChooser.value = true
-        sessionManager.stop()
+        // Same reason as disconnect(): never tear the native session down on the
+        // thread that draws the UI.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { sessionManager.stop() }
         hasConnected = false
         // Temporarily clear the default filter so all phones appear in discovery,
         // but don't persist — the saved default stays unchanged.
@@ -1536,7 +1545,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         selectPhoneInFlight = true
-        viewModelScope.launch {
+        // IO: this path calls sessionManager.stop(), which blocks in native
+        // teardown. viewModelScope alone is Dispatchers.Main.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 runSelectCarHotspotPhone(phone, phoneId, host)
             } finally {
@@ -2259,7 +2270,11 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         pendingSurfaceWidth = 0
         pendingSurfaceHeight = 0
         sessionManager.publishSurface(null, 0, 0)
-        sessionManager.videoDecoder?.detach()
+        // detach() touches MediaCodec, which blocks. This is a SurfaceView
+        // callback, so it arrives on the main thread.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            sessionManager.videoDecoder?.detach()
+        }
     }
 
     /** Attach pending surface to a newly created decoder. Called by session observer. */
@@ -2327,7 +2342,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         fileLogWriter?.stop()
         DiagnosticLog.fileLogWriter = null
         unregisterUsbStorageReceiver()
-        sessionManager.stop()
+        // onCleared() runs on the main thread. Hand the native teardown to a
+        // plain thread — viewModelScope is already cancelled by this point, so a
+        // coroutine here would never run.
+        Thread({ sessionManager.stop() }, "oal-session-stop").start()
         super.onCleared()
     }
 }

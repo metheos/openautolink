@@ -120,11 +120,18 @@ class MainActivity : ComponentActivity() {
         // which disables the OalClusterService component — Templates Host
         // then unbinds, our Session.onDestroy runs, and the cluster Activity
         // is fully released.
-        try {
-            com.openautolink.app.session.SessionManager.instanceOrNull()?.stop()
-        } catch (e: Exception) {
-            Log.w("MainActivity", "SessionManager.stop() failed: ${e.message}")
-        }
+        // Off the main thread: stop() closes the native transport and blocks
+        // until the native side releases its lock. This is an Activity lifecycle
+        // callback, so it runs on the UI thread — the shape behind eight of the
+        // ANRs in the log archive, whose last main-thread line is
+        // "JniTransport stopping".
+        Thread({
+            try {
+                com.openautolink.app.session.SessionManager.instanceOrNull()?.stop()
+            } catch (e: Exception) {
+                Log.w("MainActivity", "SessionManager.stop() failed: ${e.message}")
+            }
+        }, "oal-session-stop").start()
 
         val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
         // Finish every task this app owns (MainActivity + CarAppActivity live
