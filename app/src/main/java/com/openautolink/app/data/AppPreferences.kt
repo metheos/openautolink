@@ -312,7 +312,12 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_OVERLAY_STATS_BUTTON = true
         const val DEFAULT_FILE_LOGGING_ENABLED = false
         const val DEFAULT_FILE_LOGGING_AUTOSTART_USB = false
-        const val DEFAULT_LOGCAT_CAPTURE_ENABLED = false
+        // On by default. There is no adb on the head unit, so this capture is
+        // the only route to native and framework messages — the ANR evidence in
+        // this project came entirely from it, and none of it appears in the
+        // app's own log. Runs one `logcat --pid=<us>` process and writes
+        // alongside the existing log, so the cost is one file per session.
+        const val DEFAULT_LOGCAT_CAPTURE_ENABLED = true
         const val DEFAULT_LOG_PERSIST_ENABLED = false
         const val DEFAULT_LOG_UPLOAD_ENABLED = false
         const val DEFAULT_SIMULATE_IGNITION_BUTTON = false

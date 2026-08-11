@@ -33,6 +33,9 @@ class ImuForwarder(
         private set
 
     private var sensorManager: SensorManager? = null
+
+    /** Delivers sensor callbacks off the main thread. */
+    private var sensorThread: android.os.HandlerThread? = null
     private var locationManager: LocationManager? = null
     private var gnssCallback: GnssStatus.Callback? = null
 
@@ -67,19 +70,30 @@ class ImuForwarder(
             return
         }
 
+        // Deliver sensor callbacks on our own thread, not the main one.
+        //
+        // registerListener() without a Handler posts every event to the main
+        // Looper, and onSensorChanged() ends in sendMessage() -> a blocking JNI
+        // call. At SENSOR_DELAY_UI that is the UI thread entering native code
+        // dozens of times a second; if a session teardown holds the native lock,
+        // the main thread parks behind it. Four of the archive's ANRs have
+        // "IMU forwarding started" as their last main-thread line.
+        sensorThread = android.os.HandlerThread("oal-imu").apply { start() }
+        val sensorHandler = android.os.Handler(sensorThread!!.looper)
+
         // Register accelerometer
         sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sensor ->
-            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI, sensorHandler)
         } ?: DiagnosticLog.i("imu", "Accelerometer not available")
 
         // Register gyroscope
         sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sensor ->
-            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI, sensorHandler)
         } ?: DiagnosticLog.i("imu", "Gyroscope not available")
 
         // Register magnetic field (for compass computation)
         sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sensor ->
-            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+            sm.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI, sensorHandler)
         } ?: DiagnosticLog.i("imu", "Magnetic field sensor not available")
 
         // Register GNSS satellite status
@@ -118,6 +132,8 @@ class ImuForwarder(
     fun stop() {
         if (!isActive) return
         sensorManager?.unregisterListener(this)
+        sensorThread?.quitSafely()
+        sensorThread = null
         gnssCallback?.let { locationManager?.unregisterGnssStatusCallback(it) }
         sensorManager = null
         locationManager = null

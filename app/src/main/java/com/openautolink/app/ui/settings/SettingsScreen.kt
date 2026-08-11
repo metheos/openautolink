@@ -2582,13 +2582,17 @@ private fun DiagnosticsSettingsTab(
             Column(modifier = Modifier.weight(1f)) {
                 Text("Include Full Logcat", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Also capture the full Android logcat for our app's process " +
-                        "(native C++/JNI, AOSP framework, MediaCodec, AudioTrack, " +
-                        "Binder, Surface). Saves to logcat_<timestamp>.log. " +
-                        "AAOS does not allow apps to read system-wide logs without " +
-                        "root, so other apps and PowerManager events are not " +
-                        "included. Significantly larger files — only enable when " +
-                        "actively troubleshooting.",
+                    "On by default. Captures the full Android logcat for this " +
+                        "app's process (native C++/JNI, AOSP framework, MediaCodec, " +
+                        "AudioTrack, Binder, Surface) alongside the normal log, so " +
+                        "every log upload includes it. This is the only way to see " +
+                        "native and framework messages on a head unit, where adb is " +
+                        "not available — app-freeze diagnoses come entirely from " +
+                        "here.\n\n" +
+                        "AAOS will not let apps read system-wide logs without root, " +
+                        "so other apps and PowerManager events are still not " +
+                        "included. Makes uploads noticeably larger; turn it off if " +
+                        "you are not troubleshooting.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }

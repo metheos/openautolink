@@ -107,7 +107,23 @@ class SessionManager(
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Main)
+    /**
+     * Session work runs OFF the main thread.
+     *
+     * This scope drives the aasdk session, and much of that work enters JNI —
+     * nativeStopSession, nativeShutdownGracefully, nativeRequestKeyframe — which
+     * blocks until the native side releases its lock. On Dispatchers.Main that
+     * parks the UI thread and Android kills the app. The archive holds 18 ANRs
+     * back to 2026-06-26, and their last main-thread lines name this scope's
+     * work: "JniTransport stopping" (5), "Reconnecting AA session" (3),
+     * "Video stall — forcing reconnect" (4).
+     *
+     * Nothing here needs the main thread. The state it publishes is
+     * MutableStateFlow, which is thread-safe; WindowManager metrics are readable
+     * from any thread; and the GPS listener already passes an explicit main
+     * Looper. Compose collects the flows on its own dispatcher regardless.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
 
     // aasdk JNI session -- native C++ handles AA protocol
     private var aasdkSession: AasdkSession? = null

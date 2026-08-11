@@ -49,7 +49,27 @@ class LogcatCapture {
         val file = File(logDir, fileName)
 
         return try {
-            // Clear logcat buffer first so we don't get stale history
+            // Drain what is already buffered BEFORE clearing.
+            //
+            // The buffer holds whatever happened before this capture started —
+            // including the tail of a previous run that crashed or was killed,
+            // which is exactly the evidence that is otherwise unreachable
+            // without adb. Clearing first threw it away every time.
+            runCatching {
+                val dump = Runtime.getRuntime().exec(arrayOf(
+                    "logcat", "-d", "--pid=${Process.myPid()}", "-v", "threadtime"
+                ))
+                dump.inputStream.bufferedReader().use { r ->
+                    FileOutputStream(file, true).bufferedWriter().use { w ->
+                        w.write("--- buffered before capture started ---\n")
+                        r.copyTo(w)
+                        w.write("--- live capture begins ---\n")
+                    }
+                }
+                dump.waitFor()
+            }
+
+            // Now clear, so the live capture below does not duplicate it.
             Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor()
 
             val pid = Process.myPid()
