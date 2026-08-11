@@ -1537,6 +1537,25 @@ private fun FileLoggingSection() {
                     style = MaterialTheme.typography.bodySmall,
                     color = OalGreen,
                 )
+                // Say whether the grant actually took. Without this the only
+                // symptom is an absence — a capture that looks complete but
+                // contains one process, which reads like "Android Auto logged
+                // nothing" rather than "we were not allowed to see it".
+                val readLogsGranted = remember {
+                    context.checkSelfPermission(
+                        android.Manifest.permission.READ_LOGS
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+                Text(
+                    text = if (readLogsGranted) {
+                        "READ_LOGS is granted — Android Auto's own logs will be captured."
+                    } else {
+                        "READ_LOGS is NOT granted. Capture will contain only this " +
+                            "app's process, so Android Auto's own reason for dropping " +
+                            "a session will be missing."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }

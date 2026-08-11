@@ -186,7 +186,22 @@ class CompanionFileLogger(private val context: Context) {
             try {
                 // Clear logcat buffer first, then stream new lines
                 Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor()
-                Log.i(TAG, "Logcat capture starting (verbose=$verbose)")
+                // State whether READ_LOGS actually took, rather than leaving it
+                // to be inferred from what is missing. Without the grant this
+                // capture silently records only our own process, which reads
+                // exactly like "the other app logged nothing".
+                val hasReadLogs = context.checkSelfPermission(
+                    android.Manifest.permission.READ_LOGS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                Log.i(TAG, "Logcat capture starting (verbose=$verbose, " +
+                        "READ_LOGS=${if (hasReadLogs) "granted — other apps' logs " +
+                        "included" else "NOT granted — this app's process only"})")
+                if (verbose && !hasReadLogs) {
+                    Log.w(TAG, "Verbose capture is on but READ_LOGS is not granted, " +
+                            "so Android Auto's own logs will NOT appear. Run: adb shell " +
+                            "pm grant com.openautolink.companion android.permission.READ_LOGS " +
+                            "then reboot.")
+                }
 
                 val process = Runtime.getRuntime().exec(logcatCmd)
                 logcatProcess = process
