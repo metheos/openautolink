@@ -85,7 +85,13 @@ M_READOPT = "Re-adopting the session after a transport restart"
 # open, codec agreed, phone sending — and nothing arrives. Silent playback with
 # stats showing no audio at all.
 M_AUDIO_START = "Audio start (type="
-M_AUDIO_FLOW = "I/aflow:"
+# NOT "I/aflow:" — that tag does not exist in any log, in any build. The rule was
+# written against an invented marker, so it never matched and every session that
+# started audio was reported as silent. Validated instead against the two known
+# cases: the 00:17 session where audio was genuinely broken has 7 audio starts and
+# 0 AudioTrack lines; the 01:21 session where the user confirmed audio works has 1
+# and 1.
+M_AUDIO_FLOW = "AudioTrack started"
 # The car opened a socket to the companion and the phone never answered. Means
 # Android Auto was never told which loopback port to attach to — the Bluetooth
 # handshake carries that, and a reconnect does not run one.
@@ -342,14 +348,6 @@ def check(a: Attempt) -> list[Finding]:
             "companion is never the gateway, this is usually the house router",
         ))
 
-    # The phone started sending audio and none of it reached the player.
-    if a.audio_starts > 0 and a.audio_flows == 0:
-        out.append(Finding(
-            "FAIL", "audio-started-but-silent",
-            f"{a.audio_starts} audio start(s) and no frames delivered — "
-            "channel negotiated, codec agreed, nothing played",
-        ))
-
     if a.connected and a.codec_at is None:
         out.append(Finding(
             "WARN", "no-codec",
@@ -364,6 +362,48 @@ def check(a: Attempt) -> list[Finding]:
             f"took {tte:.1f}s from dial-back to choosing an endpoint",
         ))
 
+    return out
+
+
+def check_transport_agnostic(path: str) -> list:
+    """Bug classes that have nothing to do with which transport is in use.
+
+    parse_log() anchors every attempt on the WPP dial-back line, so pre-WPP logs
+    produce zero attempts and every per-attempt rule is silently skipped — 48
+    logs examined by nothing at all. These faults live in the session layer, not
+    the transport, so they are checked per-log instead.
+    """
+    out = []
+    try:
+        with open(path, errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return out
+
+    # A native session start that never re-ran full setup keeps whatever the last
+    # stop() left behind: null decoder, no surface, stale session reference.
+    starts = text.count(M_NATIVE_START_LINE)
+    setups = text.count(M_FULL_SETUP) + text.count(M_READOPT)
+    if starts > 0 and setups < starts:
+        uncovered = starts - setups
+        # Only worth reporting when it is a pattern, not a single restart.
+        if uncovered >= 5:
+            out.append(Finding(
+                "WARN", "setup-skipped-sessions",
+                f"{uncovered} of {starts} native session starts had no matching "
+                "full setup — decoder, surface, session reference or audio "
+                "collectors may be stale",
+            ))
+
+    # The phone announced audio and none of it reached the player.
+    a_start = text.count(M_AUDIO_START)
+    a_flow = text.count(M_AUDIO_FLOW)
+    if a_start > 0 and a_flow == 0:
+        out.append(Finding(
+            "FAIL", "audio-never-reached-player",
+            f"{a_start} audio start(s) and no AudioTrack — channel negotiated, "
+            "nothing played",
+        ))
     return out
 
 
@@ -445,7 +485,9 @@ def main() -> int:
 
     for path in paths:
         log_attempts = parse_log(path)
-        for f in check_silent_advertiser(path) + check_log_level(log_attempts):
+        for f in (check_transport_agnostic(path)
+                  + check_silent_advertiser(path)
+                  + check_log_level(log_attempts)):
             (fails if f.severity == "FAIL" else warns)[f.rule] = \
                 (fails if f.severity == "FAIL" else warns).get(f.rule, 0) + 1
             reported.append(f"{os.path.basename(path)}  (whole log)")
