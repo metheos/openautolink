@@ -2,6 +2,8 @@ package com.openautolink.companion.service
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.openautolink.companion.connection.AaProxy
@@ -81,6 +83,8 @@ class TcpAdvertiser(
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val connectivityManager =
+        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private var serverSocket: ServerSocket? = null
     private var identityServerSocket: ServerSocket? = null
     private var udpDiscoverySocket: java.net.DatagramSocket? = null
@@ -106,10 +110,19 @@ class TcpAdvertiser(
     @Volatile
     private var aaLaunchAttempts = 0
 
-    fun start() {
+    @Volatile
+    private var listenerNetwork: Network? = null
+    private val processBindLock = Any()
+
+    fun start(network: Network? = null) {
         if (isRunning) return
         isRunning = true
-        CompanionLog.i(TAG, "Starting TCP server on port $PORT")
+        listenerNetwork = network
+        if (network != null) {
+            CompanionLog.i(TAG, "Starting TCP server on port $PORT (bound to car network)")
+        } else {
+            CompanionLog.i(TAG, "Starting TCP server on port $PORT")
+        }
 
         scope.launch {
             try {
@@ -117,20 +130,7 @@ class TcpAdvertiser(
                 // is restarted quickly (e.g. BT reconnect triggers start within
                 // milliseconds of the previous stop). The OS may not have released
                 // the port yet even though we called serverSocket.close().
-                val server = ServerSocket()
-                server.reuseAddress = true
-                var bindAttempt = 0
-                while (true) {
-                    try {
-                        server.bind(InetSocketAddress(PORT))
-                        break
-                    } catch (e: java.net.BindException) {
-                        bindAttempt++
-                        if (bindAttempt >= BIND_RETRY_MAX) throw e
-                        CompanionLog.w(TAG, "Port $PORT in use, retrying in ${BIND_RETRY_DELAY_MS}ms (attempt $bindAttempt/$BIND_RETRY_MAX)")
-                        delay(BIND_RETRY_DELAY_MS)
-                    }
-                }
+                val server = createBoundServerSocket(PORT)
                 serverSocket = server
                 CompanionLog.i(TAG, "Listening on 0.0.0.0:$PORT")
 
@@ -273,9 +273,7 @@ class TcpAdvertiser(
     private fun startIdentityServer() {
         scope.launch {
             try {
-                val server = ServerSocket()
-                server.reuseAddress = true
-                server.bind(InetSocketAddress(IDENTITY_PORT))
+                val server = createBoundServerSocket(IDENTITY_PORT)
                 identityServerSocket = server
                 CompanionLog.i(TAG, "Identity probe server listening on 0.0.0.0:$IDENTITY_PORT")
                 while (isRunning) {
@@ -395,11 +393,7 @@ class TcpAdvertiser(
     private fun startUdpDiscoveryServer() {
         scope.launch {
             try {
-                val socket = java.net.DatagramSocket(null).apply {
-                    reuseAddress = true
-                    broadcast = true
-                    bind(InetSocketAddress(UDP_DISCOVERY_PORT))
-                }
+                val socket = createBoundDatagramSocket(UDP_DISCOVERY_PORT)
                 udpDiscoverySocket = socket
                 CompanionLog.i(TAG, "UDP discovery server listening on 0.0.0.0:$UDP_DISCOVERY_PORT")
                 val recvBuf = ByteArray(64)
@@ -798,5 +792,55 @@ class TcpAdvertiser(
             nsdRegistrationListener?.let { nsdManager?.unregisterService(it) }
         } catch (_: Exception) {}
         nsdRegistrationListener = null
+    }
+
+    private suspend fun createBoundServerSocket(port: Int): ServerSocket {
+        var bindAttempt = 0
+        while (true) {
+            try {
+                return withNetworkBoundSocketContext {
+                    ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress(port))
+                    }
+                }
+            } catch (e: java.net.BindException) {
+                bindAttempt++
+                if (bindAttempt >= BIND_RETRY_MAX) throw e
+                CompanionLog.w(TAG, "Port $port in use, retrying in ${BIND_RETRY_DELAY_MS}ms (attempt $bindAttempt/$BIND_RETRY_MAX)")
+                delay(BIND_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    private fun createBoundDatagramSocket(port: Int): java.net.DatagramSocket {
+        return withNetworkBoundSocketContext {
+            java.net.DatagramSocket(null).apply {
+                reuseAddress = true
+                broadcast = true
+                bind(InetSocketAddress(port))
+            }
+        }
+    }
+
+    private inline fun <T> withNetworkBoundSocketContext(block: () -> T): T {
+        val targetNetwork = listenerNetwork ?: return block()
+        return synchronized(processBindLock) {
+            val previousNetwork = connectivityManager.boundNetworkForProcess
+            if (previousNetwork == targetNetwork) {
+                return@synchronized block()
+            }
+
+            val changed = connectivityManager.bindProcessToNetwork(targetNetwork)
+            if (!changed) {
+                CompanionLog.w(TAG, "Failed to bind process to car network before socket creation")
+                return@synchronized block()
+            }
+            try {
+                block()
+            } finally {
+                connectivityManager.bindProcessToNetwork(previousNetwork)
+            }
+        }
     }
 }

@@ -5,9 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.os.Build
+import android.net.Network
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.openautolink.companion.CompanionPrefs
@@ -39,6 +38,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     private var fileLogger: CompanionFileLogger? = null
     private var fileLogIdleTimeoutJob: kotlinx.coroutines.Job? = null
+    private var carNetworkWatchJob: kotlinx.coroutines.Job? = null
     /** True once a connection has been observed during the current logging session. */
     @Volatile private var loggingSessionEverConnected: Boolean = false
 
@@ -150,13 +150,23 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
 
     private fun startTcp() {
         acquireWakeLock()
-        tcpAdvertiser?.stop()
-
-        CompanionLog.i(TAG, "Transport: TCP on port ${TcpAdvertiser.PORT}")
-        tcpAdvertiser = TcpAdvertiser(this, this)
-        tcpAdvertiser?.start()
-        updateNotification("TCP: waiting for car on port ${TcpAdvertiser.PORT}...")
+        restartTcpAdvertiser(carWifiManager?.carNetwork?.value)
         startCarWifiIfConfigured()
+    }
+
+    private fun restartTcpAdvertiser(network: Network?) {
+        tcpAdvertiser?.stop()
+        CompanionLog.i(
+            TAG,
+            if (network != null) {
+                "Transport: TCP on port ${TcpAdvertiser.PORT} (car-network bound)"
+            } else {
+                "Transport: TCP on port ${TcpAdvertiser.PORT}"
+            },
+        )
+        tcpAdvertiser = TcpAdvertiser(this, this)
+        tcpAdvertiser?.start(network)
+        updateNotification("TCP: waiting for car on port ${TcpAdvertiser.PORT}...")
     }
 
     /**
@@ -165,6 +175,8 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
      * phone joins the car's WiFi even when already connected to another network.
      */
     private fun startCarWifiIfConfigured() {
+        carNetworkWatchJob?.cancel()
+        carNetworkWatchJob = null
         carWifiManager?.stop()
         val prefs = getSharedPreferences(CompanionPrefs.NAME, MODE_PRIVATE)
         val entries = com.openautolink.companion.wifi.CarWifiEntry.loadAll(prefs)
@@ -175,6 +187,26 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         val mgr = com.openautolink.companion.wifi.CarWifiManager(this)
         carWifiManager = mgr
         mgr.start(entries)
+
+        carNetworkWatchJob = serviceScope.launch {
+            var firstEmission = true
+            mgr.carNetwork.collect { network ->
+                if (firstEmission) {
+                    firstEmission = false
+                    return@collect
+                }
+                if (!_isRunning.value) return@collect
+                CompanionLog.i(
+                    TAG,
+                    if (network != null) {
+                        "Car WiFi network available — rebinding TCP listeners"
+                    } else {
+                        "Car WiFi network lost — rebinding TCP listeners to default network"
+                    },
+                )
+                restartTcpAdvertiser(network)
+            }
+        }
     }
 
     /**
@@ -299,6 +331,8 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         _isRunning.value = false
         _isConnected.value = false
         _statusText.value = "Stopped"
+        carNetworkWatchJob?.cancel()
+        carNetworkWatchJob = null
         tcpAdvertiser?.stop()
         carWifiManager?.stop()
         stopFileLogging()
