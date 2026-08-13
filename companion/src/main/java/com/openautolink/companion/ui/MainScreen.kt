@@ -220,16 +220,17 @@ fun MainScreen(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "Saved Blazing Wi-Fi profile",
+                        "Saved car Wi-Fi profile",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Keeping a normal saved Blazing profile is supported. If the " +
+                        "Keeping a normal saved profile for the car's Wi-Fi is supported. " +
+                            "If the " +
                             "car has an active data plan, Android can use that Wi-Fi " +
                             "for internet and Android Auto can reuse the same association.\n\n" +
-                            "If the car has no internet, or two Blazing entries cause " +
+                            "If the car has no internet, or duplicate entries cause " +
                             "unreliable switching, forget only the manually saved one. " +
                             "Bluetooth/WPP will still supply the credentials and create " +
                             "a local-only projection connection; general internet stays " +

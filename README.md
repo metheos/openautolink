@@ -26,7 +26,7 @@
 > 3. **Settings → Transport → Wireless (WPP).** The older Wi-Fi mode uses the startup path Google disabled.
 > 4. **Leave Phone Calls enabled** in the car's Bluetooth settings (Media Audio can stay off). The hands-free profile holds the link up; without it the connection drops before the handshake finishes.
 > 5. **Clear the companion app's car Wi-Fi setup.** Android Auto joins the car's network itself now — having the companion do it too means both fight over the same radio.
-> 6. A manually saved Blazing profile is optional. Keep it if your car has an active data plan and you want the phone to use the car for internet. If the car has no internet, or duplicate Blazing entries cause rough handoffs, forget the manually saved profile and let Android Auto create its local-only WPP connection. See [Saved Blazing profile and internet](#saved-blazing-profile-and-internet).
+> 6. A manually saved profile for the car's Wi-Fi network is optional. Keep it if your car has an active data plan and you want the phone to use the car for internet. If the car has no internet, or duplicate entries cause rough handoffs, forget the manually saved profile and let Android Auto create its local-only WPP connection. See [Saved car Wi-Fi profile and internet](#saved-car-wi-fi-profile-and-internet).
 >
 > The companion app is required in this mode — it holds the network path open on the phone side. A walkthrough video is coming shortly.
 >
@@ -258,7 +258,7 @@ Because this is an AAOS app, installation on the car goes through your own Googl
 
 5. **On 17.4+: forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service and the handshake never starts. Do this *after* updating both apps.
 
-6. **Choose whether to keep a manually saved Blazing profile.** Keep it if the car has an active internet plan and you want Android to use that WiFi for general internet. If the car has no internet, or duplicate Blazing entries cause unreliable handoffs, forget the manually saved copy and let Android Auto request its own local-only WPP connection. See [Saved Blazing profile and internet](#saved-blazing-profile-and-internet).
+6. **Choose whether to keep a manually saved profile for the car's Wi-Fi network.** Keep it if the car has an active internet plan and you want Android to use that WiFi for general internet. If the car has no internet, or duplicate entries cause unreliable handoffs, forget the manually saved copy and let Android Auto request its own local-only WPP connection. See [Saved car Wi-Fi profile and internet](#saved-car-wi-fi-profile-and-internet).
 
 7. **Open OpenAutoLink on the car.** On 17.4+ set Settings → Transport → **Wireless (WPP)**; projection starts once the Bluetooth handshake completes. On older versions the phone chooser appears — tap your phone, and it is saved as your default.
 
@@ -273,18 +273,18 @@ Once setup is complete, the daily experience is fully automatic:
 
 No interaction needed.
 
-#### Saved Blazing Profile and Internet
+#### Saved Car Wi-Fi Profile and Internet
 
 The normal saved WiFi profile and Android Auto's WPP request are two ways to use
-the same Blazing access point:
+the same car access point:
 
 - **Matching saved profile already connected:** Android's WiFi framework can give
   Gearhead the existing primary connection instead of creating another local-only
   connection. Gearhead validates the advertised SSID and BSSID and binds only its
   projection socket to the returned `Network`. Field logs prove this path works:
-  the phone was already reachable on Blazing before the Bluetooth handshake, and
+  the phone was already reachable on the car's Wi-Fi before the Bluetooth handshake, and
   WPP projection then started through that association.
-- **No usable saved profile:** Gearhead requests Blazing with a
+- **No usable saved profile:** Gearhead requests the car's Wi-Fi network with a
   `WifiNetworkSpecifier` that does not require internet. On Android 14+ it asks to
   prefer a secondary STA when the phone supports concurrent local-only WiFi;
   otherwise Android may switch the single WiFi STA. Projection remains bound to
@@ -297,11 +297,11 @@ the same Blazing access point:
 
 Therefore:
 
-- **Car has an active data plan:** keeping Blazing as a normal saved network is
+- **Car has an active data plan:** keeping the car's Wi-Fi as a normal saved network is
   reasonable. If Android validates it, the car WiFi may remain the phone's normal
   internet path while Android Auto uses that network for projection.
 - **Car has no internet:** forgetting the old manually saved profile is usually
-  cleaner, especially if two Blazing entries or unreliable handoffs appear. WPP
+  cleaner, especially if duplicate entries or unreliable handoffs appear. WPP
   still supplies the credentials and requests a local-only connection; internet
   stays on cellular or another primary network.
 
