@@ -328,6 +328,17 @@ def check(a: Attempt) -> list[Finding]:
             "may be stale (touch silently dropped while video looks perfect)",
         ))
 
+    # A dense burst is already the feedback loop, even when the whole file has
+    # fewer than the old lifetime threshold of eight. The 2026-08-13 Liz-phone
+    # run destroyed a working bridge three times in nine seconds; the file-level
+    # rule missed it because the appended file held only seven total teardowns.
+    if a.self_teardowns >= 3:
+        out.append(Finding(
+            "FAIL", "reconnect-feedback-loop",
+            f"{a.self_teardowns} self-inflicted teardowns in one attempt — "
+            "a re-dial is replacing the live session it was meant to use",
+        ))
+
     # The peer keeps re-handshaking because our side never completes its half.
     if a.handshakes >= 10 and not a.connected:
         out.append(Finding(

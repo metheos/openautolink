@@ -207,12 +207,11 @@ fun MainScreen(
             HorizontalDivider()
             Spacer(Modifier.height(20.dp))
 
-            // Randomised MAC gives the phone a new IP on the car's network on
-            // most connections, so the car has to search for it every time
-            // instead of going straight to the address it used last. Costs a few
-            // seconds per connect and occasionally a failed first attempt.
-            // A one-time setting the user can only change on the phone, so it
-            // belongs here rather than buried in the README.
+            // A normal saved profile can provide car-plan internet and Gearhead
+            // can reuse it when it already matches the advertised SSID/BSSID.
+            // Without a car data plan, the local-only WPP-owned association is
+            // usually cleaner. Explain the tradeoff instead of telling every
+            // user to remove the saved profile.
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -221,20 +220,23 @@ fun MainScreen(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "Recommended: use your real MAC for the car's Wi-Fi",
+                        "Saved car Wi-Fi profile",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Android gives each Wi-Fi network a randomised MAC address by " +
-                            "default, so your phone gets a different IP on the car's " +
-                            "network most times it connects and the car has to search " +
-                            "for it. Using your real MAC keeps the address stable and " +
-                            "connects noticeably faster.\n\n" +
-                            "Phone Settings → Wi-Fi → the car's network → Privacy " +
-                            "(or MAC address type) → Use device MAC.\n\n" +
-                            "Optional — wireless works either way.",
+                        "Keeping a normal saved profile for the car's Wi-Fi is supported. " +
+                            "If the " +
+                            "car has an active data plan, Android can use that Wi-Fi " +
+                            "for internet and Android Auto can reuse the same association.\n\n" +
+                            "If the car has no internet, or duplicate entries cause " +
+                            "unreliable switching, forget only the manually saved one. " +
+                            "Bluetooth/WPP will still supply the credentials and create " +
+                            "a local-only projection connection; general internet stays " +
+                            "on cellular or another primary network.\n\n" +
+                            "MAC privacy settings apply to the normal saved profile. " +
+                            "The WPP app-scoped entry uses Android's automatic policy.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

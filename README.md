@@ -26,7 +26,7 @@
 > 3. **Settings → Transport → Wireless (WPP).** The older Wi-Fi mode uses the startup path Google disabled.
 > 4. **Leave Phone Calls enabled** in the car's Bluetooth settings (Media Audio can stay off). The hands-free profile holds the link up; without it the connection drops before the handshake finishes.
 > 5. **Clear the companion app's car Wi-Fi setup.** Android Auto joins the car's network itself now — having the companion do it too means both fight over the same radio.
-> 6. *Recommended:* set the car's Wi-Fi network to **Use device MAC** (Wi-Fi settings → the car's network → Privacy). Android randomises it by default, which changes your phone's address on the car's network and makes the car search for it every time. Optional, but noticeably quicker.
+> 6. A manually saved profile for the car's Wi-Fi network is optional. Keep it if your car has an active data plan and you want the phone to use the car for internet. If the car has no internet, or duplicate entries cause rough handoffs, forget the manually saved profile and let Android Auto create its local-only WPP connection. See [Saved car Wi-Fi profile and internet](#saved-car-wi-fi-profile-and-internet).
 >
 > The companion app is required in this mode — it holds the network path open on the phone side. A walkthrough video is coming shortly.
 >
@@ -258,7 +258,7 @@ Because this is an AAOS app, installation on the car goes through your own Googl
 
 5. **On 17.4+: forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service and the handshake never starts. Do this *after* updating both apps.
 
-6. **On 17.4+: set the car's WiFi network to use your real MAC.** Phone WiFi settings → the car's network → **Privacy** (or **MAC address type**) → **Use device MAC**. Android randomises it per network by default, which gives the phone a new address on the car's network each time and makes the car search for it on every connection. Optional, but noticeably quicker.
+6. **Choose whether to keep a manually saved profile for the car's Wi-Fi network.** Keep it if the car has an active internet plan and you want Android to use that WiFi for general internet. If the car has no internet, or duplicate entries cause unreliable handoffs, forget the manually saved copy and let Android Auto request its own local-only WPP connection. See [Saved car Wi-Fi profile and internet](#saved-car-wi-fi-profile-and-internet).
 
 7. **Open OpenAutoLink on the car.** On 17.4+ set Settings → Transport → **Wireless (WPP)**; projection starts once the Bluetooth handshake completes. On older versions the phone chooser appears — tap your phone, and it is saved as your default.
 
@@ -272,6 +272,42 @@ Once setup is complete, the daily experience is fully automatic:
 4. The car finds the phone → projection appears.
 
 No interaction needed.
+
+#### Saved Car Wi-Fi Profile and Internet
+
+The normal saved WiFi profile and Android Auto's WPP request are two ways to use
+the same car access point:
+
+- **Matching saved profile already connected:** Android's WiFi framework can give
+  Gearhead the existing primary connection instead of creating another local-only
+  connection. Gearhead validates the advertised SSID and BSSID and binds only its
+  projection socket to the returned `Network`. Field logs prove this path works:
+  the phone was already reachable on the car's Wi-Fi before the Bluetooth handshake, and
+  WPP projection then started through that association.
+- **No usable saved profile:** Gearhead requests the car's Wi-Fi network with a
+  `WifiNetworkSpecifier` that does not require internet. On Android 14+ it asks to
+  prefer a secondary STA when the phone supports concurrent local-only WiFi;
+  otherwise Android may switch the single WiFi STA. Projection remains bound to
+  the requested network, while general internet normally stays on cellular or a
+  separate primary WiFi connection.
+- **Both associations present:** dual-STA phones can keep an internet-capable
+  primary WiFi connection and a secondary local-only WPP connection at the same
+  time. Android decides whether to reuse the existing association or create the
+  secondary one; OpenAutoLink and the companion do not choose.
+
+Therefore:
+
+- **Car has an active data plan:** keeping the car's Wi-Fi as a normal saved network is
+  reasonable. If Android validates it, the car WiFi may remain the phone's normal
+  internet path while Android Auto uses that network for projection.
+- **Car has no internet:** forgetting the old manually saved profile is usually
+  cleaner, especially if duplicate entries or unreliable handoffs appear. WPP
+  still supplies the credentials and requests a local-only connection; internet
+  stays on cellular or another primary network.
+
+MAC privacy is separate. A normal saved profile exposes Android's
+Device/Randomised MAC setting. The WPP app-scoped request does not; Android uses
+its automatic MAC policy.
 
 **Multiple drivers?** On 17.4+ the car projects to whichever phone it is currently connected to over Bluetooth, so switching phones means switching the connection in the **car's own Bluetooth settings** — the APIs an app would need to do that are privileged and closed to us. The phone list on the projection screen still shows every phone it can see, and tapping one retries the connection to it.
 
