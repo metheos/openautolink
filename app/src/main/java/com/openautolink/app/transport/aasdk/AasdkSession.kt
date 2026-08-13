@@ -283,9 +283,8 @@ class AasdkSession(
     @Volatile
     var onNativeSessionStarting: (() -> Unit)? = null
 
-    /** The companion address the current native session was dialled for. */
-    @Volatile
-    private var lastDialledCompanionIp: String? = null
+    /** Tracks the TCP target across every start path, including WPP restart. */
+    private val companionDialState = CompanionDialState()
 
     /**
      * True briefly around a deliberate session replacement.
@@ -327,12 +326,11 @@ class AasdkSession(
         //
         // If a session is already carrying data to this same companion, the
         // handshake is telling us something we have already acted on.
-        if (transportPipe != null && ip == lastDialledCompanionIp) {
+        if (companionDialState.shouldIgnoreRedial(ip, transportPipe != null)) {
             OalLog.i(TAG, "Already connected to $ip — ignoring the re-dial from " +
                     "this handshake rather than tearing down a live session")
             return
         }
-        lastDialledCompanionIp = ip
         if (existing != null) {
             OalLog.i(TAG, "Replacing a dead connector to dial $ip")
             existing.stop()
@@ -345,6 +343,13 @@ class AasdkSession(
     }
 
     private fun startTcp(manualIp: String? = null) {
+        // Record at the common boundary. WPP restart calls startTcp() directly,
+        // bypassing dialCompanion(); without this, the next handshake destroys
+        // the live session because the same-phone guard has no address to match.
+        companionDialState.recordStartTcpTarget(manualIp)
+        if (!manualIp.isNullOrBlank()) {
+            OalLog.i(TAG, "Recorded TCP target $manualIp for the live-session re-dial guard")
+        }
         OalLog.i(TAG, "Starting aasdk session (TCP/hotspot transport)")
         _tcpConnector?.stop()
         _tcpConnector = TcpConnector(
