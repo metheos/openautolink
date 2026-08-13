@@ -207,12 +207,11 @@ fun MainScreen(
             HorizontalDivider()
             Spacer(Modifier.height(20.dp))
 
-            // Randomised MAC gives the phone a new IP on the car's network on
-            // most connections, so the car has to search for it every time
-            // instead of going straight to the address it used last. Costs a few
-            // seconds per connect and occasionally a failed first attempt.
-            // A one-time setting the user can only change on the phone, so it
-            // belongs here rather than buried in the README.
+            // Before WPP, users had to join the car AP manually. WPP now gives
+            // Gearhead the SSID/BSSID/password over Bluetooth and Gearhead makes
+            // an app-scoped WifiNetworkSpecifier request. Keeping the old manual
+            // profile can leave two user-visible entries for the same AP and let
+            // normal Android auto-join compete with the WPP-owned association.
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -221,20 +220,19 @@ fun MainScreen(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "Recommended: use your real MAC for the car's Wi-Fi",
+                        "Upgraded from manual Wi-Fi setup?",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Android gives each Wi-Fi network a randomised MAC address by " +
-                            "default, so your phone gets a different IP on the car's " +
-                            "network most times it connects and the car has to search " +
-                            "for it. Using your real MAC keeps the address stable and " +
-                            "connects noticeably faster.\n\n" +
-                            "Phone Settings → Wi-Fi → the car's network → Privacy " +
-                            "(or MAC address type) → Use device MAC.\n\n" +
-                            "Optional — wireless works either way.",
+                        "If you entered the Blazing password manually before WPP and " +
+                            "now see two Blazing entries, forget the manually saved " +
+                            "one. Do not type the password again.\n\n" +
+                            "The Bluetooth WPP handshake gives Android Auto the SSID, " +
+                            "BSSID, and password, and Android Auto manages that Wi-Fi " +
+                            "association itself. Removing the old profile keeps normal " +
+                            "Wi-Fi auto-join from competing with WPP.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

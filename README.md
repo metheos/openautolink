@@ -26,7 +26,7 @@
 > 3. **Settings → Transport → Wireless (WPP).** The older Wi-Fi mode uses the startup path Google disabled.
 > 4. **Leave Phone Calls enabled** in the car's Bluetooth settings (Media Audio can stay off). The hands-free profile holds the link up; without it the connection drops before the handshake finishes.
 > 5. **Clear the companion app's car Wi-Fi setup.** Android Auto joins the car's network itself now — having the companion do it too means both fight over the same radio.
-> 6. *Recommended:* set the car's Wi-Fi network to **Use device MAC** (Wi-Fi settings → the car's network → Privacy). Android randomises it by default, which changes your phone's address on the car's network and makes the car search for it every time. Optional, but noticeably quicker.
+> 6. If you entered the Blazing password manually before using WPP and now see two Blazing entries, **forget the manually saved one**. Do not join it by typing the password again; Android Auto receives the credentials over Bluetooth and manages the WPP association itself.
 >
 > The companion app is required in this mode — it holds the network path open on the phone side. A walkthrough video is coming shortly.
 >
@@ -258,7 +258,7 @@ Because this is an AAOS app, installation on the car goes through your own Googl
 
 5. **On 17.4+: forget the car in your phone's Bluetooth settings and pair again.** Your phone caches which services a paired device offers. Until it re-reads that list it will not see the new Android Auto service and the handshake never starts. Do this *after* updating both apps.
 
-6. **On 17.4+: set the car's WiFi network to use your real MAC.** Phone WiFi settings → the car's network → **Privacy** (or **MAC address type**) → **Use device MAC**. Android randomises it per network by default, which gives the phone a new address on the car's network each time and makes the car search for it on every connection. Optional, but noticeably quicker.
+6. **If Blazing was manually saved before WPP:** forget that saved copy. Do not reconnect by entering the password manually. The Bluetooth WPP handshake supplies the SSID, BSSID, and password to Android Auto, which requests its own app-managed WiFi association. Keeping the old saved profile can leave two Blazing entries competing for the same AP.
 
 7. **Open OpenAutoLink on the car.** On 17.4+ set Settings → Transport → **Wireless (WPP)**; projection starts once the Bluetooth handshake completes. On older versions the phone chooser appears — tap your phone, and it is saved as your default.
 
