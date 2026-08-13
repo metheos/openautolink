@@ -207,11 +207,11 @@ fun MainScreen(
             HorizontalDivider()
             Spacer(Modifier.height(20.dp))
 
-            // Before WPP, users had to join the car AP manually. WPP now gives
-            // Gearhead the SSID/BSSID/password over Bluetooth and Gearhead makes
-            // an app-scoped WifiNetworkSpecifier request. Keeping the old manual
-            // profile can leave two user-visible entries for the same AP and let
-            // normal Android auto-join compete with the WPP-owned association.
+            // A normal saved profile can provide car-plan internet and Gearhead
+            // can reuse it when it already matches the advertised SSID/BSSID.
+            // Without a car data plan, the local-only WPP-owned association is
+            // usually cleaner. Explain the tradeoff instead of telling every
+            // user to remove the saved profile.
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -220,19 +220,22 @@ fun MainScreen(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "Upgraded from manual Wi-Fi setup?",
+                        "Saved Blazing Wi-Fi profile",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "If you entered the Blazing password manually before WPP and " +
-                            "now see two Blazing entries, forget the manually saved " +
-                            "one. Do not type the password again.\n\n" +
-                            "The Bluetooth WPP handshake gives Android Auto the SSID, " +
-                            "BSSID, and password, and Android Auto manages that Wi-Fi " +
-                            "association itself. Removing the old profile keeps normal " +
-                            "Wi-Fi auto-join from competing with WPP.",
+                        "Keeping a normal saved Blazing profile is supported. If the " +
+                            "car has an active data plan, Android can use that Wi-Fi " +
+                            "for internet and Android Auto can reuse the same association.\n\n" +
+                            "If the car has no internet, or two Blazing entries cause " +
+                            "unreliable switching, forget only the manually saved one. " +
+                            "Bluetooth/WPP will still supply the credentials and create " +
+                            "a local-only projection connection; general internet stays " +
+                            "on cellular or another primary network.\n\n" +
+                            "MAC privacy settings apply to the normal saved profile. " +
+                            "The WPP app-scoped entry uses Android's automatic policy.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
