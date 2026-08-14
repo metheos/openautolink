@@ -190,12 +190,19 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
 
         carNetworkWatchJob = serviceScope.launch {
             var firstEmission = true
+            var lastHandledNetwork: Network? = null
             mgr.carNetwork.collect { network ->
                 if (firstEmission) {
                     firstEmission = false
+                    lastHandledNetwork = network
                     return@collect
                 }
                 if (!_isRunning.value) return@collect
+                if (network == lastHandledNetwork) {
+                    CompanionLog.d(TAG, "Car WiFi emission unchanged - skipping TCP rebind")
+                    return@collect
+                }
+                lastHandledNetwork = network
                 CompanionLog.i(
                     TAG,
                     if (network != null) {

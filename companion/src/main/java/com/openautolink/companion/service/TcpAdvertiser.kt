@@ -438,6 +438,15 @@ class TcpAdvertiser(
 
     private fun handleCarConnection(carSocket: Socket) {
         val proxy = activeProxy
+        if (proxy?.hasActiveBridge() == true) {
+            val carStillLive = activeCarSocket?.let { !it.isClosed && it.isConnected } == true
+            if (carStillLive) {
+                CompanionLog.w(TAG,
+                    "Duplicate car TCP connect while bridge active - preserving live session")
+                runCatching { carSocket.close() }
+                return
+            }
+        }
         // A real car socket just arrived: any pending bridge-break backoff is stale
         // (it exists only to avoid hot-looping while the car is ABSENT) and the
         // consecutive-break counter must reset, otherwise a burst of breaks before

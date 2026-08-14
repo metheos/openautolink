@@ -149,6 +149,11 @@ class AaProxy(
             try {
                 while (isRunning) {
                     val aaSocket = server.accept()
+                    if (hasActiveBridge()) {
+                        CompanionLog.w(TAG, "Duplicate AA attach while bridge active - closing newest socket")
+                        runCatching { aaSocket.close() }
+                        continue
+                    }
                     CompanionLog.i(TAG, "Android Auto connected to proxy")
                     launchBridge(aaSocket)
                 }
