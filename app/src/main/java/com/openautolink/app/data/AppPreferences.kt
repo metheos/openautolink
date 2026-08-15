@@ -124,6 +124,8 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         val ALWAYS_IN_PARK = booleanPreferencesKey("always_in_park")
         val CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation")
         val OVERLAY_STATS_BUTTON = booleanPreferencesKey("overlay_stats_button")
+        val OVERLAY_PHONE_SWITCH_BUTTON = booleanPreferencesKey("overlay_phone_switch_button")
+        val OVERLAY_RECONNECT_BUTTON = booleanPreferencesKey("overlay_reconnect_button")
         val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
         val FILE_LOGGING_AUTOSTART_USB = booleanPreferencesKey("file_logging_autostart_usb")
         val LOGCAT_CAPTURE_ENABLED = booleanPreferencesKey("logcat_capture_enabled")
@@ -310,6 +312,8 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_ALWAYS_IN_PARK = false
         const val DEFAULT_CLUSTER_NAVIGATION = true
         const val DEFAULT_OVERLAY_STATS_BUTTON = true
+        const val DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON = true
+        const val DEFAULT_OVERLAY_RECONNECT_BUTTON = false
         const val DEFAULT_FILE_LOGGING_ENABLED = false
         const val DEFAULT_FILE_LOGGING_AUTOSTART_USB = false
         // On by default. There is no adb on the head unit, so this capture is
@@ -528,6 +532,14 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     val overlayStatsButton: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[OVERLAY_STATS_BUTTON] ?: DEFAULT_OVERLAY_STATS_BUTTON
+    }
+
+    val overlayPhoneSwitchButton: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[OVERLAY_PHONE_SWITCH_BUTTON] ?: DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON
+    }
+
+    val overlayReconnectButton: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[OVERLAY_RECONNECT_BUTTON] ?: DEFAULT_OVERLAY_RECONNECT_BUTTON
     }
 
     val fileLoggingEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
@@ -770,6 +782,14 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setOverlayStatsButton(visible: Boolean) {
         dataStore.edit { it[OVERLAY_STATS_BUTTON] = visible }
+    }
+
+    suspend fun setOverlayPhoneSwitchButton(visible: Boolean) {
+        dataStore.edit { it[OVERLAY_PHONE_SWITCH_BUTTON] = visible }
+    }
+
+    suspend fun setOverlayReconnectButton(visible: Boolean) {
+        dataStore.edit { it[OVERLAY_RECONNECT_BUTTON] = visible }
     }
 
     suspend fun setFileLoggingEnabled(enabled: Boolean) {

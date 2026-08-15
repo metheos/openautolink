@@ -41,6 +41,7 @@ fun AppNavHost(navController: NavHostController = rememberNavController()) {
                 onNavigateToSettings = {
                     // Legacy — no longer used, settings are an overlay now
                 },
+                onReconnect = { settingsViewModel.saveAndReconnect() },
                 settingsOverlay = { onBack, onShowDiagnostics ->
                     SettingsScreen(
                         viewModel = settingsViewModel,

@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -82,6 +83,7 @@ import com.openautolink.app.video.VideoStats
 fun ProjectionScreen(
     viewModel: ProjectionViewModel = viewModel(),
     onNavigateToSettings: () -> Unit = {},
+    onReconnect: () -> Unit = {},
     settingsOverlay: @Composable (onBack: () -> Unit, onShowDiagnostics: () -> Unit) -> Unit = { _, _ -> },
     diagnosticsOverlay: @Composable (onBack: () -> Unit) -> Unit = {},
 ) {
@@ -572,12 +574,12 @@ fun ProjectionScreen(
                     maxBoundsY = maxBoundsY,
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
-
                 // Switch Phone button — Car Hotspot mode only. Tapping opens a
                 // centered chooser overlay; the underlying AA session keeps
                 // streaming until the user explicitly picks a different phone.
-                if (isCarHotspotMode) {
+                if (isCarHotspotMode && uiState.overlayPhoneSwitchButton) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     DraggableOverlayButton(
                         icon = Icons.Default.PhoneAndroid,
                         contentDescription = "Switch Phone",
@@ -597,30 +599,49 @@ fun ProjectionScreen(
                         maxBoundsX = maxBoundsX,
                         maxBoundsY = maxBoundsY,
                     )
-
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // Stats button — draggable
-                DraggableOverlayButton(
-                    icon = Icons.Default.Info,
-                    contentDescription = "Stats for nerds",
-                    onClick = { viewModel.toggleStats() },
-                    positionKey = "overlay_stats",
-                    containerColor = if (uiState.showStats) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
-                    },
-                    tint = if (uiState.showStats) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    modifier = Modifier.testTag("statsButton"),
-                    maxBoundsX = maxBoundsX,
-                    maxBoundsY = maxBoundsY,
-                )
+                // Stats button — user-configurable, unlike Settings which always stays visible.
+                if (uiState.overlayStatsButton) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    DraggableOverlayButton(
+                        icon = Icons.Default.Info,
+                        contentDescription = "Stats for nerds",
+                        onClick = { viewModel.toggleStats() },
+                        positionKey = "overlay_stats",
+                        containerColor = if (uiState.showStats) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                        } else {
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+                        },
+                        tint = if (uiState.showStats) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.testTag("statsButton"),
+                        maxBoundsX = maxBoundsX,
+                        maxBoundsY = maxBoundsY,
+                    )
+                }
+
+                // Reconnect button — invokes the exact same callback as Settings'
+                // Save & Reconnect action, so preference reload and session behavior
+                // cannot drift between the two entry points.
+                if (uiState.overlayReconnectButton) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    DraggableOverlayButton(
+                        icon = Icons.Default.Refresh,
+                        contentDescription = "Reconnect",
+                        onClick = onReconnect,
+                        positionKey = "overlay_reconnect",
+                        modifier = Modifier.testTag("reconnectButton"),
+                        maxBoundsX = maxBoundsX,
+                        maxBoundsY = maxBoundsY,
+                    )
+                }
 
                 // File logging button — only shown when enabled in Settings → Diagnostics
                 if (uiState.fileLoggingEnabled) {

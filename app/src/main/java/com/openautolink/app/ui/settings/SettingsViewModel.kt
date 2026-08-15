@@ -50,6 +50,8 @@ data class SettingsUiState(
     val alwaysInPark: Boolean = AppPreferences.DEFAULT_ALWAYS_IN_PARK,
     val clusterNavigation: Boolean = AppPreferences.DEFAULT_CLUSTER_NAVIGATION,
     val overlayStatsButton: Boolean = AppPreferences.DEFAULT_OVERLAY_STATS_BUTTON,
+    val overlayPhoneSwitchButton: Boolean = AppPreferences.DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON,
+    val overlayReconnectButton: Boolean = AppPreferences.DEFAULT_OVERLAY_RECONNECT_BUTTON,
     val fileLoggingEnabled: Boolean = AppPreferences.DEFAULT_FILE_LOGGING_ENABLED,
     val fileLoggingAutoStartUsb: Boolean = AppPreferences.DEFAULT_FILE_LOGGING_AUTOSTART_USB,
     val logcatCaptureEnabled: Boolean = AppPreferences.DEFAULT_LOGCAT_CAPTURE_ENABLED,
@@ -141,6 +143,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         preferences.logPersistEnabled,
         preferences.alwaysInPark,
         preferences.simulateIgnitionButton,
+        preferences.overlayPhoneSwitchButton,
+        preferences.overlayReconnectButton,
     ) { values: Array<Any> ->
         SettingsUiState(
             videoAutoNegotiate = values[0] as Boolean,
@@ -191,6 +195,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             logPersistEnabled = values[45] as Boolean,
             alwaysInPark = values[46] as Boolean,
             simulateIgnitionButton = values[47] as Boolean,
+            overlayPhoneSwitchButton = values[48] as Boolean,
+            overlayReconnectButton = values[49] as Boolean,
         )
     }.stateIn(
         viewModelScope,
@@ -454,6 +460,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateOverlayStatsButton(visible: Boolean) {
         viewModelScope.launch { preferences.setOverlayStatsButton(visible) }
+    }
+
+    fun updateOverlayPhoneSwitchButton(visible: Boolean) {
+        viewModelScope.launch { preferences.setOverlayPhoneSwitchButton(visible) }
+    }
+
+    fun updateOverlayReconnectButton(visible: Boolean) {
+        viewModelScope.launch { preferences.setOverlayReconnectButton(visible) }
     }
 
     fun updateFileLoggingEnabled(enabled: Boolean) {
