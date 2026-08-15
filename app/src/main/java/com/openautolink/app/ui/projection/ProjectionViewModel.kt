@@ -87,6 +87,10 @@ data class ProjectionUiState(
     val reconnectAttempt: Int = 0,
     /** Shows the floating "simulate ignition cycle" button. Maintainer tool. */
     val simulateIgnitionButton: Boolean = false,
+    /** Visibility of the user-configurable floating controls. */
+    val overlayStatsButton: Boolean = AppPreferences.DEFAULT_OVERLAY_STATS_BUTTON,
+    val overlayPhoneSwitchButton: Boolean = AppPreferences.DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON,
+    val overlayReconnectButton: Boolean = AppPreferences.DEFAULT_OVERLAY_RECONNECT_BUTTON,
 )
 
 /** State of the maintainer log-upload action, drives the floating button color. */
@@ -250,6 +254,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         _uploadState,
         preferences.simulateIgnitionButton,
         sessionManager.reconnectAttempt,
+        preferences.overlayStatsButton,
+        preferences.overlayPhoneSwitchButton,
+        preferences.overlayReconnectButton,
     ) { values ->
         ProjectionUiState(
             sessionState = values[0] as SessionState,
@@ -283,6 +290,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             uploadState = values[28] as LogUploadState,
             simulateIgnitionButton = values[29] as Boolean,
             reconnectAttempt = values[30] as Int,
+            overlayStatsButton = values[31] as Boolean,
+            overlayPhoneSwitchButton = values[32] as Boolean,
+            overlayReconnectButton = values[33] as Boolean,
         )
     }.stateIn(
         viewModelScope,

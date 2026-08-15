@@ -684,6 +684,40 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
 }
 
 @Composable
+private fun OverlayButtonToggle(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth(0.7f)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.testTag(testTag),
+        )
+    }
+}
+
+@Composable
 private fun DisplayTab(
     viewModel: SettingsViewModel,
     uiState: SettingsUiState,
@@ -967,30 +1001,29 @@ private fun DisplayTab(
             modifier = Modifier.padding(bottom = 12.dp)
         )
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Stats Button",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "Floating button to toggle performance stats overlay.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(
-                checked = uiState.overlayStatsButton,
-                onCheckedChange = { viewModel.updateOverlayStatsButton(it) },
-                modifier = Modifier.testTag("overlayStatsToggle"),
-            )
-        }
+        OverlayButtonToggle(
+            title = "Stats Button",
+            description = "Floating button to toggle performance stats overlay.",
+            checked = uiState.overlayStatsButton,
+            onCheckedChange = viewModel::updateOverlayStatsButton,
+            testTag = "overlayStatsToggle",
+        )
+
+        OverlayButtonToggle(
+            title = "Phone Switcher Button",
+            description = "Floating button to choose the active phone in Car Hotspot mode.",
+            checked = uiState.overlayPhoneSwitchButton,
+            onCheckedChange = viewModel::updateOverlayPhoneSwitchButton,
+            testTag = "overlayPhoneSwitchToggle",
+        )
+
+        OverlayButtonToggle(
+            title = "Reconnect Button",
+            description = "Floating button that runs the same action as Save & Reconnect.",
+            checked = uiState.overlayReconnectButton,
+            onCheckedChange = viewModel::updateOverlayReconnectButton,
+            testTag = "overlayReconnectToggle",
+        )
 
         Spacer(modifier = Modifier.height(24.dp))
 
