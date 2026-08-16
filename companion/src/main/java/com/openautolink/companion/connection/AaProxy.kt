@@ -172,7 +172,6 @@ class AaProxy(
             var bridgeAttemptId: Long? = null
             try {
                 activeBridges.incrementAndGet()
-                listener?.onConnected()
 
                 // Use the most-recently-updated car socket (from a reconnect
                 // while waiting for AA), falling back to the original socket.
@@ -197,13 +196,14 @@ class AaProxy(
                 pumpingBridges.incrementAndGet()
                 counted = true
 
-                CompanionLog.i(TAG, "Bridge established: AA <-> Car")
-                bridgeAttemptId = PhoneWppDiagnostics.bridgeEstablished()
-
                 val aaIn = aaSocket.getInputStream()
                 val aaOut = aaSocket.getOutputStream()
                 val carIn = carSocket.getInputStream()
                 val carOut = carSocket.getOutputStream()
+
+                CompanionLog.i(TAG, "Bridge established: AA <-> Car")
+                listener?.onConnected()
+                bridgeAttemptId = PhoneWppDiagnostics.bridgeEstablished()
 
                 val job1 = launch { pump(aaIn, carOut, "AA->Car") }
                 val job2 = launch { pump(carIn, aaOut, "Car->AA") }
