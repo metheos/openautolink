@@ -1,6 +1,8 @@
 package com.openautolink.companion.connection
 
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
+import com.openautolink.companion.diagnostics.PhoneWppStage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -149,6 +151,7 @@ class AaProxy(
             try {
                 while (isRunning) {
                     val aaSocket = server.accept()
+                    PhoneWppDiagnostics.record(PhoneWppStage.AA_SOCKET)
                     CompanionLog.i(TAG, "Android Auto connected to proxy")
                     launchBridge(aaSocket)
                 }
@@ -166,6 +169,7 @@ class AaProxy(
         scope.launch {
             var carSocket: Socket? = null
             var counted = false
+            var bridgeAttemptId: Long? = null
             try {
                 activeBridges.incrementAndGet()
                 listener?.onConnected()
@@ -194,6 +198,7 @@ class AaProxy(
                 counted = true
 
                 CompanionLog.i(TAG, "Bridge established: AA <-> Car")
+                bridgeAttemptId = PhoneWppDiagnostics.bridgeEstablished()
 
                 val aaIn = aaSocket.getInputStream()
                 val aaOut = aaSocket.getOutputStream()
@@ -214,7 +219,10 @@ class AaProxy(
                 val unexpected = isRunning
                 CompanionLog.i(TAG, "Bridge closed (unexpected=$unexpected)")
                 activeCarSocket = null
-                if (counted) pumpingBridges.decrementAndGet()
+                if (counted) {
+                    PhoneWppDiagnostics.bridgeClosed(bridgeAttemptId)
+                    pumpingBridges.decrementAndGet()
+                }
                 runCatching { aaSocket.close() }
                 // Don't close carSocket here — let the TcpAdvertiser manage it via cleanup()
                 //

@@ -6,6 +6,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.openautolink.companion.connection.AaProxy
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
+import com.openautolink.companion.diagnostics.PhoneWppStage
 import com.openautolink.companion.trigger.TransparentTriggerActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +114,7 @@ class TcpAdvertiser(
         CompanionLog.i(TAG, "Starting TCP server on port $PORT")
 
         scope.launch {
+            var listenerBound = false
             try {
                 // Retry bind briefly to handle EADDRINUSE race when the service
                 // is restarted quickly (e.g. BT reconnect triggers start within
@@ -131,8 +134,10 @@ class TcpAdvertiser(
                         delay(BIND_RETRY_DELAY_MS)
                     }
                 }
+                listenerBound = true
                 serverSocket = server
                 CompanionLog.i(TAG, "Listening on 0.0.0.0:$PORT")
+                PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTENING)
 
                 registerNsd()
                 startIdentityServer()
@@ -140,6 +145,7 @@ class TcpAdvertiser(
 
                 while (isRunning) {
                     val carSocket = server.accept()
+                    PhoneWppDiagnostics.record(PhoneWppStage.CAR_SOCKET)
                     val remoteIp = carSocket.inetAddress?.hostAddress ?: "unknown"
                     CompanionLog.i(TAG, "Car connected from $remoteIp")
                     stateListener.onConnecting()
@@ -147,6 +153,9 @@ class TcpAdvertiser(
                 }
             } catch (e: Exception) {
                 if (isRunning) {
+                    if (!listenerBound) {
+                        PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTEN_FAILED)
+                    }
                     CompanionLog.e(TAG, "TCP server error: ${e.message}")
                 }
             }
@@ -194,6 +203,7 @@ class TcpAdvertiser(
             )
             activeProxy = proxy
             val port = proxy.start()
+            if (port > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
             CompanionLog.i(TAG, "Started proxy for WPP on localhost:$port")
             port
         } catch (e: Exception) {
@@ -241,6 +251,7 @@ class TcpAdvertiser(
                 activeProxy = proxy
                 isLaunching = true
                 val localPort = proxy.start()
+                if (localPort > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
                 // Do NOT tell Android Auto to connect yet.
                 //
                 // Bluetooth connecting means "a car is nearby", not "the car can
@@ -339,6 +350,7 @@ class TcpAdvertiser(
                 CompanionLog.d(TAG, "Identity probe from $remoteIp: bad/empty request ($read bytes)")
                 return
             }
+            PhoneWppDiagnostics.record(PhoneWppStage.CAR_PROBE)
             val prefs = context.getSharedPreferences(
                 com.openautolink.companion.CompanionPrefs.NAME,
                 Context.MODE_PRIVATE,
@@ -419,6 +431,7 @@ class TcpAdvertiser(
                         CompanionLog.d(TAG, "UDP probe from $remoteIp: bad payload '$text'")
                         continue
                     }
+                    PhoneWppDiagnostics.record(PhoneWppStage.CAR_PROBE)
                     val prefs = context.getSharedPreferences(
                         com.openautolink.companion.CompanionPrefs.NAME,
                         Context.MODE_PRIVATE,
@@ -570,6 +583,7 @@ class TcpAdvertiser(
                 )
                 activeProxy = proxy
                 val localPort = proxy.start()
+                if (localPort > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
 
                 fireAaLaunchIntent(localPort)
                 startAaConnectWatchdog(carSocket)

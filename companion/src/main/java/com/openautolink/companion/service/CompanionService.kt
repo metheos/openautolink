@@ -15,6 +15,12 @@ import com.openautolink.companion.MainActivity
 import com.openautolink.companion.R
 import com.openautolink.companion.diagnostics.CompanionFileLogger
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
+import com.openautolink.companion.diagnostics.PhoneWppStage
+import com.openautolink.companion.diagnostics.WppAssociationOwner
+import com.openautolink.companion.diagnostics.WppIntegrationTrigger
+import com.openautolink.companion.diagnostics.WppNetworkObserver
+import com.openautolink.companion.diagnostics.WppStartupIntegrationPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +45,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     private var fileLogger: CompanionFileLogger? = null
     private var fileLogIdleTimeoutJob: kotlinx.coroutines.Job? = null
+    private var wppNetworkObserver: WppNetworkObserver? = null
     /** True once a connection has been observed during the current logging session. */
     @Volatile private var loggingSessionEverConnected: Boolean = false
 
@@ -48,6 +55,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         CompanionLog.init(com.openautolink.companion.BuildConfig.VERSION_NAME)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification("Starting..."))
+        PhoneWppDiagnostics.setAttemptFinishedListener(::stopWppNetworkObserver)
         // Hold multicast lock for mDNS discovery (some OEMs filter multicast when screen off)
         try {
             val wm = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
@@ -88,6 +96,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
             }
 
             ACTION_START -> {
+                joinWppAttempt(WppIntegrationTrigger.START, intent)
                 // If already connected (AA bridge active), ignore duplicate starts
                 // (e.g. BT auto-start firing a few hundred ms after the car already
                 // TCP-connected and we fired the AA trigger). Restarting here would
@@ -110,6 +119,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
             }
 
             ACTION_PREWARM -> {
+                joinWppAttempt(WppIntegrationTrigger.PREWARM, intent)
                 // Pre-warm path: car-presence signal (BT, scripted, etc.) tells
                 // us a car connection is imminent. Start the AA pipeline now so
                 // by the time the car's TCP arrives ~3–10s later, AA is warm
@@ -149,6 +159,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     }
 
     private fun startTcp() {
+        PhoneWppDiagnostics.record(PhoneWppStage.TCP_START_INTENT)
         acquireWakeLock()
         tcpAdvertiser?.stop()
 
@@ -169,6 +180,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         val prefs = getSharedPreferences(CompanionPrefs.NAME, MODE_PRIVATE)
         val entries = com.openautolink.companion.wifi.CarWifiEntry.loadAll(prefs)
         if (entries.isEmpty()) {
+            PhoneWppDiagnostics.associationOwner(WppAssociationOwner.WPP)
             CompanionLog.d(TAG, "No car WiFi entries configured, skipping CarWifiManager")
             return
         }
@@ -296,10 +308,14 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     // ── Lifecycle ──────────────────────────────────────────────────────
 
     override fun onDestroy() {
+        PhoneWppDiagnostics.record(PhoneWppStage.STOPPED)
         _isRunning.value = false
         _isConnected.value = false
         _statusText.value = "Stopped"
         tcpAdvertiser?.stop()
+        PhoneWppDiagnostics.timeout()
+        PhoneWppDiagnostics.setAttemptFinishedListener(null)
+        stopWppNetworkObserver()
         carWifiManager?.stop()
         stopFileLogging()
         releaseWakeLock()
@@ -310,6 +326,36 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         serviceScope.cancel()
         _instance = null
         super.onDestroy()
+    }
+
+    private fun joinWppAttempt(trigger: WppIntegrationTrigger, intent: Intent) {
+        val dispatchedAttemptId = intent.takeIf { it.hasExtra(EXTRA_WPP_ATTEMPT_ID) }
+            ?.getLongExtra(EXTRA_WPP_ATTEMPT_ID, 0L)
+        if (!WppStartupIntegrationPolicy.shouldJoinDispatchedAttempt(dispatchedAttemptId)) return
+
+        val attemptId = PhoneWppDiagnostics.startOrJoin(trigger)
+        if (dispatchedAttemptId != null &&
+            dispatchedAttemptId > 0L &&
+            dispatchedAttemptId != attemptId
+        ) {
+            CompanionLog.w(TAG, "WPP attempt handoff changed before service delivery")
+        }
+        if (attemptId > 0L && wppNetworkObserver == null) {
+            try {
+                wppNetworkObserver = WppNetworkObserver(
+                    applicationContext,
+                    PhoneWppDiagnostics::record,
+                ).also { it.start() }
+            } catch (e: Exception) {
+                CompanionLog.w(TAG, "Passive WPP network observation unavailable: ${e.message}")
+            }
+        }
+        PhoneWppDiagnostics.record(PhoneWppStage.SERVICE_READY)
+    }
+
+    private fun stopWppNetworkObserver() {
+        wppNetworkObserver?.stop()
+        wppNetworkObserver = null
     }
 
     override fun onBind(intent: Intent?) = null
@@ -413,6 +459,8 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         const val ACTION_UPLOAD_LOGS = "com.openautolink.companion.ACTION_UPLOAD_LOGS"
         /** Optional extra on ACTION_START: also start file logging once the service is up. */
         const val EXTRA_START_LOGGING = "com.openautolink.companion.EXTRA_START_LOGGING"
+        /** Diagnostic-only handoff for a selected-car WPP startup attempt. */
+        const val EXTRA_WPP_ATTEMPT_ID = "com.openautolink.companion.EXTRA_WPP_ATTEMPT_ID"
 
         /** Observable service state for UI. */
         private val _isRunning = MutableStateFlow(false)

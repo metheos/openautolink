@@ -8,7 +8,9 @@ enum class WppStartInput {
 enum class PhoneWppStage {
     TARGET_BT_CONNECTED,
     SERVICE_READY,
+    TCP_START_INTENT,
     TCP_LISTENING,
+    TCP_LISTEN_FAILED,
     WARM_PROXY_READY,
     NETWORK_AVAILABLE,
     NETWORK_LOST,
