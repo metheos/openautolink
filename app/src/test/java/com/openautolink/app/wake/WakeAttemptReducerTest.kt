@@ -88,6 +88,56 @@ class WakeAttemptReducerTest {
     }
 
     @Test
+    fun `GM HMI inactive after shutdown waits for a true GM wake state`() {
+        var nextId = 500L
+        val reducer = WakeAttemptReducer { nextId++ }
+
+        reducer.record(WakeEvent(WakeSignal.IGNITION_ON, elapsedMs = 100L))
+        reducer.record(WakeEvent(WakeSignal.SESSION_READY, elapsedMs = 150L))
+        reducer.record(WakeEvent(WakeSignal.SURFACE_READY, elapsedMs = 160L))
+        reducer.record(WakeEvent(WakeSignal.IGNITION_OFF, elapsedMs = 200L))
+        val inactive = reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 210L,
+                detail = "raw=3,name=HMI_INACTIVE",
+            )
+        )
+        reducer.record(WakeEvent(WakeSignal.AP_ABSENT, elapsedMs = 220L))
+        reducer.record(WakeEvent(WakeSignal.BLUETOOTH_OFF, elapsedMs = 230L))
+
+        assertEquals(500L, inactive.attemptId)
+        assertEquals(500L, reducer.currentSummary!!.attemptId)
+        assertEquals(501L, nextId)
+
+        val wake = reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 1_000L,
+                detail = "raw=1,name=ANIMATION_INIT",
+            )
+        )
+
+        assertEquals(501L, wake.attemptId)
+        assertEquals(502L, nextId)
+        assertEquals(WakeSignal.GM_SYSTEM_STATE, wake.trigger)
+        assertEquals(
+            listOf(
+                WakeSignal.GM_SYSTEM_STATE,
+                WakeSignal.AP_ABSENT,
+                WakeSignal.BLUETOOTH_OFF,
+                WakeSignal.GM_SYSTEM_STATE,
+            ),
+            wake.timeline.map { it.signal }
+        )
+        assertEquals(listOf(210L, 220L, 230L, 1_000L), wake.timeline.map { it.elapsedMs })
+        assertTrue(reducer.previousSummary!!.timeline.all { it.elapsedMs <= 200L })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.AP_ABSENT })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.BLUETOOTH_OFF })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.GM_SYSTEM_STATE })
+    }
+
+    @Test
     fun `timeline ordering uses elapsed realtime instead of input order`() {
         val reducer = WakeAttemptReducer { 101L }
 

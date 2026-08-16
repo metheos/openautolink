@@ -109,7 +109,9 @@ class WakeAttemptReducer(
 
     private fun Attempt.shouldRollOverFor(event: WakeEvent): Boolean {
         val lastIgnitionOff = lastIgnitionOffMs() ?: return false
-        return event.elapsedMs > lastIgnitionOff && event.signal in ATTEMPT_START_SIGNALS
+        return event.elapsedMs > lastIgnitionOff &&
+            event.signal in ATTEMPT_START_SIGNALS &&
+            (event.signal != WakeSignal.GM_SYSTEM_STATE || event.detail in OBSERVATIONAL_GM_DETAILS)
     }
 
     private fun Attempt.lastIgnitionOffMs(): Long? = events
