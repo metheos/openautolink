@@ -15,7 +15,7 @@ shows immediately whether a previously-good run would now fail.
 
 Usage
 -----
-    connection_check.py                 # check every car log
+    connection_check.py                 # check every car and companion log
     connection_check.py --since 08-08   # only logs from a date
     connection_check.py --verbose       # show every attempt, not just failures
     connection_check.py <file>...       # specific logs
@@ -31,6 +31,7 @@ import sys
 from dataclasses import dataclass, field
 
 CAR_LOG_GLOB = "/Docker/oal-logs/canonical/Blazer-Car/oal_*.log"
+PHONE_LOG_GLOB = "/Docker/oal-logs/canonical/*/oal_companion_*.log"
 
 # Dial-backs closer together than this belong to the same attempt.
 #
@@ -264,9 +265,168 @@ def parse_log(path: str) -> list[Attempt]:
 
 @dataclass
 class Finding:
-    severity: str      # "FAIL" | "WARN"
+    severity: str      # "FAIL" | "WARN" | "INFO"
     rule: str
     detail: str
+
+
+SUMMARY_FIELD_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*)=([^\s]+)")
+SUMMARY_STAGE_RE = re.compile(r"(?:^|>)([A-Z_]+)@(\d+)")
+M_WAKE_SUMMARY = "WAKE SUMMARY "
+M_PHONE_WPP_SUMMARY = "PHONE WPP SUMMARY "
+M_FIRST_FRAME_RENDERED = "first frame rendered"
+
+
+def _stable_summaries(text: str, marker: str) -> list[dict[str, str]]:
+    """Parse the key=value contract that precedes each bounded summary timeline."""
+    summaries = []
+    for line in text.splitlines():
+        marker_at = line.find(marker)
+        if marker_at < 0:
+            continue
+        fixed, timeline_marker, timeline = line[marker_at:].partition(" timeline=")
+        fields = dict(SUMMARY_FIELD_RE.findall(fixed))
+        if timeline_marker:
+            fields["timeline"] = timeline
+        summaries.append(fields)
+    return summaries
+
+
+def _stage_times(summary: dict[str, str]) -> dict[str, list[int]]:
+    stages: dict[str, list[int]] = {}
+    for stage, elapsed in SUMMARY_STAGE_RE.findall(summary.get("timeline", "")):
+        stages.setdefault(stage, []).append(int(elapsed))
+    return stages
+
+
+def _elapsed_field(summary: dict[str, str], name: str) -> int | None:
+    value = summary.get(name, "-")
+    return int(value) if value.isdigit() else None
+
+
+def positive_cross_side_success(text: str) -> bool:
+    """True only for one ordered bridge -> session -> rendered-flow sequence.
+
+    Two positive vflow windows *after* the rendered-frame marker are the minimum
+    evidence that video continued rather than producing one seed frame and dying.
+    Requiring ordering also prevents unrelated attempts in an appended log from
+    donating one success marker each. Old logs are intentionally not failures;
+    they simply cannot prove this result.
+    """
+    bridge_seen = False
+    native_seen = False
+    rendered_seen = False
+    positive_vflow_windows = 0
+    for line in text.splitlines():
+        phone_summaries = _stable_summaries(line, M_PHONE_WPP_SUMMARY)
+        if "Bridge established" in line or any(
+            summary.get("outcome") == "connected"
+            or "BRIDGE_ESTABLISHED" in _stage_times(summary)
+            for summary in phone_summaries
+        ):
+            bridge_seen = True
+            native_seen = False
+            rendered_seen = False
+            positive_vflow_windows = 0
+            continue
+        if bridge_seen and M_SESSION_UP in line:
+            native_seen = True
+            rendered_seen = False
+            positive_vflow_windows = 0
+            continue
+        if native_seen and M_FIRST_FRAME_RENDERED in line.lower():
+            rendered_seen = True
+            positive_vflow_windows = 0
+            continue
+        if rendered_seen and "vflow:" in line:
+            match = re.search(r"\bframes=(\d+)", line)
+            if match and int(match.group(1)) > 0:
+                positive_vflow_windows += 1
+                if positive_vflow_windows >= 2:
+                    return True
+    return False
+
+
+def check_summary_text(text: str) -> list[Finding]:
+    """Check stable cross-side summary markers without penalising older builds."""
+    out: list[Finding] = []
+
+    for summary in _stable_summaries(text, M_WAKE_SUMMARY):
+        attempt = summary.get("attempt", "?")
+        if summary.get("gmSystemState") == "not_observed":
+            out.append(Finding(
+                "INFO", "gm-signal-unavailable",
+                f"wake attempt {attempt}: GM system-state signal was not_observed; "
+                "ignition and standard Android signals remain valid fallbacks",
+            ))
+
+        ap_ready = _elapsed_field(summary, "ap")
+        ignition = _elapsed_field(summary, "ignition")
+        if ap_ready is not None and ignition is not None and ap_ready < ignition:
+            out.append(Finding(
+                "INFO", "ap-ready-before-ignition",
+                f"wake attempt {attempt}: AP ready {ignition - ap_ready}ms before ignition",
+            ))
+
+        stages = _stage_times(summary)
+        sdp_times = stages.get("SDP_PUBLISHED", [])
+        session_ready = _elapsed_field(summary, "session")
+        if session_ready is None:
+            session_times = stages.get("SESSION_READY", [])
+            session_ready = min(session_times) if session_times else None
+        if sdp_times and (session_ready is None or min(sdp_times) < session_ready):
+            readiness = (
+                "never became ready"
+                if session_ready is None
+                else f"was ready at {session_ready}ms"
+            )
+            out.append(Finding(
+                "FAIL", "sdp-before-session-ready",
+                f"wake attempt {attempt}: SDP published at {min(sdp_times)}ms before "
+                f"the current native session {readiness}",
+            ))
+
+    for summary in _stable_summaries(text, M_PHONE_WPP_SUMMARY):
+        attempt = summary.get("attempt", "?")
+        stages = _stage_times(summary)
+        outcome = summary.get("outcome", "unknown")
+        missing = summary.get("missing", "unknown")
+        has_bt = "TARGET_BT_CONNECTED" in stages
+        # A connected outcome and missing=none are stable proof even if the bounded
+        # timeline was truncated before its later socket stages.
+        has_car_socket = (
+            "CAR_SOCKET" in stages or outcome == "connected" or missing == "none"
+        )
+        has_aa_socket = (
+            "AA_SOCKET" in stages or outcome == "connected" or missing == "none"
+        )
+        if has_bt and not has_car_socket:
+            out.append(Finding(
+                "FAIL", "phone-bt-no-car-socket",
+                f"phone WPP attempt {attempt}: selected-car BT was seen but no car "
+                f"socket arrived before terminal outcome={outcome}",
+            ))
+        if has_aa_socket and not has_car_socket:
+            out.append(Finding(
+                "INFO", "aa-socket-before-car-socket",
+                f"phone WPP attempt {attempt}: AA socket is waiting_for_car, not connected",
+            ))
+
+    if positive_cross_side_success(text):
+        out.append(Finding(
+            "INFO", "cross-side-success",
+            "bridge established, native AA session started, first frame rendered, "
+            "and video flow continued across multiple windows",
+        ))
+    return out
+
+
+def check_summary_markers(path: str) -> list[Finding]:
+    try:
+        with open(path, errors="ignore") as fh:
+            return check_summary_text(fh.read())
+    except OSError:
+        return []
 
 
 def check(a: Attempt) -> list[Finding]:
@@ -502,7 +662,7 @@ def main() -> int:
     ap.add_argument("--verbose", "-v", action="store_true", help="show passing attempts too")
     args = ap.parse_args()
 
-    paths = args.files or sorted(glob.glob(CAR_LOG_GLOB))
+    paths = args.files or sorted(glob.glob(CAR_LOG_GLOB) + glob.glob(PHONE_LOG_GLOB))
     if args.since:
         paths = [p for p in paths if args.since in os.path.basename(p)]
     if not paths:
@@ -512,15 +672,24 @@ def main() -> int:
     total = connected = 0
     fails: dict[str, int] = {}
     warns: dict[str, int] = {}
+    infos: dict[str, int] = {}
     reported: list[str] = []
 
     for path in paths:
-        log_attempts = parse_log(path)
-        for f in (check_transport_agnostic(path)
-                  + check_silent_advertiser(path)
-                  + check_log_level(log_attempts)):
-            (fails if f.severity == "FAIL" else warns)[f.rule] = \
-                (fails if f.severity == "FAIL" else warns).get(f.rule, 0) + 1
+        is_car_log = not os.path.basename(path).startswith("oal_companion_")
+        log_attempts = parse_log(path) if is_car_log else []
+        old_findings = (
+            check_transport_agnostic(path)
+            + check_silent_advertiser(path)
+            + check_log_level(log_attempts)
+        ) if is_car_log else []
+        for f in old_findings + check_summary_markers(path):
+            bucket = (
+                fails if f.severity == "FAIL"
+                else warns if f.severity == "WARN"
+                else infos
+            )
+            bucket[f.rule] = bucket.get(f.rule, 0) + 1
             reported.append(f"{os.path.basename(path)}  (whole log)")
             reported.append(f"    {f.severity}  {f.rule}: {f.detail}")
         for a in log_attempts:
@@ -550,6 +719,8 @@ def main() -> int:
         print("failures:", ", ".join(f"{k}={v}" for k, v in sorted(fails.items())))
     if warns:
         print("warnings:", ", ".join(f"{k}={v}" for k, v in sorted(warns.items())))
+    if infos:
+        print("info:", ", ".join(f"{k}={v}" for k, v in sorted(infos.items())))
 
     # Non-zero exit when anything failed, so this can gate a change.
     return 1 if fails else 0
