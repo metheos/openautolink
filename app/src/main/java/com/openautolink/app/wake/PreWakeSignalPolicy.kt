@@ -150,12 +150,15 @@ class PreWakeSignalPolicy {
         )
     }
 
-    fun sessionReady(elapsedMs: Long): PreWakePolicyDecision = decision(
-        kind = PreWakeObservationKind.SESSION,
-        detail = "ready=true",
-        event = WakeEvent(WakeSignal.SESSION_READY, elapsedMs),
-        impliesSessionReadiness = true,
-    )
+    fun sessionReady(source: String, elapsedMs: Long): PreWakePolicyDecision {
+        val detail = "ready=true,source=${safeField(source)}"
+        return decision(
+            kind = PreWakeObservationKind.SESSION,
+            detail = detail,
+            event = WakeEvent(WakeSignal.SESSION_READY, elapsedMs, detail),
+            impliesSessionReadiness = true,
+        )
+    }
 
     fun surfaceReady(width: Int, height: Int, elapsedMs: Long): PreWakePolicyDecision = decision(
         kind = PreWakeObservationKind.SURFACE,

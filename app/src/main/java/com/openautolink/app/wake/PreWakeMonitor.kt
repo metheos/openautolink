@@ -60,6 +60,29 @@ object PreWakeMonitor {
         },
         emit = { summary, outcome -> emitSummary(summary, outcome.name.lowercase()) },
     )
+    private val sessionReadinessDispatcher = BoundedObservationDispatcher<SessionReadinessObservation>(
+        capacity = 8,
+        schedule = { drain -> scope.launch { drain() } },
+        consume = { observation ->
+            record(
+                policy.sessionReady(observation.source, observation.elapsedMs),
+                candidateSource = false,
+            )
+        },
+        onDropped = { count ->
+            DiagnosticLog.w(
+                TAG,
+                "WAKE EVENT session readiness outcome=dropped count=$count",
+            )
+        },
+        onFailure = { error ->
+            DiagnosticLog.w(
+                TAG,
+                "WAKE EVENT session readiness outcome=record-failed " +
+                    "error=${safe(error.javaClass.simpleName)}",
+            )
+        },
+    )
 
     private var nextAttemptId = 1L
     private var initialized = false
@@ -192,8 +215,13 @@ object PreWakeMonitor {
         record(policy.activity(callback, SystemClock.elapsedRealtime()), candidateSource = true)
     }
 
-    fun reportSessionReady() {
-        record(policy.sessionReady(SystemClock.elapsedRealtime()), candidateSource = false)
+    fun reportSessionReady(source: String) {
+        val elapsedMs = SystemClock.elapsedRealtime()
+        val observation = SessionReadinessObservation(
+            source = safe(source),
+            elapsedMs = elapsedMs,
+        )
+        sessionReadinessDispatcher.offer(observation)
     }
 
     fun reportSurfaceReady(width: Int, height: Int) {
@@ -563,6 +591,11 @@ object PreWakeMonitor {
     private fun safe(value: String): String = value
         .replace(Regex("[\\p{Cc}>(),=]"), "_")
         .take(96)
+
+    private data class SessionReadinessObservation(
+        val source: String,
+        val elapsedMs: Long,
+    )
 
     private data class ApSnapshot(val ip: String?, val error: String?)
 

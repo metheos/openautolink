@@ -66,6 +66,19 @@ class PreWakeSignalPolicyTest {
     }
 
     @Test
+    fun `session readiness source is sanitized into observation and event atomically`() {
+        val decision = policy.sessionReady(
+            source = "native session,start",
+            elapsedMs = 250L,
+        )
+
+        assertEquals("ready=true,source=native_session_start", decision.observation.detail)
+        assertEquals("ready=true,source=native_session_start", decision.event?.detail)
+        assertTrue(decision.impliesSessionReadiness)
+        assertFalse(decision.authorizesBehavior)
+    }
+
+    @Test
     fun `configured AP observation records only interface and local IP`() {
         val decision = policy.accessPoint(
             interfaceName = "ap_br_swlan0",

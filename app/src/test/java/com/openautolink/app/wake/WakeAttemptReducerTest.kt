@@ -88,6 +88,56 @@ class WakeAttemptReducerTest {
     }
 
     @Test
+    fun `GM HMI inactive after shutdown waits for a true GM wake state`() {
+        var nextId = 500L
+        val reducer = WakeAttemptReducer { nextId++ }
+
+        reducer.record(WakeEvent(WakeSignal.IGNITION_ON, elapsedMs = 100L))
+        reducer.record(WakeEvent(WakeSignal.SESSION_READY, elapsedMs = 150L))
+        reducer.record(WakeEvent(WakeSignal.SURFACE_READY, elapsedMs = 160L))
+        reducer.record(WakeEvent(WakeSignal.IGNITION_OFF, elapsedMs = 200L))
+        val inactive = reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 210L,
+                detail = "raw=3,name=HMI_INACTIVE",
+            )
+        )
+        reducer.record(WakeEvent(WakeSignal.AP_ABSENT, elapsedMs = 220L))
+        reducer.record(WakeEvent(WakeSignal.BLUETOOTH_OFF, elapsedMs = 230L))
+
+        assertEquals(500L, inactive.attemptId)
+        assertEquals(500L, reducer.currentSummary!!.attemptId)
+        assertEquals(501L, nextId)
+
+        val wake = reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 1_000L,
+                detail = "raw=1,name=ANIMATION_INIT",
+            )
+        )
+
+        assertEquals(501L, wake.attemptId)
+        assertEquals(502L, nextId)
+        assertEquals(WakeSignal.GM_SYSTEM_STATE, wake.trigger)
+        assertEquals(
+            listOf(
+                WakeSignal.GM_SYSTEM_STATE,
+                WakeSignal.AP_ABSENT,
+                WakeSignal.BLUETOOTH_OFF,
+                WakeSignal.GM_SYSTEM_STATE,
+            ),
+            wake.timeline.map { it.signal }
+        )
+        assertEquals(listOf(210L, 220L, 230L, 1_000L), wake.timeline.map { it.elapsedMs })
+        assertTrue(reducer.previousSummary!!.timeline.all { it.elapsedMs <= 200L })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.AP_ABSENT })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.BLUETOOTH_OFF })
+        assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.GM_SYSTEM_STATE })
+    }
+
+    @Test
     fun `timeline ordering uses elapsed realtime instead of input order`() {
         val reducer = WakeAttemptReducer { 101L }
 
@@ -115,6 +165,46 @@ class WakeAttemptReducerTest {
         assertNull(summary.activityStartedAtMs)
         assertNull(summary.sessionReadyAtMs)
         assertEquals(300L, summary.surfaceReadyAtMs)
+    }
+
+    @Test
+    fun `session readiness source survives timeline compaction and diagnostic truncation`() {
+        val reducer = WakeAttemptReducer { 103L }
+        reducer.record(
+            WakeEvent(
+                WakeSignal.SESSION_READY,
+                elapsedMs = 100L,
+                detail = "ready=true,source=native-session-started",
+            )
+        )
+        repeat(500) { index ->
+            reducer.record(
+                WakeEvent(
+                    WakeSignal.GM_SYSTEM_STATE,
+                    elapsedMs = 200L + index,
+                    detail = "raw=$index,name=${"X".repeat(140)}",
+                )
+            )
+        }
+
+        val summary = reducer.currentSummary!!
+        val line = WakeSummaryFormatter.formatForDiagnosticLog(
+            summary = summary,
+            gmEvidenceFields =
+                "gmSystemState=observed gmPowerMode=not_observed " +
+                    "gmPoweroffView=not_observed gmHomeStarted=not_observed",
+            outcome = "ready",
+            missing = "surface",
+        )
+        val stored = fitLocalDiagnosticMessage(line)
+
+        assertEquals("native-session-started", summary.sessionReadySource)
+        assertTrue(summary.timeline.any { it.detail.contains("source=native-session-started") })
+        assertTrue(line.length <= WakeSummaryFormatter.MAX_DIAGNOSTIC_LINE_LENGTH)
+        assertEquals(line, stored)
+        assertTrue(stored.contains("sessionSource=native-session-started"))
+        assertTrue(stored.indexOf("sessionSource=") < stored.indexOf("timeline="))
+        assertTrue("Expected timeline truncation marker", stored.endsWith("~"))
     }
 
     @Test
@@ -300,7 +390,7 @@ class WakeAttemptReducerTest {
 
         assertEquals(
             "WAKE SUMMARY attempt=9 trigger=IGNITION_ON gm=- bt=- ap=120 " +
-                "apEdge=- ignition=200 activity=- session=- surface=- " +
+                "apEdge=- ignition=200 activity=- session=- sessionSource=- surface=- " +
                 "timeline=AP_PRESENT@120>IGNITION_ON@200",
             line
         )
@@ -319,6 +409,7 @@ class WakeAttemptReducerTest {
             ignitionOnAtMs = 40L,
             activityStartedAtMs = 50L,
             sessionReadyAtMs = 60L,
+            sessionReadySource = "native-session-started",
             surfaceReadyAtMs = 70L,
             apAbsentToPresentAtMs = 30L,
             timeline = List(WakeAttemptReducer.MAX_TIMELINE_EVENTS) { index ->

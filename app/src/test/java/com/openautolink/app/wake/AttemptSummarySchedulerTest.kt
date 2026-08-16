@@ -61,6 +61,69 @@ class AttemptSummarySchedulerTest {
         assertEquals(listOf(30L to AttemptSummaryOutcome.TIMEOUT), harness.emitted)
     }
 
+    @Test
+    fun `real reducer retains first readiness source and scheduler emits once per attempt`() {
+        var nextId = 40L
+        val reducer = WakeAttemptReducer { nextId++ }
+        val harness = Harness()
+
+        fun record(event: WakeEvent): WakeSummary {
+            val current = reducer.record(event)
+            harness.scheduler.observe(current, reducer.previousSummary)
+            if (current.sessionReadyAtMs != null && current.surfaceReadyAtMs != null) {
+                harness.scheduler.ready(current)
+            }
+            return current
+        }
+
+        record(
+            WakeEvent(
+                WakeSignal.SESSION_READY,
+                elapsedMs = 100L,
+                detail = "ready=true,source=callback-installed",
+            )
+        )
+        val staleFirstTimeout = harness.callback(40L)
+        record(WakeEvent(WakeSignal.SURFACE_READY, elapsedMs = 110L))
+        record(
+            WakeEvent(
+                WakeSignal.SESSION_READY,
+                elapsedMs = 120L,
+                detail = "ready=true,source=native-session-started",
+            )
+        )
+        staleFirstTimeout()
+
+        assertEquals(listOf(40L to AttemptSummaryOutcome.READY), harness.emitted)
+        assertEquals("callback-installed", harness.emittedSummaries.single().sessionReadySource)
+        assertTrue(harness.cancelled.getValue(40L))
+
+        record(WakeEvent(WakeSignal.IGNITION_OFF, elapsedMs = 200L))
+        record(
+            WakeEvent(
+                WakeSignal.SESSION_READY,
+                elapsedMs = 300L,
+                detail = "ready=true,source=native-session-started",
+            )
+        )
+        val staleReconnectTimeout = harness.callback(41L)
+        record(WakeEvent(WakeSignal.SURFACE_READY, elapsedMs = 310L))
+        staleReconnectTimeout()
+
+        assertEquals(
+            listOf(
+                40L to AttemptSummaryOutcome.READY,
+                41L to AttemptSummaryOutcome.READY,
+            ),
+            harness.emitted,
+        )
+        assertEquals(
+            listOf("callback-installed", "native-session-started"),
+            harness.emittedSummaries.map { it.sessionReadySource },
+        )
+        assertEquals(0, harness.scheduler.activeTimeoutCount)
+    }
+
     private class Harness {
         val callbacks = mutableMapOf<Long, () -> Unit>()
         val cancelled = mutableMapOf<Long, Boolean>()
@@ -94,6 +157,7 @@ class AttemptSummarySchedulerTest {
         ignitionOnAtMs = null,
         activityStartedAtMs = null,
         sessionReadyAtMs = null,
+        sessionReadySource = null,
         surfaceReadyAtMs = null,
         apAbsentToPresentAtMs = null,
         timeline = listOf(WakeEvent(trigger, attemptId)),
