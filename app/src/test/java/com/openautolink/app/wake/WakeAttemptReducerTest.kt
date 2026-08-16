@@ -121,6 +121,7 @@ class WakeAttemptReducerTest {
         assertEquals(501L, wake.attemptId)
         assertEquals(502L, nextId)
         assertEquals(WakeSignal.GM_SYSTEM_STATE, wake.trigger)
+        assertEquals("raw=1,name=ANIMATION_INIT", wake.gmState)
         assertEquals(
             listOf(
                 WakeSignal.GM_SYSTEM_STATE,
@@ -131,6 +132,9 @@ class WakeAttemptReducerTest {
             wake.timeline.map { it.signal }
         )
         assertEquals(listOf(210L, 220L, 230L, 1_000L), wake.timeline.map { it.elapsedMs })
+        val line = WakeSummaryFormatter.format(wake)
+        assertTrue(line.contains(" gm=raw=1,name=ANIMATION_INIT "))
+        assertTrue(line.contains("GM_SYSTEM_STATE@210(raw=3,name=HMI_INACTIVE)"))
         assertTrue(reducer.previousSummary!!.timeline.all { it.elapsedMs <= 200L })
         assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.AP_ABSENT })
         assertFalse(reducer.previousSummary!!.timeline.any { it.signal == WakeSignal.BLUETOOTH_OFF })
@@ -205,6 +209,40 @@ class WakeAttemptReducerTest {
         assertTrue(stored.contains("sessionSource=native-session-started"))
         assertTrue(stored.indexOf("sessionSource=") < stored.indexOf("timeline="))
         assertTrue("Expected timeline truncation marker", stored.endsWith("~"))
+    }
+
+    @Test
+    fun `observational GM trigger provenance survives timeline compaction`() {
+        val reducer = WakeAttemptReducer { 104L }
+        reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 100L,
+                detail = "raw=3,name=HMI_INACTIVE",
+            )
+        )
+        reducer.record(
+            WakeEvent(
+                WakeSignal.GM_SYSTEM_STATE,
+                elapsedMs = 200L,
+                detail = "raw=1,name=ANIMATION_INIT",
+            )
+        )
+        repeat(100) { index ->
+            reducer.record(
+                WakeEvent(
+                    WakeSignal.GM_SYSTEM_STATE,
+                    elapsedMs = 300L + index,
+                    detail = "raw=${9 + index},name=NOISE_$index",
+                )
+            )
+        }
+
+        val summary = reducer.currentSummary!!
+
+        assertEquals(WakeSignal.GM_SYSTEM_STATE, summary.trigger)
+        assertEquals("raw=1,name=ANIMATION_INIT", summary.gmState)
+        assertTrue(summary.timeline.any { it.detail == "raw=1,name=ANIMATION_INIT" })
     }
 
     @Test

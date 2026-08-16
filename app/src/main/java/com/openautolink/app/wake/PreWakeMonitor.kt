@@ -51,6 +51,12 @@ object PreWakeMonitor {
     private val receivers = mutableListOf<BroadcastReceiver>()
     private val summaryScheduler = AttemptSummaryScheduler(
         timeoutMs = PreWakeSignalPolicy.DEFAULT_SAMPLING_PLAN.durationMs,
+        timeoutSelector = { summary ->
+            selectAttemptSummaryTimeoutMs(
+                summary,
+                PreWakeSignalPolicy.DEFAULT_SAMPLING_PLAN.durationMs,
+            )
+        },
         schedule = { attemptId, delayMs, callback ->
             val job = scope.launch {
                 delay(delayMs)
