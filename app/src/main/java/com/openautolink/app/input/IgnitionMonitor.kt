@@ -190,6 +190,9 @@ object IgnitionMonitor {
                             3 -> "ACC"; 4 -> "ON"; 5 -> "START"; else -> "?"
                         }
                         DiagnosticLog.i(TAG, "IGNITION_STATE → $v ($name) [was ${lastLoggedIgnition ?: "?"}]")
+                        if (v == 2 || v == 4 || v == 5) {
+                            com.openautolink.app.wake.PreWakeMonitor.reportIgnition(v)
+                        }
                         lastLoggedIgnition = v
                     }
                     // Stamp the transition into a non-ON state so callers can

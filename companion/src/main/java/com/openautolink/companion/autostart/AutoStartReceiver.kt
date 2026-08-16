@@ -10,6 +10,7 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.openautolink.companion.CompanionPrefs
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
 import com.openautolink.companion.service.CompanionService
 
 /**
@@ -39,6 +40,9 @@ class AutoStartReceiver : BroadcastReceiver() {
 
         when (intent.action) {
             BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                val wppAttemptId = PhoneWppDiagnostics.selectedTargetConnected(
+                    existingBridgeActive = CompanionService.isConnected.value,
+                )
                 CompanionLog.i(TAG, "Target BT connected: $deviceAddress")
 
                 // Check if device is fully connected (not just ACL)
@@ -61,6 +65,7 @@ class AutoStartReceiver : BroadcastReceiver() {
 
                 val serviceIntent = Intent(context, CompanionService::class.java).apply {
                     action = CompanionService.ACTION_START
+                    putExtra(CompanionService.EXTRA_WPP_ATTEMPT_ID, wppAttemptId)
                 }
                 try {
                     ContextCompat.startForegroundService(context, serviceIntent)
@@ -74,6 +79,7 @@ class AutoStartReceiver : BroadcastReceiver() {
                 // the proxy bridge lights up in milliseconds.
                 val prewarmIntent = Intent(context, CompanionService::class.java).apply {
                     action = CompanionService.ACTION_PREWARM
+                    putExtra(CompanionService.EXTRA_WPP_ATTEMPT_ID, wppAttemptId)
                 }
                 try {
                     ContextCompat.startForegroundService(context, prewarmIntent)
@@ -84,6 +90,9 @@ class AutoStartReceiver : BroadcastReceiver() {
             }
 
             BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                PhoneWppDiagnostics.record(
+                    com.openautolink.companion.diagnostics.PhoneWppStage.TARGET_BT_DISCONNECTED,
+                )
                 CompanionLog.i(TAG, "Target BT disconnected: $deviceAddress")
                 val stopOnDisconnect = prefs.getBoolean(CompanionPrefs.BT_DISCONNECT_STOP, false)
                 if (stopOnDisconnect) {

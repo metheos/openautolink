@@ -13,6 +13,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
+import com.openautolink.companion.diagnostics.WppAssociationOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -66,6 +68,7 @@ class CarWifiManager(private val context: Context) {
         entries = carWifiEntries
         running = true
         attempt = 0
+        PhoneWppDiagnostics.associationOwner(WppAssociationOwner.COMPANION_ASSIST)
         CompanionLog.i(TAG, "Starting car WiFi manager for ${entries.size} SSID(s)")
         registerSuggestions()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tryConnect()
