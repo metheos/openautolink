@@ -32,6 +32,50 @@ class SessionStateTest {
     }
 
     @Test
+    fun `late transport CONNECTED cannot downgrade an active stream`() {
+        assertEquals(
+            SessionState.STREAMING,
+            reconcileTransportSessionState(SessionState.STREAMING, SessionState.CONNECTED),
+        )
+    }
+
+    @Test
+    fun `suppressed CONNECTED does not restart streaming services`() {
+        assertEquals(
+            false,
+            shouldStartStreamingServices(SessionState.STREAMING, SessionState.CONNECTED),
+        )
+        assertEquals(
+            false,
+            shouldStartStreamingServices(SessionState.STREAMING, SessionState.STREAMING),
+        )
+        assertEquals(
+            true,
+            shouldStartStreamingServices(SessionState.CONNECTED, SessionState.STREAMING),
+        )
+    }
+
+    @Test
+    fun `transport CONNECTING still leaves an active stream for real recovery`() {
+        assertEquals(
+            SessionState.CONNECTING,
+            reconcileTransportSessionState(SessionState.STREAMING, SessionState.CONNECTING),
+        )
+    }
+
+    @Test
+    fun `transport disconnect and error still leave streaming`() {
+        assertEquals(
+            SessionState.IDLE,
+            reconcileTransportSessionState(SessionState.STREAMING, SessionState.IDLE),
+        )
+        assertEquals(
+            SessionState.ERROR,
+            reconcileTransportSessionState(SessionState.STREAMING, SessionState.ERROR),
+        )
+    }
+
+    @Test
     fun `all ConnectionState values have a mapping`() {
         ConnectionState.entries.forEach { state ->
             // Should not throw
