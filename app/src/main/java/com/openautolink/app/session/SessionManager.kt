@@ -1424,7 +1424,7 @@ class SessionManager(
             { ip -> if (ip.isNotBlank()) session.dialCompanion(ip) }
         // The new session is now current and its live companion callback is
         // installed. Report readiness only at this truthful lifecycle point.
-        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady()
+        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady("callback-installed")
         // Answer the phone's SensorStartRequest with current vehicle state.
         // Without this, a parked car never sends driving status and the phone
         // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.

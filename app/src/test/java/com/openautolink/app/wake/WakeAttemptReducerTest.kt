@@ -168,6 +168,46 @@ class WakeAttemptReducerTest {
     }
 
     @Test
+    fun `session readiness source survives timeline compaction and diagnostic truncation`() {
+        val reducer = WakeAttemptReducer { 103L }
+        reducer.record(
+            WakeEvent(
+                WakeSignal.SESSION_READY,
+                elapsedMs = 100L,
+                detail = "ready=true,source=native-session-started",
+            )
+        )
+        repeat(500) { index ->
+            reducer.record(
+                WakeEvent(
+                    WakeSignal.GM_SYSTEM_STATE,
+                    elapsedMs = 200L + index,
+                    detail = "raw=$index,name=${"X".repeat(140)}",
+                )
+            )
+        }
+
+        val summary = reducer.currentSummary!!
+        val line = WakeSummaryFormatter.formatForDiagnosticLog(
+            summary = summary,
+            gmEvidenceFields =
+                "gmSystemState=observed gmPowerMode=not_observed " +
+                    "gmPoweroffView=not_observed gmHomeStarted=not_observed",
+            outcome = "ready",
+            missing = "surface",
+        )
+        val stored = fitLocalDiagnosticMessage(line)
+
+        assertEquals("native-session-started", summary.sessionReadySource)
+        assertTrue(summary.timeline.any { it.detail.contains("source=native-session-started") })
+        assertTrue(line.length <= WakeSummaryFormatter.MAX_DIAGNOSTIC_LINE_LENGTH)
+        assertEquals(line, stored)
+        assertTrue(stored.contains("sessionSource=native-session-started"))
+        assertTrue(stored.indexOf("sessionSource=") < stored.indexOf("timeline="))
+        assertTrue("Expected timeline truncation marker", stored.endsWith("~"))
+    }
+
+    @Test
     fun `AP absent after shutdown rolls into the next wake attempt`() {
         var nextId = 200L
         val reducer = WakeAttemptReducer { nextId++ }
@@ -350,7 +390,7 @@ class WakeAttemptReducerTest {
 
         assertEquals(
             "WAKE SUMMARY attempt=9 trigger=IGNITION_ON gm=- bt=- ap=120 " +
-                "apEdge=- ignition=200 activity=- session=- surface=- " +
+                "apEdge=- ignition=200 activity=- session=- sessionSource=- surface=- " +
                 "timeline=AP_PRESENT@120>IGNITION_ON@200",
             line
         )
@@ -369,6 +409,7 @@ class WakeAttemptReducerTest {
             ignitionOnAtMs = 40L,
             activityStartedAtMs = 50L,
             sessionReadyAtMs = 60L,
+            sessionReadySource = "native-session-started",
             surfaceReadyAtMs = 70L,
             apAbsentToPresentAtMs = 30L,
             timeline = List(WakeAttemptReducer.MAX_TIMELINE_EVENTS) { index ->

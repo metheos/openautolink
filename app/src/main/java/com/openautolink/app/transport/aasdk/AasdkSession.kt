@@ -600,6 +600,7 @@ class AasdkSession(
         // session actually came up, which is what a log reader needs to see.
         OalLog.i(TAG, "CONNECT SUMMARY: result=session started — " +
                 "video should follow within a few seconds")
+        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady("native-session-started")
         // Cancel any pending auto-reconnect timer: this session is now healthy,
         // so a leftover retry from an earlier teardown must NOT fire and restart
         // the transport underneath us (the deep-sleep reconnect-storm root cause).

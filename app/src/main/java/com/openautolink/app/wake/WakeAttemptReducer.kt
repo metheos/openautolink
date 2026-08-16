@@ -39,6 +39,7 @@ data class WakeSummary(
     val ignitionOnAtMs: Long?,
     val activityStartedAtMs: Long?,
     val sessionReadyAtMs: Long?,
+    val sessionReadySource: String?,
     val surfaceReadyAtMs: Long?,
     val apAbsentToPresentAtMs: Long?,
     val timeline: List<WakeEvent>,
@@ -165,6 +166,7 @@ class WakeAttemptReducer(
             ignitionOnAtMs = timeline.firstTime(WakeSignal.IGNITION_ON),
             activityStartedAtMs = timeline.firstTime(WakeSignal.ACTIVITY_START),
             sessionReadyAtMs = timeline.firstTime(WakeSignal.SESSION_READY),
+            sessionReadySource = timeline.firstSource(WakeSignal.SESSION_READY),
             surfaceReadyAtMs = timeline.firstTime(WakeSignal.SURFACE_READY),
             apAbsentToPresentAtMs = apEdgeAtMs,
             timeline = timeline,
@@ -201,6 +203,14 @@ class WakeAttemptReducer(
 
     private fun List<WakeEvent>.firstDetail(signal: WakeSignal): String? =
         firstOrNull { it.signal == signal }?.detail?.takeIf { it.isNotBlank() }
+
+    private fun List<WakeEvent>.firstSource(signal: WakeSignal): String? =
+        firstOrNull { it.signal == signal }
+            ?.detail
+            ?.split(',')
+            ?.firstOrNull { it.startsWith("source=") }
+            ?.substringAfter("source=")
+            ?.takeIf { it.isNotBlank() }
 
     companion object {
         const val MAX_TIMELINE_EVENTS = 64
@@ -277,6 +287,7 @@ object WakeSummaryFormatter {
             append(" ignition=").append(summary.ignitionOnAtMs.stageField(compact))
             append(" activity=").append(summary.activityStartedAtMs.stageField(compact))
             append(" session=").append(summary.sessionReadyAtMs.stageField(compact))
+            append(" sessionSource=").append(summary.sessionReadySource.asField())
             append(" surface=").append(summary.surfaceReadyAtMs.stageField(compact))
         }
 
