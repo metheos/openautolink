@@ -114,6 +114,14 @@ M_IGNITION_ON = "IGNITION_STATE → 4 (ON)"
 # The app stopped responding: Android dumped every thread to tombstoned. Reads as
 # a crash to the user (the app restarts), but it is a blocked main thread.
 M_ANR = "Wrote stack traces to tombstoned"
+# Native process-fatal signals. SIGQUIT is deliberately excluded: Android uses
+# signal 3 for ANR thread dumps and the process survives. The app crash-handler
+# marker is authoritative; generic libc lines count only when the same line names
+# the OAL process, because paired logcat can contain unrelated processes.
+M_NATIVE_CRASH_HANDLER = re.compile(
+    r"NATIVE CRASH: signal=(?:6|11) \((SIGABRT|SIGSEGV)\)"
+)
+M_FATAL_SIGNAL = re.compile(r"Fatal signal (?:6|11) \((SIGABRT|SIGSEGV)\)")
 M_ADVERTISER_ANY = "AaWirelessBt"
 M_BT_WAIT = "Bluetooth is off — waiting"
 M_BT_BACK = "Bluetooth is back"
@@ -584,6 +592,22 @@ def check_transport_agnostic(path: str) -> list:
             "FAIL", "app-not-responding",
             f"{anrs} ANR(s) — the main thread stopped responding long enough for "
             "Android to dump threads; the app restarts and looks like a crash",
+        ))
+
+    # Native SIGABRT/SIGSEGV kills the process. OAL's crash handler and libc can
+    # both describe the same incident, so report distinct signal names rather
+    # than counting duplicate marker lines.
+    native_crash_signals = set(M_NATIVE_CRASH_HANDLER.findall(logcat_text))
+    for line in logcat_text.splitlines():
+        if "penautolink.app" not in line and "com.openautolink.app" not in line:
+            continue
+        native_crash_signals.update(M_FATAL_SIGNAL.findall(line))
+    native_crash_signals = sorted(native_crash_signals)
+    if native_crash_signals:
+        out.append(Finding(
+            "FAIL", "native-crash",
+            f"native process crash ({', '.join(native_crash_signals)}) — "
+            "the app process was killed and any later connection used a new process",
         ))
 
     # The phone announced audio and none of it reached the player.

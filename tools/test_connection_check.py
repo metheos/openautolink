@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Focused synthetic tests for the connection checker's stable summary rules."""
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from tools.connection_check import check_summary_text, positive_cross_side_success
+from tools.connection_check import (
+    check_summary_text,
+    check_transport_agnostic,
+    positive_cross_side_success,
+)
 
 
 class StableSummaryRulesTest(unittest.TestCase):
@@ -113,6 +119,54 @@ class StableSummaryRulesTest(unittest.TestCase):
             with self.subTest(missing=missing):
                 incomplete = "".join(value for key, value in parts.items() if key != missing)
                 self.assertFalse(positive_cross_side_success(incomplete))
+
+    def test_native_sigabrt_in_paired_logcat_is_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oal_path = Path(tmp) / "oal_2026-08-16_14-31-40.log"
+            logcat_path = Path(tmp) / "logcat_2026-08-16_14-31-40.log"
+            oal_path.write_text("14:32:05.498 I/session: ByeBye response received\n")
+            logcat_path.write_text(
+                "14:32:05.509 E/libc++abi: terminating due to uncaught exception "
+                "of type std::system_error: thread::join failed: Resource deadlock would occur\n"
+                "14:32:05.510 F/OAL-NativeCrash: NATIVE CRASH: signal=6 (SIGABRT)\n"
+                "14:32:05.970 F/libc: Fatal signal 6 (SIGABRT)\n"
+            )
+
+            findings = check_transport_agnostic(str(oal_path))
+
+        crashes = [finding for finding in findings if finding.rule == "native-crash"]
+        self.assertEqual(1, len(crashes))
+        self.assertEqual("FAIL", crashes[0].severity)
+        self.assertIn("SIGABRT", crashes[0].detail)
+
+    def test_unrelated_process_fatal_signal_is_not_attributed_to_oal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oal_path = Path(tmp) / "oal_2026-08-16_14-31-40.log"
+            logcat_path = Path(tmp) / "logcat_2026-08-16_14-31-40.log"
+            oal_path.write_text("14:32:05.498 I/session: healthy\n")
+            logcat_path.write_text(
+                "14:32:05.970 88 99 F/libc: Fatal signal 11 (SIGSEGV), "
+                "code 1 in tid 99, pid 88 (com.unrelated.app)\n"
+            )
+
+            findings = check_transport_agnostic(str(oal_path))
+
+        self.assertFalse(any(finding.rule == "native-crash" for finding in findings))
+
+    def test_sigquit_anr_is_not_misclassified_as_native_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oal_path = Path(tmp) / "oal_2026-08-16_14-31-40.log"
+            logcat_path = Path(tmp) / "logcat_2026-08-16_14-31-40.log"
+            oal_path.write_text("14:32:05.498 I/session: stopping\n")
+            logcat_path.write_text(
+                "14:32:05.970 I/runtime: reacting to signal 3 (SIGQUIT)\n"
+                "14:32:06.000 W/runtime: Wrote stack traces to tombstoned\n"
+            )
+
+            findings = check_transport_agnostic(str(oal_path))
+
+        self.assertFalse(any(finding.rule == "native-crash" for finding in findings))
+        self.assertTrue(any(finding.rule == "app-not-responding" for finding in findings))
 
     def test_old_logs_without_summary_markers_are_not_flagged_for_instrumentation(self):
         old_text = (
