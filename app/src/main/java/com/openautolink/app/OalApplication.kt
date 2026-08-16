@@ -43,6 +43,11 @@ class OalApplication : Application() {
         // shutdown burns a 45s timeout into a dead WiFi.
         com.openautolink.app.input.IgnitionMonitor.start(this)
 
+        // Passive, process-scope pre-wake diagnostics. This must be initialized
+        // after the VHAL observer and before Bluetooth advertising so it can
+        // observe (but never cause) the complete pre-ignition sequence.
+        com.openautolink.app.wake.PreWakeMonitor.initialize(this)
+
         // Android Auto Wireless BT advertiser.
         //
         // Must run at PROCESS scope, not session scope: its whole job is to make

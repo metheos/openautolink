@@ -18,6 +18,11 @@ data class LocalLogEntry(
     val message: String,
 )
 
+internal const val MAX_LOCAL_DIAGNOSTIC_MESSAGE_LENGTH = 500
+
+internal fun fitLocalDiagnosticMessage(message: String): String =
+    message.take(MAX_LOCAL_DIAGNOSTIC_MESSAGE_LENGTH)
+
 /**
  * Global diagnostic logger — subsystems call this to emit diagnostic log events.
  *
@@ -138,7 +143,7 @@ object DiagnosticLog {
             timestamp = System.currentTimeMillis(),
             level = level,
             tag = tag,
-            message = if (msg.length > 500) msg.take(500) else msg,
+            message = fitLocalDiagnosticMessage(msg),
         )
         synchronized(ring) {
             if (ring.size >= MAX_LOCAL_ENTRIES) ring.pollFirst()

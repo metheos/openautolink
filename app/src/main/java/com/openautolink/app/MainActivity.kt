@@ -151,6 +151,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         com.openautolink.app.diagnostics.DiagnosticLog.i("lifecycle", "MainActivity.onResume")
+        com.openautolink.app.wake.PreWakeMonitor.reportActivity(
+            com.openautolink.app.wake.PreWakeActivityCallback.RESUME
+        )
         publishCurrentUiNightMode("onResume")
         // On AAOS, resume after car sleep leaves TCP sockets dead.
         // SessionManager dedupes against the SCREEN_ON broadcast receiver
@@ -162,6 +165,9 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         com.openautolink.app.diagnostics.DiagnosticLog.i("lifecycle", "MainActivity.onPause")
+        com.openautolink.app.wake.PreWakeMonitor.reportActivity(
+            com.openautolink.app.wake.PreWakeActivityCallback.PAUSE
+        )
         // Mirror onResume on the sleep side. Lets the next markWake compute
         // gap from "going idle" rather than "last control message", which
         // matters when streaming keeps lastActiveTimestamp fresh right up
@@ -172,11 +178,17 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         com.openautolink.app.diagnostics.DiagnosticLog.i("lifecycle", "MainActivity.onStart")
+        com.openautolink.app.wake.PreWakeMonitor.reportActivity(
+            com.openautolink.app.wake.PreWakeActivityCallback.START
+        )
     }
 
     override fun onStop() {
         super.onStop()
         com.openautolink.app.diagnostics.DiagnosticLog.i("lifecycle", "MainActivity.onStop")
+        com.openautolink.app.wake.PreWakeMonitor.reportActivity(
+            com.openautolink.app.wake.PreWakeActivityCallback.STOP
+        )
     }
 
     override fun onTopResumedActivityChanged(isTopResumedActivity: Boolean) {

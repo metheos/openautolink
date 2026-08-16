@@ -1245,11 +1245,18 @@ object AaWirelessBtControl {
                 // SDP listener when Bluetooth returns.
                 ensureAdvertising()
             },
+            onSdpPublished = { elapsedMs ->
+                com.openautolink.app.wake.PreWakeMonitor.reportSdpPublished(elapsedMs)
+            },
+            onPhoneDialback = { elapsedMs ->
+                com.openautolink.app.wake.PreWakeMonitor.reportPhoneDialback(elapsedMs)
+            },
         )
         btServer = bt
         // Probe first: if the BT stack refuses to publish the record we want that
         // stated plainly in the log, not inferred later from the phone's silence.
-        OalLog.i(TAG, "SDP advertise capability: ${bt.canAdvertise()}")
+        val canAdvertise = bt.canAdvertise()
+        OalLog.i(TAG, "SDP advertise capability: $canAdvertise")
         // Re-resolve the address on every handshake rather than reusing the value
         // captured here: the car's AP is given a new subnet on each ignition
         // cycle, so this snapshot goes stale as soon as the car is restarted.

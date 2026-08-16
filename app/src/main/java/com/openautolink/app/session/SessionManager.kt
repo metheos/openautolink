@@ -212,6 +212,9 @@ class SessionManager(
     /** Called by the UI whenever a surface becomes available or is destroyed. */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
         lastKnownSurface = surface?.let { Triple(it, width, height) }
+        if (surface != null && surface.isValid && width > 0 && height > 0) {
+            com.openautolink.app.wake.PreWakeMonitor.reportSurfaceReady(width, height)
+        }
         // attach() configures or swaps the MediaCodec output surface, which
         // blocks on the codec — and this is called from SurfaceView callbacks on
         // the main thread. One archived ANR's last main-thread line is exactly
@@ -1419,6 +1422,9 @@ class SessionManager(
         // handshake completing.
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.onCompanionSelected =
             { ip -> if (ip.isNotBlank()) session.dialCompanion(ip) }
+        // The new session is now current and its live companion callback is
+        // installed. Report readiness only at this truthful lifecycle point.
+        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady()
         // Answer the phone's SensorStartRequest with current vehicle state.
         // Without this, a parked car never sends driving status and the phone
         // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.

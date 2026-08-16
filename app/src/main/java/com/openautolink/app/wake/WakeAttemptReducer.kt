@@ -24,6 +24,12 @@ data class WakeEvent(
     val detail: String = "",
 )
 
+data class WakeAttemptWindow(
+    val attemptId: Long,
+    val startsAfterMs: Long?,
+    val endsAtMs: Long?,
+)
+
 data class WakeSummary(
     val attemptId: Long,
     val trigger: WakeSignal,
@@ -59,6 +65,15 @@ class WakeAttemptReducer(
     val currentSummary: WakeSummary?
         get() = currentAttempt?.toSummary()
 
+    fun retainedAttemptWindows(): List<WakeAttemptWindow> = listOfNotNull(
+        previousAttempt?.let { previous ->
+            WakeAttemptWindow(previous.id, previous.startsAfterMs, currentAttempt?.startsAfterMs)
+        },
+        currentAttempt?.let { current ->
+            WakeAttemptWindow(current.id, current.startsAfterMs, current.lastIgnitionOffMs())
+        },
+    )
+
     fun record(event: WakeEvent): WakeSummary {
         val existing = currentAttempt
         if (existing == null) {
@@ -67,7 +82,7 @@ class WakeAttemptReducer(
             previousAttempt
                 ?.takeIf { it.startsAfterMs == null || event.elapsedMs > it.startsAfterMs }
                 ?.let { previous ->
-                    previous.events += event
+                    previous.add(event)
                     previousSummary = previous.toSummary()
                 }
             return existing.toSummary()
@@ -87,7 +102,7 @@ class WakeAttemptReducer(
         }
 
         return currentAttempt!!.run {
-            events += event
+            add(event)
             toSummary()
         }
     }
@@ -102,10 +117,28 @@ class WakeAttemptReducer(
         .filter { it.signal == WakeSignal.IGNITION_OFF }
         .maxOfOrNull { it.elapsedMs }
 
+    private fun Attempt.add(event: WakeEvent) {
+        events += event
+        if (events.size <= MAX_TIMELINE_EVENTS) return
+
+        val ordered = events.sortedWith(EVENT_ORDER)
+        val protected = linkedSetOf<WakeEvent>()
+        WakeSignal.entries.forEach { signal ->
+            ordered.firstOrNull { it.signal == signal }?.let(protected::add)
+        }
+        ordered.firstTrueApEdge()?.let(protected::add)
+        LATEST_EDGE_SIGNALS.forEach { signal ->
+            ordered.lastOrNull { it.signal == signal }?.let(protected::add)
+        }
+        ordered.asReversed().forEach { candidate ->
+            if (protected.size < MAX_TIMELINE_EVENTS) protected += candidate
+        }
+        events.clear()
+        events += protected.sortedWith(EVENT_ORDER)
+    }
+
     private fun Attempt.toSummary(): WakeSummary {
-        val timeline = events.sortedWith(
-            compareBy<WakeEvent>({ it.elapsedMs }, { it.signal.ordinal }, { it.detail })
-        )
+        val timeline = events.sortedWith(EVENT_ORDER)
         var apAbsent = false
         var apEdgeAtMs: Long? = null
         timeline.forEach { event ->
@@ -139,7 +172,7 @@ class WakeAttemptReducer(
     private fun List<WakeEvent>.trigger(): WakeSignal {
         firstOrNull {
             it.signal == WakeSignal.GM_SYSTEM_STATE &&
-                it.detail in OBSERVATIONAL_GM_STATES
+                it.detail in OBSERVATIONAL_GM_DETAILS
         }?.let { return it.signal }
         firstOrNull { it.signal == WakeSignal.IGNITION_ON }?.let { return it.signal }
         firstOrNull { it.signal == WakeSignal.PROCESS_START }?.let { return it.signal }
@@ -149,13 +182,50 @@ class WakeAttemptReducer(
     private fun List<WakeEvent>.firstTime(signal: WakeSignal): Long? =
         firstOrNull { it.signal == signal }?.elapsedMs
 
+    private fun List<WakeEvent>.firstTrueApEdge(): WakeEvent? {
+        var apAbsent = false
+        for (event in this) {
+            when (event.signal) {
+                WakeSignal.AP_ABSENT -> apAbsent = true
+                WakeSignal.AP_PRESENT -> {
+                    if (apAbsent) return event
+                    apAbsent = false
+                }
+                else -> Unit
+            }
+        }
+        return null
+    }
+
     private fun List<WakeEvent>.firstDetail(signal: WakeSignal): String? =
         firstOrNull { it.signal == signal }?.detail?.takeIf { it.isNotBlank() }
 
-    private companion object {
-        val OBSERVATIONAL_GM_STATES = setOf("ANIMATION_INIT", "HMI_INIT")
+    companion object {
+        const val MAX_TIMELINE_EVENTS = 64
 
-        val ATTEMPT_START_SIGNALS = WakeSignal.entries.toSet() - setOf(
+        private val EVENT_ORDER = compareBy<WakeEvent>(
+            { it.elapsedMs },
+            { it.signal.ordinal },
+            { it.detail },
+        )
+
+        private val LATEST_EDGE_SIGNALS = setOf(
+            WakeSignal.GM_SYSTEM_STATE,
+            WakeSignal.BLUETOOTH_OFF,
+            WakeSignal.BLUETOOTH_ON,
+            WakeSignal.AP_ABSENT,
+            WakeSignal.AP_PRESENT,
+            WakeSignal.IGNITION_OFF,
+            WakeSignal.IGNITION_ON,
+            WakeSignal.IGNITION_START,
+        )
+
+        private val OBSERVATIONAL_GM_DETAILS = setOf(
+            "raw=1,name=ANIMATION_INIT",
+            "raw=2,name=HMI_INIT",
+        )
+
+        private val ATTEMPT_START_SIGNALS = WakeSignal.entries.toSet() - setOf(
             WakeSignal.BLUETOOTH_OFF,
             WakeSignal.AP_ABSENT,
             WakeSignal.IGNITION_OFF,
@@ -164,27 +234,64 @@ class WakeAttemptReducer(
 }
 
 object WakeSummaryFormatter {
-    fun format(summary: WakeSummary): String = buildString {
-        append("WAKE SUMMARY")
-        append(" attempt=").append(summary.attemptId)
-        append(" trigger=").append(summary.trigger.name)
-        append(" gm=").append(summary.gmState.asField())
-        append(" bt=").append(summary.btReadyAtMs.asField())
-        append(" ap=").append(summary.apReadyAtMs.asField())
-        append(" apEdge=").append(summary.apAbsentToPresentAtMs.asField())
-        append(" ignition=").append(summary.ignitionOnAtMs.asField())
-        append(" activity=").append(summary.activityStartedAtMs.asField())
-        append(" session=").append(summary.sessionReadyAtMs.asField())
-        append(" surface=").append(summary.surfaceReadyAtMs.asField())
-        append(" timeline=")
-        append(summary.timeline.joinToString(">") { event ->
+    const val MAX_DIAGNOSTIC_LINE_LENGTH = 480
+
+    fun format(summary: WakeSummary): String =
+        formatFixedFields(summary) + " timeline=" + formatTimeline(summary)
+
+    fun formatForDiagnosticLog(
+        summary: WakeSummary,
+        gmEvidenceFields: String,
+        outcome: String,
+        missing: String,
+    ): String {
+        val terminalFields =
+            " ${gmEvidenceFields.singleLine().take(128)}" +
+                " outcome=${outcome.singleLine().take(32)}" +
+                " missing=${missing.singleLine().take(96)}"
+        var prefix = formatFixedFields(summary) + terminalFields + " timeline="
+        if (prefix.length > MAX_DIAGNOSTIC_LINE_LENGTH) {
+            prefix = formatFixedFields(summary, compact = true) + terminalFields + " timeline="
+        }
+        val timelineBudget = (MAX_DIAGNOSTIC_LINE_LENGTH - prefix.length).coerceAtLeast(0)
+        val timeline = formatTimeline(summary)
+        val boundedTimeline = when {
+            timeline.length <= timelineBudget -> timeline
+            timelineBudget == 0 -> ""
+            else -> timeline.take(timelineBudget - 1) + "~"
+        }
+        return (prefix + boundedTimeline).take(MAX_DIAGNOSTIC_LINE_LENGTH)
+    }
+
+    private fun formatFixedFields(summary: WakeSummary, compact: Boolean = false): String =
+        buildString {
+            append("WAKE SUMMARY")
+            append(" attempt=").append(summary.attemptId)
+            append(" trigger=").append(summary.trigger.name)
+            append(" gm=").append(summary.gmState.asField().let { if (compact) it.take(32) else it })
+            append(" bt=").append(summary.btReadyAtMs.stageField(compact))
+            append(" ap=").append(summary.apReadyAtMs.stageField(compact))
+            append(" apEdge=").append(summary.apAbsentToPresentAtMs.stageField(compact))
+            append(" ignition=").append(summary.ignitionOnAtMs.stageField(compact))
+            append(" activity=").append(summary.activityStartedAtMs.stageField(compact))
+            append(" session=").append(summary.sessionReadyAtMs.stageField(compact))
+            append(" surface=").append(summary.surfaceReadyAtMs.stageField(compact))
+        }
+
+    private fun formatTimeline(summary: WakeSummary): String =
+        summary.timeline.joinToString(">") { event ->
             buildString {
                 append(event.signal.name).append('@').append(event.elapsedMs)
                 if (event.detail.isNotBlank()) {
                     append('(').append(event.detail.singleLine()).append(')')
                 }
             }
-        })
+        }
+
+    private fun Long?.stageField(compact: Boolean): String = when {
+        this == null -> "-"
+        compact -> "+"
+        else -> toString()
     }
 
     private fun Any?.asField(): String = this?.toString()?.singleLine() ?: "-"

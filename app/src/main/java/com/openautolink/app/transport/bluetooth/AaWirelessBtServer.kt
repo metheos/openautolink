@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.openautolink.app.diagnostics.OalLog
 import com.openautolink.app.proto.Wireless
@@ -89,6 +90,8 @@ class AaWirelessBtServer(
     private val context: Context,
     parentScope: CoroutineScope,
     private val onUnexpectedAcceptLoopExit: () -> Unit = {},
+    onSdpPublished: (Long) -> Unit = {},
+    onPhoneDialback: (Long) -> Unit = {},
 ) {
     // Deliberately does NOT inherit parentScope.coroutineContext.
     //
@@ -104,6 +107,16 @@ class AaWirelessBtServer(
     // Only the dispatcher is taken from the parent. Lifecycle is ours, and stop()
     // now affects nothing but this server.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val outcomeObserver = AsyncBluetoothOutcomeObserver(
+        enqueue = { observation ->
+            scope.launch(CoroutineName("AaWirelessBt-OutcomeObserver")) { observation() }
+        },
+        onSdpPublished = onSdpPublished,
+        onPhoneDialback = onPhoneDialback,
+        onFailure = { error ->
+            OalLog.w(TAG, "Bluetooth outcome observer failed: ${error.message}")
+        },
+    )
 
     private var aaServerSocket: BluetoothServerSocket? = null
     private var hfpServerSocket: BluetoothServerSocket? = null
@@ -300,13 +313,14 @@ class AaWirelessBtServer(
 
         try {
             aaServerSocket = adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, AA_UUID)
-            OalLog.i(TAG, "Listening on Android Auto Wireless UUID $AA_UUID — " +
-                    "phone should now see this head unit as AAW capable")
         } catch (e: Exception) {
             OalLog.w(TAG, "Failed to publish AA Wireless SDP record: ${e.message}")
             running = false
             return false
         }
+        outcomeObserver.sdpPublishedAt(SystemClock.elapsedRealtime())
+        OalLog.i(TAG, "Listening on Android Auto Wireless UUID $AA_UUID — " +
+                "phone should now see this head unit as AAW capable")
 
         var consecutiveAcceptFailures = 0
         while (running && scope.isActive) {
@@ -324,6 +338,7 @@ class AaWirelessBtServer(
             }
 
             if (client != null) {
+                outcomeObserver.phoneDialbackAt(SystemClock.elapsedRealtime())
                 val remote = runCatching { client.remoteDevice?.address ?: "?" }.getOrDefault("?")
                 OalLog.i(TAG, "Phone dialled back on the AA Wireless UUID from $remote")
                 // Flag it here rather than inside handleHandshake: the window that
