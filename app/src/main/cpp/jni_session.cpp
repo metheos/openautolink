@@ -741,7 +741,10 @@ void JniSession::onByeByeResponse(
     const aap_protobuf::service::control::message::ByeByeResponse& /*response*/)
 {
     LOGI("ByeBye response received");
-    stop();
+    // This callback runs on ioThread_. stop() joins ioThread_, so dispatch the
+    // teardown off-thread rather than self-joining and aborting with EDEADLK.
+    auto self = shared_from_this();
+    std::thread([self] { self->stop(); }).detach();
 }
 
 void JniSession::onBatteryStatusNotification(

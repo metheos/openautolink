@@ -45,6 +45,11 @@ data class WakeSummary(
     val timeline: List<WakeEvent>,
 )
 
+internal val OBSERVATIONAL_GM_DETAILS = setOf(
+    "raw=1,name=ANIMATION_INIT",
+    "raw=2,name=HMI_INIT",
+)
+
 /**
  * Reduces logging signals into one bounded wake timeline. It intentionally has no behavior hooks.
  */
@@ -129,6 +134,10 @@ class WakeAttemptReducer(
         WakeSignal.entries.forEach { signal ->
             ordered.firstOrNull { it.signal == signal }?.let(protected::add)
         }
+        ordered.firstOrNull {
+            it.signal == WakeSignal.GM_SYSTEM_STATE &&
+                it.detail in OBSERVATIONAL_GM_DETAILS
+        }?.let(protected::add)
         ordered.firstTrueApEdge()?.let(protected::add)
         LATEST_EDGE_SIGNALS.forEach { signal ->
             ordered.lastOrNull { it.signal == signal }?.let(protected::add)
@@ -142,6 +151,7 @@ class WakeAttemptReducer(
 
     private fun Attempt.toSummary(): WakeSummary {
         val timeline = events.sortedWith(EVENT_ORDER)
+        val trigger = timeline.trigger()
         var apAbsent = false
         var apEdgeAtMs: Long? = null
         timeline.forEach { event ->
@@ -159,8 +169,8 @@ class WakeAttemptReducer(
 
         return WakeSummary(
             attemptId = id,
-            trigger = timeline.trigger(),
-            gmState = timeline.firstDetail(WakeSignal.GM_SYSTEM_STATE),
+            trigger = trigger,
+            gmState = timeline.gmStateFor(trigger),
             btReadyAtMs = timeline.firstTime(WakeSignal.BLUETOOTH_ON),
             apReadyAtMs = timeline.firstTime(WakeSignal.AP_PRESENT),
             ignitionOnAtMs = timeline.firstTime(WakeSignal.IGNITION_ON),
@@ -204,6 +214,16 @@ class WakeAttemptReducer(
     private fun List<WakeEvent>.firstDetail(signal: WakeSignal): String? =
         firstOrNull { it.signal == signal }?.detail?.takeIf { it.isNotBlank() }
 
+    private fun List<WakeEvent>.gmStateFor(trigger: WakeSignal): String? =
+        if (trigger == WakeSignal.GM_SYSTEM_STATE) {
+            firstOrNull {
+                it.signal == WakeSignal.GM_SYSTEM_STATE &&
+                    it.detail in OBSERVATIONAL_GM_DETAILS
+            }?.detail
+        } else {
+            firstDetail(WakeSignal.GM_SYSTEM_STATE)
+        }
+
     private fun List<WakeEvent>.firstSource(signal: WakeSignal): String? =
         firstOrNull { it.signal == signal }
             ?.detail
@@ -230,11 +250,6 @@ class WakeAttemptReducer(
             WakeSignal.IGNITION_OFF,
             WakeSignal.IGNITION_ON,
             WakeSignal.IGNITION_START,
-        )
-
-        private val OBSERVATIONAL_GM_DETAILS = setOf(
-            "raw=1,name=ANIMATION_INIT",
-            "raw=2,name=HMI_INIT",
         )
 
         private val ATTEMPT_START_SIGNALS = WakeSignal.entries.toSet() - setOf(

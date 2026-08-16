@@ -23,3 +23,24 @@ fun ConnectionState.toSessionState(): SessionState = when (this) {
     ConnectionState.PHONE_CONNECTED -> SessionState.STREAMING
     ConnectionState.STREAMING -> SessionState.STREAMING
 }
+
+fun shouldStartStreamingServices(
+    current: SessionState,
+    reported: SessionState,
+): Boolean = current != SessionState.STREAMING && reported == SessionState.STREAMING
+
+/**
+ * Transport callbacks can arrive after the AA control channel has already proved
+ * that media is streaming. Preserve that stronger state across a late CONNECTED
+ * report, while still honoring reconnects, disconnects, and errors.
+ */
+fun reconcileTransportSessionState(
+    current: SessionState,
+    reported: SessionState,
+): SessionState = if (
+    current == SessionState.STREAMING && reported == SessionState.CONNECTED
+) {
+    SessionState.STREAMING
+} else {
+    reported
+}

@@ -9,12 +9,28 @@ enum class AttemptSummaryOutcome {
     TIMEOUT,
 }
 
+internal const val PRE_WAKE_ATTEMPT_SUMMARY_TIMEOUT_MS = 60_000L
+
+internal fun selectAttemptSummaryTimeoutMs(
+    summary: WakeSummary,
+    defaultTimeoutMs: Long,
+): Long = if (
+    summary.trigger == WakeSignal.GM_SYSTEM_STATE &&
+    summary.gmState in OBSERVATIONAL_GM_DETAILS &&
+    summary.ignitionOnAtMs == null
+) {
+    PRE_WAKE_ATTEMPT_SUMMARY_TIMEOUT_MS
+} else {
+    defaultTimeoutMs
+}
+
 /**
  * Owns one terminal deadline per retained attempt. Attempt IDs, rather than a process-global
  * sampler, identify every callback so an old timeout can never summarize a newer attempt.
  */
 class AttemptSummaryScheduler(
     private val timeoutMs: Long,
+    private val timeoutSelector: (WakeSummary) -> Long = { timeoutMs },
     private val schedule: (Long, Long, () -> Unit) -> AttemptSummaryTimeout,
     private val emit: (WakeSummary, AttemptSummaryOutcome) -> Unit,
 ) {
@@ -54,7 +70,8 @@ class AttemptSummaryScheduler(
                 if (existing != null) {
                     existing.summary = summary
                 } else if (attemptId !in completedAttemptIds) {
-                    val timeout = schedule(attemptId, timeoutMs) { timeout(attemptId) }
+                    val selectedTimeoutMs = timeoutSelector(summary).takeIf { it > 0L } ?: timeoutMs
+                    val timeout = schedule(attemptId, selectedTimeoutMs) { timeout(attemptId) }
                     pendingByAttempt[attemptId] = Pending(summary, timeout)
                 }
             }

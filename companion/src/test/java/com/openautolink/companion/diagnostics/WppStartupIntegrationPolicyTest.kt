@@ -215,6 +215,25 @@ class WppStartupIntegrationPolicyTest {
     }
 
     @Test
+    fun `proxy reports connected only after both sockets form a bridge`() {
+        val source = projectFile(
+            "companion/src/main/java/com/openautolink/companion/connection/AaProxy.kt",
+        ).readText()
+        val bridgeFunction = source.substringAfter("private fun launchBridge(aaSocket: Socket)")
+            .substringBefore("private suspend fun awaitPendingCarSocket")
+
+        val carSocketAcquired = bridgeFunction.indexOf("activeCarSocket = carSocket")
+        val bridgeEstablished = bridgeFunction.indexOf("Bridge established: AA <-> Car")
+        val pipesReady = bridgeFunction.indexOf("val carOut = carSocket.getOutputStream()")
+        val connectedCallback = bridgeFunction.indexOf("listener?.onConnected()")
+
+        assertTrue(carSocketAcquired >= 0)
+        assertTrue(pipesReady > carSocketAcquired)
+        assertTrue(bridgeEstablished > pipesReady)
+        assertTrue(connectedCallback > bridgeEstablished)
+    }
+
+    @Test
     fun `bridge close keeps the generation captured at establishment`() {
         val source = projectFile(
             "companion/src/main/java/com/openautolink/companion/connection/AaProxy.kt",

@@ -147,6 +147,7 @@ class SessionManager(
         }
     }.asCoroutineDispatcher()
 
+    private val sessionStateLock = Any()
     private val _sessionState = MutableStateFlow(SessionState.IDLE)
     val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
 
@@ -1436,26 +1437,36 @@ class SessionManager(
         // Observe session state
         scope.launch {
             session.connectionState.collect { connState ->
-                val newState = connState.toSessionState()
-                _sessionState.value = newState
+                val reportedState = connState.toSessionState()
                 val attempt = _reconnectAttempt.value
-                _statusMessage.value = when (newState) {
-                    SessionState.IDLE ->
-                        if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                        else when (directTransport) {
-                            "usb" -> "USB: ${UsbConnectionManager.status.value}"
-                            else -> "Searching for phone…"
+                var startStreamingServices = false
+                synchronized(sessionStateLock) {
+                    val currentState = _sessionState.value
+                    startStreamingServices = shouldStartStreamingServices(
+                        currentState,
+                        reportedState,
+                    )
+                    reconcileTransportSessionState(currentState, reportedState).also {
+                        _sessionState.value = it
+                        _statusMessage.value = when (it) {
+                            SessionState.IDLE ->
+                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                else when (directTransport) {
+                                    "usb" -> "USB: ${UsbConnectionManager.status.value}"
+                                    else -> "Searching for phone…"
+                                }
+                            SessionState.CONNECTING ->
+                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                else "Phone connecting..."
+                            SessionState.CONNECTED -> "Handshake..."
+                            SessionState.STREAMING -> "Streaming"
+                            SessionState.ERROR ->
+                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                else "Error"
                         }
-                    SessionState.CONNECTING ->
-                        if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                        else "Phone connecting..."
-                    SessionState.CONNECTED -> "Handshake..."
-                    SessionState.STREAMING -> "Streaming"
-                    SessionState.ERROR ->
-                        if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                        else "Error"
+                    }
                 }
-                if (newState == SessionState.STREAMING) {
+                if (startStreamingServices) {
                     startLocationForwarding(session)
                     _vehicleDataForwarder?.start()
                     _imuForwarder?.start()
@@ -1616,8 +1627,10 @@ class SessionManager(
         _telemetryCollector = null
         DiagnosticLog.instance = null
         _remoteDiagnostics = null
-        _sessionState.value = SessionState.IDLE
-        _statusMessage.value = "Disconnected"
+        synchronized(sessionStateLock) {
+            _sessionState.value = SessionState.IDLE
+            _statusMessage.value = "Disconnected"
+        }
         _phoneBatteryLevel.value = null
         _phoneBatteryCritical.value = false
         _voiceSessionActive.value = false
@@ -2450,15 +2463,24 @@ class SessionManager(
                 _remoteDiagnostics?.log(DiagnosticLevel.INFO, "session", "Phone connected: ${message.phoneName}")
                 resetLatchedVehicleSensorState("phone_connected")
                 seedCurrentUiNightMode("phone_connected")
-                _sessionState.value = SessionState.STREAMING
-                _statusMessage.value = "Streaming"
+                val startStreamingServices = synchronized(sessionStateLock) {
+                    shouldStartStreamingServices(
+                        _sessionState.value,
+                        SessionState.STREAMING,
+                    ).also {
+                        _sessionState.value = SessionState.STREAMING
+                        _statusMessage.value = "Streaming"
+                    }
+                }
                 // Reset the stall watchdog baseline: give the fresh session a
                 // full warmup window before it can fire (avoids a stale
                 // timestamp from a prior session tripping it immediately).
                 lastVideoFrameArrivedMs = SystemClock.elapsedRealtime() + VIDEO_STALL_WARMUP_MS
-                aasdkSession?.let { startLocationForwarding(it) }
-                _vehicleDataForwarder?.start()
-                _imuForwarder?.start()
+                if (startStreamingServices) {
+                    aasdkSession?.let { startLocationForwarding(it) }
+                    _vehicleDataForwarder?.start()
+                    _imuForwarder?.start()
+                }
             }
             is ControlMessage.PhoneDisconnected -> {
                 _remoteDiagnostics?.log(DiagnosticLevel.INFO, "session", "Phone disconnected: ${message.reason}")
