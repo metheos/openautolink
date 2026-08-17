@@ -249,19 +249,18 @@ class WppStartupIntegrationPolicyTest {
     }
 
     @Test
-    fun `tcp listen failure is reported only before the listener binds`() {
+    fun `tcp listen failure is owned by the listener bundle bind`() {
         val source = projectFile(
             "companion/src/main/java/com/openautolink/companion/service/TcpAdvertiser.kt",
         ).readText()
+        val replaceFunction = source.substringAfter("private fun replaceCarFacingListeners(")
+            .substringBefore("private fun closeCarFacingListeners(")
+        val bindCatch = replaceFunction.substringAfter("} catch (e: Exception) {")
 
-        assertTrue(source.contains("var listenerBound = false"))
-        assertTrue(source.contains("listenerBound = true"))
-        assertTrue(
-            source.contains(
-                "if (!listenerBound) {\n" +
-                    "                        PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTEN_FAILED)",
-            ),
-        )
+        assertEquals(1, "TCP_LISTEN_FAILED".toRegex().findAll(source).count())
+        assertTrue(replaceFunction.contains("val listeners = createCarFacingListeners(ticket.target)"))
+        assertTrue(bindCatch.contains("PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTEN_FAILED)"))
+        assertTrue(replaceFunction.contains("PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTENING)"))
     }
 
     @Test

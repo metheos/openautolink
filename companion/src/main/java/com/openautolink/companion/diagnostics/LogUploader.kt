@@ -1,7 +1,9 @@
 package com.openautolink.companion.diagnostics
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.os.Build
+import com.openautolink.companion.network.ProcessNetworkBindingLock
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -103,7 +105,13 @@ class LogUploader(private val context: Context) {
         val origName = "oal_companion_$stamp.zip"
 
         return try {
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            val endpoint = URL(url)
+            val connectivityManager = context.applicationContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val defaultNetwork = ProcessNetworkBindingLock.withLock {
+                connectivityManager.activeNetwork
+            } ?: return UploadResult.Failure("no default network")
+            val conn = (defaultNetwork.openConnection(endpoint) as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
                 connectTimeout = CONNECT_TIMEOUT_MS
