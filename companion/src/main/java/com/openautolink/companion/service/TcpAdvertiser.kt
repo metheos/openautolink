@@ -2,12 +2,19 @@ package com.openautolink.companion.service
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.openautolink.companion.connection.AaProxy
 import com.openautolink.companion.diagnostics.CompanionLog
 import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
 import com.openautolink.companion.diagnostics.PhoneWppStage
+import com.openautolink.companion.network.CarNetworkMonitor
+import com.openautolink.companion.network.ListenerBindingGenerations
+import com.openautolink.companion.network.ListenerBindingTicket
+import com.openautolink.companion.network.ProcessNetworkBinding
+import com.openautolink.companion.network.ProcessNetworkRestoreException
 import com.openautolink.companion.trigger.TransparentTriggerActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -88,6 +95,16 @@ class TcpAdvertiser(
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val connectivityManager =
+        context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val processNetworkBinding = ProcessNetworkBinding<Network>(
+        currentNetwork = connectivityManager::getBoundNetworkForProcess,
+        bindProcess = connectivityManager::bindProcessToNetwork,
+        warning = { message -> CompanionLog.e(TAG, message) },
+    )
+    private val listenerGenerations = ListenerBindingGenerations<Network>()
+    private val listenerPublicationLock = Any()
+    private var carNetworkMonitor: CarNetworkMonitor? = null
     private var serverSocket: ServerSocket? = null
     private var identityServerSocket: ServerSocket? = null
     private var udpDiscoverySocket: java.net.DatagramSocket? = null
@@ -117,39 +134,145 @@ class TcpAdvertiser(
         if (isRunning) return
         isRunning = true
         CompanionLog.i(TAG, "Starting TCP server on port $PORT")
+        replaceCarFacingListeners(null)
+        carNetworkMonitor = CarNetworkMonitor(
+            context = context,
+            onSelectedNetworkChanged = { network -> replaceCarFacingListeners(network) },
+        ).also { it.start() }
+    }
 
+    /** Supplies the exact network returned by CarWifiManager, or clears that preference. */
+    fun updateCarNetwork(network: Network?) {
+        carNetworkMonitor?.prefer(network)
+    }
+
+    /**
+     * Replaces only ports 5277-5279. The localhost proxy, accepted car socket,
+     * bridge, watchdogs, and recovery jobs deliberately remain owned by this
+     * TcpAdvertiser instance.
+     */
+    private fun replaceCarFacingListeners(
+        network: Network?,
+        rollbackOnFailure: Boolean = true,
+    ) {
+        val ticket = listenerGenerations.replaceWith(network) ?: return
+        synchronized(listenerPublicationLock) {
+            closeCarFacingListeners()
+            unregisterNsd()
+        }
         scope.launch {
-            var listenerBound = false
             try {
-                // Retry bind briefly to handle EADDRINUSE race when the service
-                // is restarted quickly (e.g. BT reconnect triggers start within
-                // milliseconds of the previous stop). The OS may not have released
-                // the port yet even though we called serverSocket.close().
-                val server = ServerSocket()
-                server.reuseAddress = true
-                var bindAttempt = 0
-                while (true) {
-                    try {
-                        server.bind(InetSocketAddress(PORT))
-                        break
-                    } catch (e: java.net.BindException) {
-                        bindAttempt++
-                        if (bindAttempt >= BIND_RETRY_MAX) throw e
-                        CompanionLog.w(TAG, "Port $PORT in use, retrying in ${BIND_RETRY_DELAY_MS}ms (attempt $bindAttempt/$BIND_RETRY_MAX)")
-                        delay(BIND_RETRY_DELAY_MS)
+                val listeners = createCarFacingListeners(ticket.target)
+                val published = synchronized(listenerPublicationLock) {
+                    if (!isRunning || !listenerGenerations.owns(ticket)) {
+                        false
+                    } else {
+                        serverSocket = listeners.main
+                        identityServerSocket = listeners.identity
+                        udpDiscoverySocket = listeners.discovery
+                        registerNsd(ticket.target)
+                        true
                     }
                 }
-                listenerBound = true
-                serverSocket = server
-                CompanionLog.i(TAG, "Listening on 0.0.0.0:$PORT")
+                if (!published) {
+                    listeners.close()
+                    return@launch
+                }
+                CompanionLog.i(
+                    TAG,
+                    if (ticket.target != null) {
+                        "Car-facing listeners bound to selected WiFi network"
+                    } else {
+                        "Car-facing listeners using default routing"
+                    },
+                )
                 PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTENING)
+                startMainServer(ticket, listeners.main)
+                startIdentityServer(ticket, listeners.identity)
+                startUdpDiscoveryServer(ticket, listeners.discovery)
+            } catch (e: Exception) {
+                if (isRunning && listenerGenerations.owns(ticket)) {
+                    PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTEN_FAILED)
+                    CompanionLog.e(TAG, "Car-facing listener bind failed: ${e.message}")
+                    if (rollbackOnFailure && e !is ProcessNetworkRestoreException &&
+                        ticket.previousTarget != ticket.target
+                    ) {
+                        CompanionLog.w(TAG, "Restoring previous car-facing listener binding")
+                        replaceCarFacingListeners(ticket.previousTarget, rollbackOnFailure = false)
+                    }
+                }
+            }
+        }
+    }
 
-                registerNsd()
-                startIdentityServer()
-                startUdpDiscoveryServer()
+    private fun closeCarFacingListeners() {
+        runCatching { serverSocket?.close() }
+        serverSocket = null
+        runCatching { identityServerSocket?.close() }
+        identityServerSocket = null
+        runCatching { udpDiscoverySocket?.close() }
+        udpDiscoverySocket = null
+    }
 
-                while (isRunning) {
+    private suspend fun createCarFacingListeners(network: Network?): CarFacingListeners {
+        var bindAttempt = 0
+        while (true) {
+            try {
+                return processNetworkBinding.withNetwork(
+                    targetNetwork = network,
+                    onUnrestored = CarFacingListeners::close,
+                ) {
+                    createCarFacingListenersOnce()
+                }
+            } catch (e: java.net.BindException) {
+                bindAttempt++
+                if (bindAttempt >= BIND_RETRY_MAX) throw e
+                CompanionLog.w(
+                    TAG,
+                    "Listener port in use, retrying in ${BIND_RETRY_DELAY_MS}ms " +
+                        "(attempt $bindAttempt/$BIND_RETRY_MAX)",
+                )
+                delay(BIND_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    private fun createCarFacingListenersOnce(): CarFacingListeners {
+        var main: ServerSocket? = null
+        var identity: ServerSocket? = null
+        var discovery: java.net.DatagramSocket? = null
+        try {
+            main = ServerSocket().apply {
+                reuseAddress = true
+                bind(InetSocketAddress(PORT))
+            }
+            identity = ServerSocket().apply {
+                reuseAddress = true
+                bind(InetSocketAddress(IDENTITY_PORT))
+            }
+            discovery = java.net.DatagramSocket(null).apply {
+                reuseAddress = true
+                broadcast = true
+                bind(InetSocketAddress(UDP_DISCOVERY_PORT))
+            }
+            return CarFacingListeners(main, identity, discovery)
+        } catch (e: Exception) {
+            runCatching { main?.close() }
+            runCatching { identity?.close() }
+            runCatching { discovery?.close() }
+            throw e
+        }
+    }
+
+    private fun startMainServer(ticket: ListenerBindingTicket<Network>, server: ServerSocket) {
+        scope.launch {
+            try {
+                while (isRunning && listenerGenerations.owns(ticket)) {
                     val carSocket = server.accept()
+                    if (!listenerGenerations.owns(ticket)) {
+                        runCatching { carSocket.close() }
+                        break
+                    }
                     PhoneWppDiagnostics.record(PhoneWppStage.CAR_SOCKET)
                     val remoteIp = carSocket.inetAddress?.hostAddress ?: "unknown"
                     CompanionLog.i(TAG, "Car connected from $remoteIp")
@@ -157,13 +280,22 @@ class TcpAdvertiser(
                     handleCarConnection(carSocket)
                 }
             } catch (e: Exception) {
-                if (isRunning) {
-                    if (!listenerBound) {
-                        PhoneWppDiagnostics.record(PhoneWppStage.TCP_LISTEN_FAILED)
-                    }
+                if (isRunning && listenerGenerations.owns(ticket)) {
                     CompanionLog.e(TAG, "TCP server error: ${e.message}")
                 }
             }
+        }
+    }
+
+    private data class CarFacingListeners(
+        val main: ServerSocket,
+        val identity: ServerSocket,
+        val discovery: java.net.DatagramSocket,
+    ) {
+        fun close() {
+            runCatching { main.close() }
+            runCatching { identity.close() }
+            runCatching { discovery.close() }
         }
     }
 
@@ -286,16 +418,18 @@ class TcpAdvertiser(
      * carries AA traffic. Used by the car-side subnet sweep + last-known-IP
      * verification when mDNS is unavailable.
      */
-    private fun startIdentityServer() {
+    private fun startIdentityServer(
+        ticket: ListenerBindingTicket<Network>,
+        server: ServerSocket,
+    ) {
         scope.launch {
             try {
-                val server = ServerSocket()
-                server.reuseAddress = true
-                server.bind(InetSocketAddress(IDENTITY_PORT))
-                identityServerSocket = server
-                CompanionLog.i(TAG, "Identity probe server listening on 0.0.0.0:$IDENTITY_PORT")
-                while (isRunning) {
+                while (isRunning && listenerGenerations.owns(ticket)) {
                     val client = server.accept()
+                    if (!listenerGenerations.owns(ticket)) {
+                        runCatching { client.close() }
+                        break
+                    }
                     val remoteIp = client.inetAddress?.hostAddress ?: "unknown"
                     // Bound the entire probe lifecycle (including the write
                     // back) so a tarpitted peer can't pin a coroutine forever.
@@ -309,7 +443,9 @@ class TcpAdvertiser(
                     }
                 }
             } catch (e: Exception) {
-                if (isRunning) CompanionLog.w(TAG, "Identity server error: ${e.message}")
+                if (isRunning && listenerGenerations.owns(ticket)) {
+                    CompanionLog.w(TAG, "Identity server error: ${e.message}")
+                }
             }
         }
     }
@@ -409,26 +545,23 @@ class TcpAdvertiser(
      * car has to find this phone, used when mDNS is broken (AAOS 12/13
      * NSD often returns IPv6 link-local only).
      */
-    private fun startUdpDiscoveryServer() {
+    private fun startUdpDiscoveryServer(
+        ticket: ListenerBindingTicket<Network>,
+        socket: java.net.DatagramSocket,
+    ) {
         scope.launch {
             try {
-                val socket = java.net.DatagramSocket(null).apply {
-                    reuseAddress = true
-                    broadcast = true
-                    bind(InetSocketAddress(UDP_DISCOVERY_PORT))
-                }
-                udpDiscoverySocket = socket
-                CompanionLog.i(TAG, "UDP discovery server listening on 0.0.0.0:$UDP_DISCOVERY_PORT")
                 val recvBuf = ByteArray(64)
-                while (isRunning) {
+                while (isRunning && listenerGenerations.owns(ticket)) {
                     val packet = java.net.DatagramPacket(recvBuf, recvBuf.size)
                     try {
                         socket.receive(packet)
                     } catch (e: Exception) {
-                        if (!isRunning) break
+                        if (!isRunning || !listenerGenerations.owns(ticket)) break
                         CompanionLog.d(TAG, "UDP receive: ${e.message}")
                         continue
                     }
+                    if (!listenerGenerations.owns(ticket)) break
                     val remoteIp = packet.address?.hostAddress ?: continue
                     val text = String(packet.data, packet.offset, packet.length, Charsets.UTF_8)
                         .trimEnd('\n', '\r')
@@ -455,7 +588,9 @@ class TcpAdvertiser(
                     }
                 }
             } catch (e: Exception) {
-                if (isRunning) CompanionLog.w(TAG, "UDP discovery server error: ${e.message}")
+                if (isRunning && listenerGenerations.owns(ticket)) {
+                    CompanionLog.w(TAG, "UDP discovery server error: ${e.message}")
+                }
             }
         }
     }
@@ -748,26 +883,26 @@ class TcpAdvertiser(
     fun stop() {
         CompanionLog.i(TAG, "Stopping TCP server")
         isRunning = false
+        carNetworkMonitor?.stop()
+        carNetworkMonitor = null
+        listenerGenerations.stop()
+        synchronized(listenerPublicationLock) {
+            closeCarFacingListeners()
+            unregisterNsd()
+        }
         aaConnectWatchdog?.cancel()
         aaConnectWatchdog = null
         bridgeRelaunchJob?.cancel()
         bridgeRelaunchJob = null
         bridgeRelaunchAttempts = 0
-        unregisterNsd()
         activeProxy?.stop()
         activeProxy = null
         activeCarSocket?.let { runCatching { it.close() } }
         activeCarSocket = null
-        runCatching { serverSocket?.close() }
-        serverSocket = null
-        runCatching { identityServerSocket?.close() }
-        identityServerSocket = null
-        runCatching { udpDiscoverySocket?.close() }
-        udpDiscoverySocket = null
         scope.cancel()
     }
 
-    private fun registerNsd() {
+    private fun registerNsd(network: Network?) {
         try {
             nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
             val prefs = context.getSharedPreferences(
@@ -785,6 +920,9 @@ class TcpAdvertiser(
                 serviceName = uniqueServiceName
                 serviceType = NSD_SERVICE_TYPE
                 port = PORT
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    setNetwork(network)
+                }
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
                     setAttribute("phone_id", phoneId)
                     setAttribute("friendly_name", friendlyName)

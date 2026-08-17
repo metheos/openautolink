@@ -53,8 +53,12 @@ class CarWifiManager(private val context: Context) {
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state
 
+    private val _carNetwork = MutableStateFlow<Network?>(null)
+    val carNetwork: StateFlow<Network?> = _carNetwork
+
     private var entries: List<CarWifiEntry> = emptyList()
     private var currentCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var requestGeneration = 0L
     private var attempt = 0
     private var running = false
     private var retryRunnable: Runnable? = null
@@ -137,6 +141,7 @@ class CarWifiManager(private val context: Context) {
         CompanionLog.i(TAG, "Attempt $attempt/$MAX_ATTEMPTS: requesting \"${entry.ssid}\"")
 
         releaseCallback()
+        val generation = requestGeneration
 
         val specifier = WifiNetworkSpecifier.Builder()
             .setSsid(entry.ssid)
@@ -150,7 +155,8 @@ class CarWifiManager(private val context: Context) {
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (!running) return
+                if (!ownsRequest(generation)) return
+                _carNetwork.value = network
                 CompanionLog.i(TAG, "Connected to \"${entry.ssid}\" on attempt $attempt")
                 _state.value = State.Connected(entry.ssid)
                 attempt = 0
@@ -161,13 +167,17 @@ class CarWifiManager(private val context: Context) {
             }
 
             override fun onUnavailable() {
-                if (!running) return
+                if (!ownsRequest(generation)) return
+                _carNetwork.value = null
                 CompanionLog.w(TAG, "Attempt $attempt failed (SSID not in range yet)")
                 scheduleRetry()
             }
 
             override fun onLost(network: Network) {
-                if (!running) return
+                if (!ownsRequest(generation)) return
+                if (_carNetwork.value == network) {
+                    _carNetwork.value = null
+                }
                 CompanionLog.w(TAG, "Car WiFi \"${entry.ssid}\" lost")
                 _state.value = State.Scanning(attempt, MAX_ATTEMPTS)
                 scheduleRetry(LOST_RETRY_DELAY_MS)
@@ -190,7 +200,12 @@ class CarWifiManager(private val context: Context) {
         retryRunnable = null
     }
 
+    private fun ownsRequest(generation: Long): Boolean =
+        running && requestGeneration == generation
+
     private fun releaseCallback() {
+        requestGeneration += 1L
+        _carNetwork.value = null
         currentCallback?.let {
             try { connectivityManager.unregisterNetworkCallback(it) } catch (_: Exception) {}
         }

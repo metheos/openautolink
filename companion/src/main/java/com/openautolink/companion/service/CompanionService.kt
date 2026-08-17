@@ -41,6 +41,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var tcpAdvertiser: TcpAdvertiser? = null
     private var carWifiManager: com.openautolink.companion.wifi.CarWifiManager? = null
+    private var carNetworkBindingJob: kotlinx.coroutines.Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     private var fileLogger: CompanionFileLogger? = null
@@ -176,16 +177,24 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
      * phone joins the car's WiFi even when already connected to another network.
      */
     private fun startCarWifiIfConfigured() {
+        carNetworkBindingJob?.cancel()
+        carNetworkBindingJob = null
         carWifiManager?.stop()
         val prefs = getSharedPreferences(CompanionPrefs.NAME, MODE_PRIVATE)
         val entries = com.openautolink.companion.wifi.CarWifiEntry.loadAll(prefs)
         if (entries.isEmpty()) {
+            tcpAdvertiser?.updateCarNetwork(null)
             PhoneWppDiagnostics.associationOwner(WppAssociationOwner.WPP)
             CompanionLog.d(TAG, "No car WiFi entries configured, skipping CarWifiManager")
             return
         }
         val mgr = com.openautolink.companion.wifi.CarWifiManager(this)
         carWifiManager = mgr
+        carNetworkBindingJob = serviceScope.launch {
+            mgr.carNetwork.collect { network ->
+                tcpAdvertiser?.updateCarNetwork(network)
+            }
+        }
         mgr.start(entries)
     }
 
@@ -316,6 +325,8 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         PhoneWppDiagnostics.timeout()
         PhoneWppDiagnostics.setAttemptFinishedListener(null)
         stopWppNetworkObserver()
+        carNetworkBindingJob?.cancel()
+        carNetworkBindingJob = null
         carWifiManager?.stop()
         stopFileLogging()
         releaseWakeLock()
