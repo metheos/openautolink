@@ -12,6 +12,7 @@ import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.VideoFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,6 +46,7 @@ class AasdkSession(
 
     companion object {
         private const val TAG = "AasdkSession"
+        private const val FORCE_RECONNECT_GUARD_MS = 3_000L
 
         /** Process-wide native onError coalescer.
          *
@@ -150,6 +152,7 @@ class AasdkSession(
     @Volatile
     private var reconnectJob: kotlinx.coroutines.Job? = null
     private val reconnectLock = Any()
+    private val forceReconnectGate = ReconnectSingleFlightGate()
 
     private fun cancelPendingReconnect(why: String) {
         synchronized(reconnectLock) {
@@ -216,21 +219,11 @@ class AasdkSession(
             OalLog.i(TAG, "WPP restart with a known companion at $known — dialling " +
                     "rather than waiting for a handshake that is not coming")
             startTcp(manualIp = known)
-            // Dialling the companion is only half the connection.
-            //
-            // The TCP link to the companion comes up fine, but nothing has told
-            // Android Auto which loopback port to attach to — that instruction is
-            // carried by the Bluetooth handshake, and a reconnect does not run
-            // one. Worse, the companion opens a NEW proxy port whenever its
-            // bridge closes, so any port AA still remembers is already wrong:
-            //
-            //     00:36:25.538  Proxy listening on localhost:43053   (was 36943)
-            //     00:36:41.924  Connected to companion               (car side, fine)
-            //     00:36:33-49   AA didn't connect to proxy — retry #1 #2 #3
-            //     00:36:56.938  Session abort: handshake timeout
-            //
-            // Both halves waiting, neither wrong on its own. Re-advertising makes
-            // the phone re-dial, and that handshake hands AA the current port.
+            // Dialling the companion is only half the connection. Android Auto's
+            // previous localhost socket belonged to the bridge that just ended;
+            // reconnecting the car socket does not by itself make AA open a new
+            // one, even though the reserved loopback port is now stable. Re-run
+            // the Bluetooth exchange to provoke that fresh AA attach.
             com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
             return
         }
@@ -492,40 +485,52 @@ class AasdkSession(
      * is restarted.
      */
     fun forceReconnect(reason: String) {
-        OalLog.w(TAG, "Force reconnect: $reason")
-        // Treat the upcoming nativeStopSession() as an explicit stop so the
-        // onSessionStopped handler doesn't schedule its own auto-reconnect 3s
-        // later — we're doing the restart ourselves immediately. Without this
-        // both reconnects race and one fails with "Native session start failed".
-        explicitStop = true
-        cancelPendingReconnect("force reconnect")
-        _tcpConnector?.stop()
-        _tcpConnector = null
-        _wppServer?.stop()
-        _wppServer = null
-        _usbConnectionManager?.stop()
-        _usbConnectionManager = null
-        AasdkNative.nativeStopSession()
-        transportPipe?.close()
-        transportPipe = null
-        _connectionState.value = ConnectionState.DISCONNECTED
-        // Now clear the explicitStop flag so the freshly-started session can
-        // auto-reconnect normally if its connection later dies.
-        explicitStop = false
-        // Restart transport.
-        when (transportMode) {
-            "usb" -> startUsb()
-            "wpp" -> startWpp()
-            else -> {
-                // Same reason as the retry path: without the known address this
-                // falls through to the gateway heuristic and dials the house
-                // router. Measured after a background/resume:
-                //     Connecting to 192.168.0.1:5277 (gateway)   — repeatedly
-                // while the phone re-handshook 90 times in 90 seconds waiting for
-                // a car-side connection that was never going to arrive.
-                val known = com.openautolink.app.transport.bluetooth
-                    .AaWirelessBtControl.lastKnownPhoneIp
-                startTcp(manualIp = known)
+        if (!forceReconnectGate.tryStart()) {
+            OalLog.i(TAG, "Force reconnect already in flight — ignoring duplicate: $reason")
+            return
+        }
+        try {
+            OalLog.w(TAG, "Force reconnect: $reason")
+            // Treat the upcoming nativeStopSession() as an explicit stop so the
+            // onSessionStopped handler doesn't schedule its own auto-reconnect 3s
+            // later — we're doing the restart ourselves immediately. Without this
+            // both reconnects race and one fails with "Native session start failed".
+            explicitStop = true
+            cancelPendingReconnect("force reconnect")
+            _tcpConnector?.stop()
+            _tcpConnector = null
+            _wppServer?.stop()
+            _wppServer = null
+            _usbConnectionManager?.stop()
+            _usbConnectionManager = null
+            AasdkNative.nativeStopSession()
+            transportPipe?.close()
+            transportPipe = null
+            _connectionState.value = ConnectionState.DISCONNECTED
+            // Now clear the explicitStop flag so the freshly-started session can
+            // auto-reconnect normally if its connection later dies.
+            explicitStop = false
+            // Restart transport.
+            when (transportMode) {
+                "usb" -> startUsb()
+                "wpp" -> startWpp()
+                else -> {
+                    // Same reason as the retry path: without the known address this
+                    // falls through to the gateway heuristic and dials the house
+                    // router.
+                    val known = com.openautolink.app.transport.bluetooth
+                        .AaWirelessBtControl.lastKnownPhoneIp
+                    startTcp(manualIp = known)
+                }
+            }
+        } finally {
+            explicitStop = false
+            // Keep the gate through the native teardown/start overlap, then allow
+            // a genuinely later recovery request. This also prevents a surface,
+            // wake and stall trigger from stacking synchronous native restarts.
+            scope.launch {
+                delay(FORCE_RECONNECT_GUARD_MS)
+                forceReconnectGate.finish()
             }
         }
     }

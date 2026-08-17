@@ -27,7 +27,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class MediaCodecDecoder(
     private val codecPreference: String = "h264",
-    private val scalingMode: String = "letterbox" // "letterbox" or "crop"
+    private val scalingMode: String = "letterbox", // "letterbox" or "crop"
+    private val onSessionRestartNeeded: (String) -> Unit = {},
 ) : VideoDecoder {
 
     companion object {
@@ -256,6 +257,11 @@ class MediaCodecDecoder(
     @Volatile private var outputFormatReceived = false
 
     override fun attach(surface: Surface, width: Int, height: Int) {
+        if (!surface.isValid) {
+            Log.w(TAG, "Ignoring invalid output surface ${width}x${height}")
+            DiagnosticLog.w("video", "Invalid output surface ignored: ${width}x${height}")
+            return
+        }
         val surfaceChanged = this.surface !== surface
         this.surface = surface
         this.surfaceWidth = width
@@ -275,19 +281,34 @@ class MediaCodecDecoder(
             // setOutputSurface throws on null and detach() sets the field null.
             val target = surface ?: return
             val swapped = runCatching { codec?.setOutputSurface(target) }.isSuccess
-            if (swapped) {
-                inputPaused = false
-                Log.i(TAG, "Swapped output surface on the live codec — no reconfigure needed")
-                DiagnosticLog.i("video", "Output surface swapped on live codec — video resumes immediately")
-                // The chain was never broken, so nothing to re-anchor.
-                awaitingFreshIdr = false
-                renderingEnabled = true
-                return
+            when (SurfaceRecoveryPolicy.afterSwap(
+                swapSucceeded = swapped,
+                hasCachedRealIdr = cachedIdrFrame != null,
+            )) {
+                SurfaceRecoveryAction.KEEP_LIVE_CODEC -> {
+                    inputPaused = false
+                    Log.i(TAG, "Swapped output surface on the live codec — no reconfigure needed")
+                    DiagnosticLog.i("video", "Output surface swapped on live codec — video resumes immediately")
+                    // The chain was never broken, so nothing to re-anchor.
+                    awaitingFreshIdr = false
+                    renderingEnabled = true
+                    return
+                }
+                SurfaceRecoveryAction.RESTART_SESSION -> {
+                    inputPaused = false
+                    Log.w(TAG, "setOutputSurface rejected with no cached real IDR — restarting the AA session")
+                    DiagnosticLog.w("video", "Output surface swap failed without cached IDR — restarting session")
+                    releaseCodec()
+                    onSessionRestartNeeded("surface swap rejected without cached IDR")
+                    return
+                }
+                SurfaceRecoveryAction.RECONFIGURE_WITH_CACHED_IDR -> {
+                    inputPaused = false
+                    Log.w(TAG, "setOutputSurface rejected — reconfiguring from the cached real IDR")
+                    DiagnosticLog.w("video", "setOutputSurface rejected — reconfiguring codec from cached IDR")
+                    releaseCodec()
+                }
             }
-            inputPaused = false
-            Log.w(TAG, "setOutputSurface rejected — falling back to a codec reconfigure")
-            DiagnosticLog.w("video", "setOutputSurface rejected — reconfiguring codec")
-            releaseCodec()
         }
 
         // Only reconfigure codec if the Surface object itself changed (e.g., after surfaceDestroyed).

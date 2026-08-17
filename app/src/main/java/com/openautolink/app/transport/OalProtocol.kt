@@ -10,6 +10,9 @@ object OalProtocol {
     /** Primary AA TCP port: companion's TcpAdvertiser listens here for the car. */
     const val AA_PORT = 5277
 
+    /** Stable phone-local AA proxy port used for WPP bootstrap. */
+    const val WPP_PROXY_PORT = 5280
+
     /**
      * Identity probe port. Single-purpose: the car opens a short connection,
      * sends `IDENTITY_PROBE_REQUEST`, the companion replies with

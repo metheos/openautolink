@@ -344,19 +344,20 @@ class AaWirelessBtServer(
                 // Flag it here rather than inside handleHandshake: the window that
                 // matters starts the instant the phone dials, and the coroutine
                 // may not be scheduled for several milliseconds.
-                AaWirelessBtControl.handshakeInFlight = true
-                scope.launch(CoroutineName("AaWirelessBt-Handshake")) {
-                    try {
-                        handleHandshake(client, remote)
-                    } finally {
-                        AaWirelessBtControl.handshakeInFlight = false
-                        // Run anything that asked to re-advertise while we were
-                        // busy. The probe usually finds the companion seconds
-                        // after a handshake has already committed to the
-                        // unreachable car-direct endpoint, and dropping that
-                        // request left the connection waiting on discovery.
-                        AaWirelessBtControl.flushPendingReadvertise()
-                    }
+                val handshakeLease = AaWirelessBtControl.beginHandshake()
+                if (handshakeLease == null) {
+                    OalLog.i(TAG, "Rejecting dial-back while compatibility re-advertise replaces SDP")
+                    runCatching { client.close() }
+                    continue
+                }
+                val handshakeJob = scope.launch(CoroutineName("AaWirelessBt-Handshake")) {
+                    handleHandshake(client, remote, handshakeLease)
+                }
+                handshakeJob.invokeOnCompletion {
+                    // This also runs when the coroutine is cancelled before its
+                    // body starts, so accepted sockets cannot leak ownership.
+                    handshakeLease.finish()
+                    AaWirelessBtControl.flushPendingReadvertise()
                 }
                 continue
             }
@@ -405,11 +406,9 @@ class AaWirelessBtServer(
     /**
      * Resolves the head unit's current IPv4 at handshake time.
      *
-     * Not a stored value. The car's access point is reassigned a new subnet on
-     * every ignition cycle (observed: 10.2.110.x one session, a different /24 the
-     * next), so an address captured when the app started is stale by the time the
-     * phone actually connects — and the phone would be told to dial an address
-     * that no longer exists.
+     * Not a stored value. The car AP is stable across ordinary ignition cycles but
+     * has used multiple subnets across multi-week epochs, so resolve at the moment
+     * of use instead of treating any historical address as permanent.
      */
     fun interface AddressResolver {
         fun currentIpv4(): String?
@@ -448,9 +447,9 @@ class AaWirelessBtServer(
     /**
      * Supplies the endpoint at handshake time.
      *
-     * Resolved per handshake, not cached: the companion's proxy port changes
-     * every time it restarts, and the car's AP subnet changes every ignition
-     * cycle. A value captured at start-up is stale by the time the phone calls.
+     * Resolved per handshake rather than trusting a cached companion address: the
+     * phone's AP address can change even though the reserved loopback port is stable,
+     * and the car's AP subnet can change across ignition cycles.
      */
     fun interface EndpointResolver {
         /**
@@ -478,7 +477,11 @@ class AaWirelessBtServer(
         addressResolver = resolver
     }
 
-    private suspend fun handleHandshake(socket: BluetoothSocket, phoneBtAddress: String) {
+    private suspend fun handleHandshake(
+        socket: BluetoothSocket,
+        phoneBtAddress: String,
+        handshakeLease: AaWirelessBtControl.HandshakeLease,
+    ) {
         val stored = credentials
         if (stored == null) {
             OalLog.w(TAG, "Handshake attempted with no credentials set — closing. " +
@@ -657,7 +660,7 @@ class AaWirelessBtServer(
             //
             // The window the guard protects ends here: the phone has the endpoint
             // and is about to dial it.
-            AaWirelessBtControl.handshakeInFlight = false
+            handshakeLease.finish()
             AaWirelessBtControl.flushPendingReadvertise()
 
             // Hold the RFCOMM socket open. The phone keeps it as the control link
