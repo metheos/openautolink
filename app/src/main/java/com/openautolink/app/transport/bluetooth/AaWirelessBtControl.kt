@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import com.openautolink.app.diagnostics.OalLog
+import com.openautolink.app.transport.OalProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,23 +65,6 @@ object AaWirelessBtControl {
     private const val CLAIM_TIMEOUT_MS = 120_000L
 
     /**
-     * Minimum spacing between discovery-triggered re-advertisements.
-     *
-     * Discovery reports on every sweep, so without this a companion whose
-     * address flaps would bounce the SDP record repeatedly and prevent the
-     * handshake it is trying to provoke.
-     */
-    private const val READVERTISE_MIN_INTERVAL_MS = 20_000L
-
-    /**
-     * Probe attempts before falling back to a blind scan.
-     *
-     * The phone is reachable within roughly 8s of associating, but not at 1-3s,
-     * which is when this probe runs. Six attempts at 2s spacing covers that.
-     */
-    private const val COMPANION_PROBE_ATTEMPTS = 6
-
-    /**
      * Remembered addresses to try before scanning.
      *
      * Kept low because MAC randomisation (Android's default) invalidates them
@@ -89,20 +73,8 @@ object AaWirelessBtControl {
      */
     private const val MAX_PRESCAN_PROBES = 2
 
-    /**
-     * How long a confirmed proxy port stays trustworthy.
-     *
-     * Long enough to ride out a probe that fails transiently mid-session, short
-     * enough that a companion restart — which always changes the port — is not
-     * papered over with a stale one.
-     */
-    private const val PROXY_PORT_TRUST_MS = 90_000L
-
     /** A handshake older than this has finished, whatever the flag says. */
     private const val HANDSHAKE_MAX_MS = 30_000L
-
-    /** Spacing between background probe attempts after a failed handshake. */
-    private const val COMPANION_PROBE_INTERVAL_MS = 2_000L
 
     /** Reserved MACs gearhead rejects outright — see pev.smali validation. */
     private const val ZERO_MAC = "00:00:00:00:00:00"
@@ -356,164 +328,147 @@ object AaWirelessBtControl {
     }
 
     /**
-     * Re-advertise because discovery just learned the companion's address.
+     * Attempt-owned AP bootstrap discovery.
      *
-     * Only useful when the last handshake could NOT find the companion and
-     * therefore advertised the car's own address, which the car's access point
-     * will not accept inbound. In that state the phone is waiting out its own
-     * retry timer — up to 40s — while we already know where to point it.
-     *
-     * Heavily guarded, because re-advertising during a healthy session would
-     * tear down a working connection:
-     *   - only when the last endpoint was the unusable car-direct one
-     *   - never while a handshake is in flight
-     *   - never more than once every 20s
+     * WPP intentionally disables the UI's periodic PhoneDiscovery. This scanner is
+     * narrower: it runs only after the first Bluetooth exchange has moved the
+     * selected phone onto the car AP, scans even with an empty cache, and expires
+     * before the companion proxy's 30-second car-socket waiter.
      */
-    /**
-     * Keeps probing known addresses after a handshake failed to reach any.
-     *
-     * On success it re-advertises, which makes the phone re-handshake within a
-     * second or two rather than waiting out its own ~40s retry timer. Without
-     * this the car sits on an endpoint the access point will not accept until
-     * the phone happens to try again.
-     */
-    private fun startBackgroundCompanionProbe(candidates: List<String>) {
-        if (candidates.isEmpty()) return
-        // Self-expiring for the same reason as ensureInFlight: a `finally` is not
-        // a guarantee. A probe that is cancelled at its delay() never clears the
-        // flag, and every later probe is refused for the life of the process.
-        val probeStarted = backgroundProbeSince
-        if (probeStarted != 0L && System.currentTimeMillis() - probeStarted > PROBE_MAX_MS) {
-            OalLog.w(TAG, "Background probe has been 'running' for " +
-                    "${(System.currentTimeMillis() - probeStarted) / 1000}s — assuming it died")
-            backgroundProbeRunning.set(false)
-            backgroundProbeSince = 0L
-        }
-        if (!backgroundProbeRunning.compareAndSet(false, true)) return
-        backgroundProbeSince = System.currentTimeMillis()
+    private fun startBootstrapCompanionDiscovery(
+        attempt: BootstrapAttempt,
+        candidates: List<String>,
+        manualIp: String?,
+    ) {
         scope.launch {
-            try {
-                for (attempt in 1..COMPANION_PROBE_ATTEMPTS) {
-                    kotlinx.coroutines.delay(COMPANION_PROBE_INTERVAL_MS)
-                    if (sessionIsStreaming?.invoke() == true) return@launch
-                    for (ip in candidates) {
-                        val port = askCompanion(ip, connectTimeoutMs = 2500)
-                        if (port != null) {
-                            OalLog.i(TAG, "Companion at $ip answered on attempt $attempt " +
-                                    "(proxy port $port) — re-advertising so the phone " +
-                                    "retries now instead of waiting out its own timer")
-                            lastKnownPhoneIp = ip
-                            // Deliberately does NOT reset the cooldown.
-                            //
-                            // It used to, on the reasoning that this probe only
-                            // runs after a failure so its success is worth acting
-                            // on immediately. But that let this re-advertise and a
-                            // discovery-driven one both fire for the same
-                            // recovery, 29s apart, and the phone dialled back for
-                            // each. The car ended up dialling the companion for
-                            // one connection while Android Auto attached to the
-                            // other: seed IDR arrived, then the picture froze
-                            // with both halves crossed.
-                            //
-                            // One endpoint change at a time. If the cooldown is
-                            // active a re-advertise has already been issued, and
-                            // a second one can only confuse the phone.
-                            readvertiseForNewCompanionAddress(ip)
-                            return@launch
-                        }
+            val deadline = System.currentTimeMillis() + WppBootstrapPolicy.DISCOVERY_DEADLINE_MS
+            var scanAttempt = 0
+            while (System.currentTimeMillis() < deadline) {
+                // A newer Bluetooth dial-back owns a different attempt. Let this
+                // scanner die without consuming or dialling on its behalf.
+                if (bootstrapAttempt.get() !== attempt || sessionIsStreaming?.invoke() == true) {
+                    return@launch
+                }
+                scanAttempt++
+                var found: Pair<String, Int>? = null
+                for (ip in candidates.take(MAX_PRESCAN_PROBES)) {
+                    val proxyPort = askCompanion(ip, connectTimeoutMs = 800)
+                    if (proxyPort != null) {
+                        found = ip to proxyPort
+                        break
                     }
                 }
-                OalLog.w(TAG, "Companion still unreachable after $COMPANION_PROBE_ATTEMPTS " +
-                        "attempts at ${candidates.joinToString()}")
-            } finally {
-                backgroundProbeRunning.set(false)
-                backgroundProbeSince = 0L
+                if (found == null) {
+                    val remainingMs = (deadline - System.currentTimeMillis())
+                        .coerceIn(1L, 5_000L)
+                        .toInt()
+                    found = findCompanionOnAnySubnet(manualIp, remainingMs)
+                }
+                if (found != null) {
+                    val (ip, proxyPort) = found
+                    OalLog.i(TAG, "Bootstrap discovery found companion at $ip " +
+                            "on attempt $scanAttempt (proxy port $proxyPort)")
+                    readvertiseForNewCompanionAddress(ip, proxyPort, attempt)
+                    return@launch
+                }
+                kotlinx.coroutines.delay(750)
+            }
+            OalLog.w(TAG, "Bootstrap companion discovery timed out after " +
+                    "${WppBootstrapPolicy.DISCOVERY_DEADLINE_MS / 1000}s")
+        }
+    }
+
+    /** Run a legacy companion re-advertise once the current handshake exits. */
+    fun flushPendingReadvertise() {
+        val (pending, admissionToken) = synchronized(handshakeStateLock) {
+            if (activeHandshakeCount.get() > 0 || handshakeAdmissionBlocked) return
+            val candidate = pendingLegacyReadvertise.get() ?: return
+            if (bootstrapAttempt.get() !== candidate.attempt) {
+                pendingLegacyReadvertise.compareAndSet(candidate, null)
+                return
+            }
+            if (!bootstrapAttempt.compareAndSet(candidate.attempt, null)) return
+            pendingLegacyReadvertise.compareAndSet(candidate, null)
+            val token = handshakeAdmissionSequence.incrementAndGet()
+            handshakeAdmissionBlocked = true
+            handshakeAdmissionToken = token
+            candidate to token
+        }
+        lastKnownPhoneIp = pending.host
+        lastAddressByPhone[pending.attempt.phoneBtAddress] = pending.host
+        OalLog.i(TAG, "Handshakes finished — re-advertising legacy companion " +
+                "${pending.host}:${pending.proxyPort}")
+        readvertise(admissionToken)
+    }
+
+    fun readvertiseForNewCompanionAddress(host: String, reportedProxyPort: Int? = null) {
+        readvertiseForNewCompanionAddress(host, reportedProxyPort, null)
+    }
+
+    private fun readvertiseForNewCompanionAddress(
+        host: String,
+        reportedProxyPort: Int? = null,
+        expectedAttempt: BootstrapAttempt? = null,
+    ) {
+        val proxyPort = reportedProxyPort ?: askCompanion(host, connectTimeoutMs = 800) ?: return
+        val attempt = expectedAttempt ?: bootstrapAttempt.get()
+        if (expectedAttempt != null && bootstrapAttempt.get() !== expectedAttempt) return
+        when (WppBootstrapPolicy.onCompanionReachable(
+            bootstrapLoopbackPending = attempt != null,
+            usesReservedProxyPort = proxyPort == OalProtocol.WPP_PROXY_PORT,
+            handshakeInFlight = handshakeInFlight,
+            sessionStreaming = sessionIsStreaming?.invoke() == true,
+        )) {
+            LateCompanionAction.DIAL_COMPANION -> {
+                // Atomic consumption makes concurrent TCP-scan and cached-address
+                // results one event. Only the Bluetooth phone that opened this
+                // attempt owns the right to complete it.
+                if (attempt == null || !bootstrapAttempt.compareAndSet(attempt, null)) return
+                lastKnownPhoneIp = host
+                lastAddressByPhone[attempt.phoneBtAddress] = host
+                activePhoneCompanionIp = host
+                OalLog.i(TAG, "Companion became reachable at $host after AP association — " +
+                        "dialling it into reserved loopback port $proxyPort; no second WPP exchange")
+                onCompanionSelected?.invoke(host)
+            }
+            LateCompanionAction.QUEUE_READVERTISE -> {
+                OalLog.i(TAG, "Older companion at $host uses dynamic proxy port $proxyPort; " +
+                        "queueing one compatibility re-advertise after this handshake")
+                synchronized(handshakeStateLock) {
+                    if (attempt == null || bootstrapAttempt.get() !== attempt) return
+                    pendingLegacyReadvertise.set(
+                        PendingLegacyReadvertise(host, proxyPort, attempt),
+                    )
+                }
+                // Close the race where the final handshake ended between the
+                // policy read and publishing this queue entry.
+                flushPendingReadvertise()
+            }
+            LateCompanionAction.READVERTISE -> {
+                OalLog.i(TAG, "Older companion at $host uses dynamic proxy port $proxyPort — " +
+                        "reserving one compatibility re-advertise")
+                synchronized(handshakeStateLock) {
+                    if (attempt == null || bootstrapAttempt.get() !== attempt) return
+                    pendingLegacyReadvertise.set(
+                        PendingLegacyReadvertise(host, proxyPort, attempt),
+                    )
+                }
+                flushPendingReadvertise()
+            }
+            LateCompanionAction.IGNORE -> {
+                if (sessionIsStreaming?.invoke() == true) bootstrapAttempt.set(null)
             }
         }
     }
 
-    private val backgroundProbeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+    private data class BootstrapAttempt(
+        val phoneBtAddress: String,
+        val generation: Long,
+    )
 
-    /** When the current background probe began, so the guard cannot latch. */
-    @Volatile
-    private var backgroundProbeSince = 0L
-
-    /** Longest a probe sweep can plausibly take before it is presumed dead. */
-    private const val PROBE_MAX_MS = 120_000L
-
-    /**
-     * Run a re-advertise that was requested while a handshake was in flight.
-     *
-     * Called once the handshake completes. Only acts if the endpoint that
-     * handshake settled on is still the unreachable one — if it managed to find
-     * the companion itself, there is nothing to repair.
-     */
-    fun flushPendingReadvertise() {
-        val host = pendingReadvertiseHost ?: return
-        pendingReadvertiseHost = null
-        if (!lastEndpointWasCarDirect) {
-            OalLog.i(TAG, "Handshake found the companion itself — dropping the " +
-                    "queued re-advertise for $host")
-            return
-        }
-        OalLog.i(TAG, "Handshake finished — running the queued re-advertise for $host")
-        readvertiseForNewCompanionAddress(host)
-    }
-
-    fun readvertiseForNewCompanionAddress(host: String) {
-        if (!lastEndpointWasCarDirect) return
-        if (handshakeInFlight) {
-            // Queue it instead of dropping it.
-            //
-            // The handshake that advertised the bad endpoint is usually still
-            // finishing when the probe succeeds — measured at 2s apart — so this
-            // guard threw away the very answer it was waiting for and the
-            // connection then waited 26s for discovery to ask again. Restarting
-            // the advertiser mid-handshake genuinely does destroy the socket the
-            // phone is about to use, so we still must not act now; we just have
-            // to remember.
-            OalLog.i(TAG, "Companion found at $host while a handshake is in " +
-                    "flight — queued, will re-advertise as soon as it finishes")
-            pendingReadvertiseHost = host
-            return
-        }
-        // Only a session that is actually CARRYING DATA counts as "working".
-        //
-        // The previous check was `sessionState != IDLE`, which is true the
-        // instant a session object exists — including while it sits listening
-        // for a phone that will never arrive. That is precisely the stall this
-        // function exists to break, so the guard blocked the only case it was
-        // meant to help: discovery reported the phone eight times across two
-        // minutes and no re-advertise ever fired.
-        if (sessionIsStreaming?.invoke() == true) return
-        val now = System.currentTimeMillis()
-        // The cooldown exists to stop two re-advertises racing and crossing the
-        // phone's connections. It must not apply when the endpoint we are
-        // currently advertising is known to be unreachable: that re-advertise is
-        // not a duplicate, it is the repair, and delaying it costs half a minute.
-        if (!lastEndpointWasCarDirect &&
-            now - lastReadvertiseAtMs < READVERTISE_MIN_INTERVAL_MS
-        ) {
-            // Say so rather than returning silently. This cooldown swallowed the
-            // recovery once already: a republish at 20:53:14 started the clock,
-            // discovery reported the phone 10.7s later, and the re-advertise that
-            // would have fixed an unreachable endpoint was dropped without trace.
-            // Info, not debug: the uploaded file log only captures I and above,
-            // so at debug level this "explanation" was invisible in exactly the
-            // logs used to diagnose the problem it explains.
-            OalLog.i(TAG, "Skipping re-advertise for $host — only " +
-                    "${(now - lastReadvertiseAtMs) / 1000}s since the last one")
-            return
-        }
-        lastReadvertiseAtMs = now
-        OalLog.i(TAG, "Discovery found the companion at $host after we advertised an " +
-                "unreachable endpoint — re-advertising so the phone retries now " +
-                "instead of waiting out its own timer")
-        readvertise()
-    }
-
-    @Volatile
-    private var lastEndpointWasCarDirect = false
+    private val bootstrapAttemptSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val bootstrapAttempt =
+        java.util.concurrent.atomic.AtomicReference<BootstrapAttempt?>(null)
 
     /**
      * Reports whether projection is actually running.
@@ -524,17 +479,30 @@ object AaWirelessBtControl {
     @Volatile
     var sessionIsStreaming: (() -> Boolean)? = null
 
-    @Volatile
-    private var lastReadvertiseAtMs = 0L
+    /** A legacy dynamic endpoint tied to the exact attempt that discovered it. */
+    private data class PendingLegacyReadvertise(
+        val host: String,
+        val proxyPort: Int,
+        val attempt: BootstrapAttempt,
+    )
 
-    /** A re-advertise asked for during a handshake, to run when it completes. */
-    @Volatile
-    private var pendingReadvertiseHost: String? = null
+    private val pendingLegacyReadvertise =
+        java.util.concurrent.atomic.AtomicReference<PendingLegacyReadvertise?>(null)
 
-    fun readvertise() {
+    private fun releaseHandshakeAdmission(admissionToken: Long?) = synchronized(handshakeStateLock) {
+        if (admissionToken != null && handshakeAdmissionToken == admissionToken) {
+            handshakeAdmissionBlocked = false
+            handshakeAdmissionToken = 0L
+        }
+    }
+
+    fun readvertise() = readvertise(null)
+
+    private fun readvertise(admissionToken: Long?) {
         val ctx = appContext
         if (ctx == null) {
             OalLog.w(TAG, "Cannot re-advertise — no context yet")
+            releaseHandshakeAdmission(admissionToken)
             return
         }
         // NonCancellable: this is stop-then-start, and the stop used to cancel
@@ -542,45 +510,30 @@ object AaWirelessBtControl {
         // said why. The advertiser must come back even if something cancels us
         // mid-sequence.
         scope.launch(kotlinx.coroutines.NonCancellable) {
-            runCatching {
-                OalLog.i(TAG, "Re-advertising: stopping the current SDP record")
-                btServer?.stop()
-                btServer = null
-                kotlinx.coroutines.delay(1_000)
-                startFromPreferences(ctx)
-                if (btServer?.isRunning == true) {
-                    OalLog.i(TAG, "Re-advertise complete — SDP record is live again")
-                } else {
-                    OalLog.w(TAG, "Re-advertise ran but no advertiser is running")
-                }
-            }.onFailure { OalLog.w(TAG, "Re-advertise failed: ${it.message}") }
+            try {
+                runCatching {
+                    OalLog.i(TAG, "Re-advertising: stopping the current SDP record")
+                    btServer?.stop()
+                    btServer = null
+                    kotlinx.coroutines.delay(1_000)
+                    startFromPreferences(ctx)
+                    if (btServer?.isRunning == true) {
+                        OalLog.i(TAG, "Re-advertise complete — SDP record is live again")
+                    } else {
+                        OalLog.w(TAG, "Re-advertise ran but no advertiser is running")
+                    }
+                }.onFailure { OalLog.w(TAG, "Re-advertise failed: ${it.message}") }
+            } finally {
+                releaseHandshakeAdmission(admissionToken)
+            }
         }
     }
 
     @Volatile
     private var appContext: Context? = null
 
-    /**
-     * Proxy port from the last successful companion lookup.
-     *
-     * Used to keep advertising the loopback endpoint through a transient lookup
-     * failure. The port is stable across reconnects — the companion keeps its
-     * proxy — whereas its IP is not.
-     */
-    /**
-     * Proxy port from the last successful lookup, PER PHONE (keyed by BT address).
-     *
-     * A single shared value silently mixes two phones up: 127.0.0.1:<port> only
-     * resolves on the device whose companion opened that port, so reusing phone
-     * A's port for phone B points B's Android Auto at a closed socket.
-     */
-    private val lastGoodProxyPortByPhone = java.util.concurrent.ConcurrentHashMap<String, Int>()
-
     /** The address each phone's companion last answered on, keyed by BT MAC. */
     private val lastAddressByPhone = java.util.concurrent.ConcurrentHashMap<String, String>()
-
-    /** When each phone's proxy port was last confirmed by an actual reply. */
-    private val lastPortConfirmedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * The phone currently holding the projection session, by BT address.
@@ -598,6 +551,12 @@ object AaWirelessBtControl {
      */
     @Volatile
     private var handshakeStartedAtMs: Long = 0L
+    private val activeHandshakeCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val handshakeStateLock = Any()
+    private var handshakeEpoch = 0L
+    private val handshakeAdmissionSequence = java.util.concurrent.atomic.AtomicLong(0)
+    @Volatile private var handshakeAdmissionBlocked = false
+    @Volatile private var handshakeAdmissionToken = 0L
 
     /**
      * True while a Bluetooth handshake is genuinely running.
@@ -613,22 +572,45 @@ object AaWirelessBtControl {
      * A handshake takes 0-9s in every successful run, so anything older than 30s
      * is finished regardless of what set it.
      */
-    var handshakeInFlight: Boolean
-        get() {
+    val handshakeInFlight: Boolean
+        get() = synchronized(handshakeStateLock) {
+            if (activeHandshakeCount.get() <= 0) return false
             val started = handshakeStartedAtMs
-            if (started == 0L) return false
-            if (System.currentTimeMillis() - started > HANDSHAKE_MAX_MS) {
-                OalLog.w(TAG, "handshakeInFlight was still set from " +
-                        "${(System.currentTimeMillis() - started) / 1000}s ago — " +
-                        "treating it as finished")
+            if (started != 0L && System.currentTimeMillis() - started > HANDSHAKE_MAX_MS) {
+                OalLog.w(TAG, "handshakeInFlight still had ${activeHandshakeCount.get()} " +
+                        "owner(s) from ${(System.currentTimeMillis() - started) / 1000}s ago — " +
+                        "treating them as finished")
+                activeHandshakeCount.set(0)
                 handshakeStartedAtMs = 0L
+                handshakeEpoch++
                 return false
             }
-            return true
+            true
         }
-        set(value) {
-            handshakeStartedAtMs = if (value) System.currentTimeMillis() else 0L
+
+    class HandshakeLease internal constructor(private val leaseEpoch: Long) {
+        private val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        fun finish() {
+            if (finished.compareAndSet(false, true)) {
+                AaWirelessBtControl.endHandshake(leaseEpoch)
+            }
         }
+    }
+
+    fun beginHandshake(): HandshakeLease? = synchronized(handshakeStateLock) {
+        if (handshakeAdmissionBlocked) return null
+        if (activeHandshakeCount.incrementAndGet() == 1) {
+            handshakeStartedAtMs = System.currentTimeMillis()
+        }
+        HandshakeLease(handshakeEpoch)
+    }
+
+    private fun endHandshake(leaseEpoch: Long) = synchronized(handshakeStateLock) {
+        if (leaseEpoch != handshakeEpoch) return
+        val remaining = activeHandshakeCount.updateAndGet { (it - 1).coerceAtLeast(0) }
+        if (remaining == 0) handshakeStartedAtMs = 0L
+    }
 
     @Volatile
     var activePhoneBt: String? = null
@@ -638,18 +620,15 @@ object AaWirelessBtControl {
     private var activePhoneClaimedAt: Long = 0L
 
     /**
-     * Forget everything learned about where the phone was, on ignition off.
+     * Reset attempt ownership on ignition off while retaining address hints.
      *
-     * The telematics module reassigns its AP a new subnet on every ignition
-     * cycle, so every cached address is guaranteed stale by the next start —
-     * one session held 10.2.110.109, 10.2.110.125 and 10.2.110.82, all dead.
-     * Carrying them over costs a probe round-trip each before the scan that was
-     * always going to be needed, right at the moment the car is trying to
-     * connect quickly.
+     * Address hints are retained because the AP is stable across ordinary ignition
+     * cycles and stale hints cost only a bounded probe before the attempt-owned
+     * scan. The subnet can still change across longer epochs, so every hint is
+     * filtered against the interfaces the car holds now.
      *
-     * Proxy ports go too: the companion opens a fresh listener on a new port
-     * each time its service starts, so a remembered port is not just stale, it
-     * would be advertised to Android Auto as a live endpoint.
+     * The companion proxy port is reserved and stable; reset only attempt-owned
+     * endpoint state while retaining address hints for the next ignition.
      */
     fun resetForNextIgnition() {
         // Snapshot the addresses BEFORE clearing them — the notify is async and
@@ -660,21 +639,22 @@ object AaWirelessBtControl {
         }.distinct()
         notifyCompanionOfShutdown(targets)
         releaseActivePhone()
-        // Keep the addresses. Only the PORT is reliably stale.
-        //
-        // Clearing them made every reconnect start blind, and a blind scan is
-        // exactly what fails on this car: at 20:53:14 the reconnect had no
-        // cached address, scanned for 5.3s, found nothing, and advertised the
-        // car's own unreachable address — Error 21 — while the companion sat at
-        // the same address it had used 90 seconds earlier and discovery found it
-        // three times over the next minute.
-        //
-        // The phone's address on the car AP is usually unchanged across an
-        // ignition cycle. If it has moved, a stale entry costs one probe; having
-        // no entry costs a full blind scan and a failed connection.
-        lastGoodProxyPortByPhone.clear()
-        handshakeInFlight = false
-        OalLog.i(TAG, "Cleared cached proxy ports, keeping known addresses " +
+        // Keep address hints across ignition. A stale address costs one bounded
+        // probe before the attempt-owned scan; clearing every address forces every
+        // restart to begin with a full blind /24 scan. Proxy ports are no longer
+        // cached: current companions reserve 5280, while an older companion's
+        // dynamic value is accepted only from a live identity reply.
+        bootstrapAttempt.set(null)
+        pendingLegacyReadvertise.set(null)
+        synchronized(handshakeStateLock) {
+            activeHandshakeCount.set(0)
+            handshakeStartedAtMs = 0L
+            handshakeEpoch++
+            // Do not clear an owned compatibility admission barrier here. Its
+            // re-advertise job is NonCancellable and only its generation token
+            // may reopen handshakes after the listener replacement completes.
+        }
+        OalLog.i(TAG, "Reset WPP attempt state, keeping known addresses " +
                 "(${(listOfNotNull(lastKnownPhoneIp) + recentPhoneIps).distinct().joinToString()})")
     }
 
@@ -1025,18 +1005,24 @@ object AaWirelessBtControl {
      * arguably better, since the phone is the AP there and the telematics module's
      * filtering is bypassed completely.
      */
-    private fun findCompanionOnAnySubnet(manualIp: String?): Pair<String, Int>? {
+    private fun findCompanionOnAnySubnet(
+        manualIp: String?,
+        overallTimeoutMs: Int = 20_000,
+    ): Pair<String, Int>? {
         val localIps = buildList {
             manualIp?.takeIf { it.isNotBlank() }?.let { add(it) }
             addAll(allLocalIpv4())
         }.distinct()
         if (localIps.isEmpty()) return null
 
+        val deadline = System.currentTimeMillis() + overallTimeoutMs
         for (ip in localIps) {
             val prefix = ip.substringBeforeLast('.', "")
             if (prefix.isEmpty()) continue
+            val remainingMs = (deadline - System.currentTimeMillis()).coerceAtLeast(1L).toInt()
             OalLog.i(TAG, "Scanning $prefix.0/24 for the companion")
-            scanSubnet(prefix, ip)?.let { return it }
+            scanSubnet(prefix, ip, remainingMs)?.let { return it }
+            if (System.currentTimeMillis() >= deadline) break
         }
         OalLog.w(TAG, "No companion on any local subnet (${localIps.joinToString()})")
         return null
@@ -1072,7 +1058,11 @@ object AaWirelessBtControl {
      * bridge is simply slow. With 128 threads a /24 still completes in about 2s
      * even when every address times out.
      */
-    private fun scanSubnet(prefix: String, ourIp: String): Pair<String, Int>? {
+    private fun scanSubnet(
+        prefix: String,
+        ourIp: String,
+        overallTimeoutMs: Int = 20_000,
+    ): Pair<String, Int>? {
         val pool = java.util.concurrent.Executors.newFixedThreadPool(128)
         return try {
             val tasks = (1..254)
@@ -1094,7 +1084,11 @@ object AaWirelessBtControl {
             // 3s cap cut a sweep off at 2.47s and reported "no companion" for one
             // the car had connected to 0.85s earlier. 20s leaves real headroom
             // and still returns immediately on the first hit.
-            pool.invokeAll(tasks, 20, java.util.concurrent.TimeUnit.SECONDS)
+            pool.invokeAll(
+                tasks,
+                overallTimeoutMs.toLong(),
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
                 .asSequence()
                 .mapNotNull { runCatching { it.get() }.getOrNull() }
                 .firstOrNull()
@@ -1206,9 +1200,9 @@ object AaWirelessBtControl {
                 .thenBy { if (isPrivate(it.addr)) 0 else 1 }
         ).first()
 
-        // Always log, not just when ambiguous: the car's AP subnet is reassigned
-        // by the telematics module on every restart, so the advertised address
-        // legitimately changes run to run and must be traceable in the logs.
+        // Always log, not just when ambiguous: the car AP has used several
+        // different subnets across multi-week epochs, so the value used by each
+        // handshake must remain visible even though it is usually stable per cycle.
         run {
             OalLog.i(TAG, "Local address candidates: " +
                     candidates.joinToString { "${it.name}=${it.addr}" } +
@@ -1257,9 +1251,9 @@ object AaWirelessBtControl {
         // stated plainly in the log, not inferred later from the phone's silence.
         val canAdvertise = bt.canAdvertise()
         OalLog.i(TAG, "SDP advertise capability: $canAdvertise")
-        // Re-resolve the address on every handshake rather than reusing the value
-        // captured here: the car's AP is given a new subnet on each ignition
-        // cycle, so this snapshot goes stale as soon as the car is restarted.
+        // Re-resolve on every handshake. The AP is usually stable across ignition
+        // cycles but has changed across longer epochs, so no cached address is a
+        // permanent source of truth.
         // Honour a manual override if one is set, otherwise look it up live.
         bt.setAddressResolver { manualIp ?: localIpv4Address(apInterface) }
 
@@ -1452,12 +1446,10 @@ object AaWirelessBtControl {
                     // companionIp. Guarded anyway, and loudly, because silently
                     // skipping the dial is the failure this caused — the car
                     // listened forever while the phone waited for a car socket.
-                    lastGoodProxyPortByPhone[phoneBtAddress] = proxyPort!!
-                    lastPortConfirmedAt[phoneBtAddress] = System.currentTimeMillis()
                     // Remember which companion belongs to the Bluetooth-connected
                     // phone so the UI can mark it in the discovery list.
                     activePhoneCompanionIp = companionIp
-                    lastEndpointWasCarDirect = false
+                    bootstrapAttempt.set(null)
                     OalLog.i(TAG, "CONNECT SUMMARY: endpoint=loopback proxy " +
                             "127.0.0.1:$proxyPort via companion at $companionIp " +
                             "phone=$phoneBtAddress — this is the working path")
@@ -1470,78 +1462,23 @@ object AaWirelessBtControl {
                     }
                     AaWirelessBtServer.Endpoint.PhoneLoopback(proxyPort)
                 }
-                // A companion WAS working a moment ago, so a single failed lookup
-                // is far more likely to be a transient network state than a real
-                // absence — the phone rejoining the AP takes seconds and its
-                // address changes. Falling back to CarDirect here locks in an
-                // endpoint the phone cannot reach through the car's AP, and every
-                // later attempt inherits it. Keep the loopback endpoint and let
-                // the next handshake resolve the new address.
-                // Only reuse a remembered port while it is plausibly still open.
-                //
-                // The companion picks a fresh ephemeral port every time its
-                // service restarts, so the port is the one value guaranteed to be
-                // wrong afterwards. Reusing it advertised 127.0.0.1:38485 when the
-                // companion had moved to 40715, and the phone got Error 21 dialling
-                // a port nothing was listening on.
-                //
-                // The branch is still right for what it was written for — a probe
-                // that blips mid-session, where falling back to the car-direct
-                // endpoint would be worse. That case resolves in seconds. A port
-                // that has not been confirmed for minutes is a different thing, and
-                // guessing wrong costs a failed connection rather than a slow one.
-                lastGoodProxyPortByPhone[phoneBtAddress] != null &&
-                        System.currentTimeMillis() - (lastPortConfirmedAt[phoneBtAddress] ?: 0L)
-                        < PROXY_PORT_TRUST_MS -> {
-                    lastEndpointWasCarDirect = false
-                    OalLog.i(TAG, "CONNECT SUMMARY: endpoint=loopback proxy (remembered " +
-                            "port) phone=$phoneBtAddress — companion did not answer this " +
-                            "time but its port is stable across reconnects")
-                    val port = lastGoodProxyPortByPhone.getValue(phoneBtAddress)
-                    OalLog.i(TAG, "Companion for $phoneBtAddress not found this time, " +
-                            "but it was on port $port — keeping the loopback endpoint " +
-                            "rather than falling back to an unreachable one")
-                    AaWirelessBtServer.Endpoint.PhoneLoopback(port)
-                }
                 else -> {
-                    // One line that says what this attempt decided and why, so a
-                    // failure is legible without reconstructing it from three
-                    // hundred scattered lines. Both of the last two bugs hid in
-                    // the gap between logging intent and logging outcome.
-                    OalLog.w(TAG, "CONNECT SUMMARY: endpoint=car-direct (UNREACHABLE " +
-                            "through the car's AP) phone=$phoneBtAddress " +
+                    // The phone is not on the car AP yet, so the companion cannot
+                    // answer. Use the port both new apps reserve in advance. WPP
+                    // moves the phone onto the AP, Android Auto can attach to its
+                    // local proxy immediately, and discovery then supplies the
+                    // car-side socket to that same waiting bridge.
+                    val attempt = BootstrapAttempt(phoneBtAddress,
+                        bootstrapAttemptSequence.incrementAndGet(),
+                    )
+                    bootstrapAttempt.set(attempt)
+                    OalLog.i(TAG, "CONNECT SUMMARY: endpoint=bootstrap-loopback " +
+                            "127.0.0.1:${OalProtocol.WPP_PROXY_PORT} phone=$phoneBtAddress " +
                             "knownAddrs=${allKnown.joinToString().ifEmpty { "none" }} " +
-                            "usable=${candidates.joinToString().ifEmpty { "none" }} " +
-                            "— projection will not start until the companion is found")
-                    // This is the endpoint the car's AP will not accept inbound.
-                    // Flagged so discovery can trigger a re-advertise the moment
-                    // it learns where the companion actually is.
-                    lastEndpointWasCarDirect = true
-                    // Keep probing in the background. The handshake itself must
-                    // stay fast — it completes in 0-9s in every successful run —
-                    // so it cannot sit and retry. But the reason it failed is
-                    // usually that it asked too early: this probe runs 1-3s after
-                    // the phone associated, and the AP bridge is not carrying
-                    // traffic for it yet. Measured, the same address answers
-                    // discovery reliably about 8s later.
-                    startBackgroundCompanionProbe(candidates)
-                    // No companion: advertise our own address, and pick the one on
-                    // the SAME network as the phone. The head unit has two radios
-                    // on different networks (telematics AP vs its own wlan0), so
-                    // "our IP" is ambiguous — naming the wrong one sends the phone
-                    // somewhere it cannot route to.
-                    val ip = manualIp
-                        ?: lastKnownPhoneIp?.let { phone ->
-                            val phonePrefix = phone.substringBeforeLast('.', "")
-                            allLocalIpv4().firstOrNull {
-                                it.substringBeforeLast('.', "") == phonePrefix
-                            }?.also {
-                                OalLog.i(TAG, "Advertising $it — same subnet as the phone ($phone)")
-                            }
-                        }
-                        ?: localIpv4Address(apInterface)
-                    if (ip.isNullOrBlank()) null
-                    else AaWirelessBtServer.Endpoint.CarDirect(ip, 5277)
+                            "usable=${candidates.joinToString().ifEmpty { "none" }} — " +
+                            "waiting for companion discovery after AP association")
+                    startBootstrapCompanionDiscovery(attempt, candidates, manualIp)
+                    AaWirelessBtServer.Endpoint.PhoneLoopback(OalProtocol.WPP_PROXY_PORT)
                 }
             }
         }

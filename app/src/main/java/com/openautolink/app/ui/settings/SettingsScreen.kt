@@ -391,7 +391,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 label = { Text("Head unit IP (optional)") },
                 singleLine = true,
                 supportingText = {
-                    Text("Leave blank — this is detected automatically each time. Only set it to diagnose a one-off problem, and clear it afterwards: the car's hotspot subnet changes on every restart, so a fixed value here will stop working.")
+                    Text("Leave blank — this is detected automatically each time. Only set it to diagnose a one-off problem, and clear it afterwards: the car's hotspot subnet is stable across ignition cycles but can change across multi-week epochs, so a fixed value will eventually stop working.")
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )

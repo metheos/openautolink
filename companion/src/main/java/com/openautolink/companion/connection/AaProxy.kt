@@ -3,6 +3,7 @@ package com.openautolink.companion.connection
 import com.openautolink.companion.diagnostics.CompanionLog
 import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
 import com.openautolink.companion.diagnostics.PhoneWppStage
+import com.openautolink.companion.service.TcpAdvertiser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,7 +68,7 @@ class AaProxy(
      * bridge coroutine starts — including while it is parked in [awaitPendingCarSocket]
      * waiting for the car. Reporting "active" during that wait made
      * TcpAdvertiser.handleCarConnection() skip its socket-swap path and instead
-     * stop() the proxy and re-listen on a NEW port, tearing the socket out from under
+     * stop() the proxy and re-listen on a NEW socket, tearing the socket out from under
      * the AA reader that was already attached (gearhead: "ReaderThread: end of stream
      * received, dataReceived=false" -> FRAMER_READ_END_OF_STREAM_NO_DATA ->
      * PROTOCOL_IO_ERROR(3)/READER_CLOSE(52)). Observed 2026-07-25.
@@ -89,7 +90,7 @@ class AaProxy(
      * look identical at the socket level until something times out, and the
      * recovery for each is the opposite: a glitch wants the car socket kept for
      * reuse, a shutdown wants everything dropped so the next ignition starts
-     * clean on a new subnet, a new phone address and a new proxy port.
+     * clean on a new subnet and a new phone address.
      */
     @Volatile private var carGoneForGood: Boolean = false
 
@@ -137,9 +138,9 @@ class AaProxy(
     val isAccepting: Boolean
         get() = isRunning && serverSocket?.isClosed == false
 
-    /** Start the proxy server. Returns the localhost port AA should connect to. */
+    /** Start the proxy server. Returns the stable localhost port AA connects to. */
     fun start(): Int {
-        val server = ServerSocket(0)
+        val server = WppProxySocketBinder.bind()
         serverSocket = server
         isRunning = true
 
@@ -185,7 +186,7 @@ class AaProxy(
                 // socket is in hand: while parked below this proxy must still
                 // report "not active" so an arriving car socket is swapped in
                 // here instead of causing TcpAdvertiser to stop() us and rebind
-                // on a fresh port (which would EOF the AA reader attached above).
+                // a fresh socket (which would EOF the AA reader attached above).
                 carSocket = pendingCarSocket?.also { pendingCarSocket = null }
                     ?: preConnectedSocket
                     ?: awaitPendingCarSocket(PREWARM_CAR_WAIT_MS)

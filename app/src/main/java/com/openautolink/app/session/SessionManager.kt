@@ -187,6 +187,9 @@ class SessionManager(
     @Volatile
     private var lastKnownSurface: Triple<android.view.Surface, Int, Int>? = null
 
+    /** Ownership token for callbacks emitted by replaceable decoder instances. */
+    private val videoDecoderGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
     /**
      * Decoder settings from the last full session setup, for rebuilding one.
      *
@@ -210,10 +213,18 @@ class SessionManager(
     @Volatile
     private var lastVolumeOffsetAssistant: Int = 0
 
-    /** Called by the UI whenever a surface becomes available or is destroyed. */
+    /**
+     * Reject dead/stale Surface objects before they become the singleton's cached
+     * output target. A stale target must not provoke a destructive session restart.
+     */
     fun publishSurface(surface: android.view.Surface?, width: Int, height: Int) {
-        lastKnownSurface = surface?.let { Triple(it, width, height) }
-        if (surface != null && surface.isValid && width > 0 && height > 0) {
+        val validSurface = surface?.takeIf { it.isValid && width > 0 && height > 0 }
+        lastKnownSurface = validSurface?.let { Triple(it, width, height) }
+        if (surface != null && validSurface == null) {
+            OalLog.w(TAG, "Ignoring invalid video surface ${width}x${height}")
+            return
+        }
+        if (validSurface != null) {
             com.openautolink.app.wake.PreWakeMonitor.reportSurfaceReady(width, height)
         }
         // attach() configures or swaps the MediaCodec output surface, which
@@ -221,7 +232,9 @@ class SessionManager(
         // the main thread. One archived ANR's last main-thread line is exactly
         // "Surface attached", immediately after a forced reconnect began tearing
         // the session down on another thread.
-        if (surface != null) scope.launch { _videoDecoder?.attach(surface, width, height) }
+        if (validSurface != null) {
+            scope.launch { _videoDecoder?.attach(validSurface, width, height) }
+        }
     }
 
     /**
@@ -325,6 +338,32 @@ class SessionManager(
         }
     }
 
+    private fun createVideoDecoder(
+        codecPreference: String,
+        scalingMode: String,
+    ): MediaCodecDecoder {
+        val decoderGeneration = videoDecoderGeneration.incrementAndGet()
+        return MediaCodecDecoder(
+            codecPreference = codecPreference,
+            scalingMode = scalingMode,
+            onSessionRestartNeeded = { reason ->
+                val targetSession = aasdkSession
+                OalLog.w(TAG, "Decoder cannot recover the output surface in-place — $reason")
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    if (decoderGeneration != videoDecoderGeneration.get()) {
+                        OalLog.i(TAG, "Ignoring surface recovery from stale decoder generation $decoderGeneration")
+                        return@launch
+                    }
+                    if (targetSession == null || aasdkSession !== targetSession) {
+                        OalLog.i(TAG, "Ignoring surface recovery from a replaced session")
+                        return@launch
+                    }
+                    targetSession.forceReconnect(reason)
+                }
+            },
+        )
+    }
+
     fun ensureVideoDecoder() {
         if (_videoDecoder != null) {
             // Say the decoder is fine AND whether it can draw. A decoder with no
@@ -338,7 +377,7 @@ class SessionManager(
             return
         }
         OalLog.i(TAG, "No video decoder for this session — creating one")
-        _videoDecoder = MediaCodecDecoder(lastCodecPreference, lastScalingMode)
+        _videoDecoder = createVideoDecoder(lastCodecPreference, lastScalingMode)
         lastKnownSurface?.let { (surface, w, h) ->
             if (surface.isValid) {
                 OalLog.i(TAG, "Attaching the last known surface to the new decoder")
@@ -834,7 +873,7 @@ class SessionManager(
         lastVolumeOffsetMedia = volumeOffsetMedia
         lastVolumeOffsetNavigation = volumeOffsetNavigation
         lastVolumeOffsetAssistant = volumeOffsetAssistant
-        _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
+        _videoDecoder = createVideoDecoder(codecPreference, scalingMode)
         // Re-attach the surface the UI last reported, if there is one.
         //
         // Holding it here rather than only in the ViewModel removes the ordering
@@ -1815,7 +1854,7 @@ class SessionManager(
 
         // 3. Flush video decoder (codec/scaling may have changed)
         _videoDecoder?.release()
-        _videoDecoder = MediaCodecDecoder(codecPreference, scalingMode)
+        _videoDecoder = createVideoDecoder(codecPreference, scalingMode)
         _telemetryCollector?.videoDecoder = _videoDecoder
 
         // 4. Update audio volume offsets in-place (no release/recreate)

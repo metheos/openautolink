@@ -43,6 +43,11 @@ class TcpAdvertiser(
         private const val TAG = "OAL_TcpAdv"
         const val PORT = 5277
         /**
+         * Reserved phone-local AA proxy endpoint advertised during AP-only bootstrap.
+         * The car mirrors this as OalProtocol.WPP_PROXY_PORT.
+         */
+        const val WPP_PROXY_PORT = 5280
+        /**
          * Dedicated single-purpose port for the identity probe. The companion
          * answers `OAL?\n` with `OAL!{phone_id}\t{friendly_name}\n`. Used by
          * the car's subnet sweep + last-known-IP fallback when mDNS is
@@ -201,8 +206,8 @@ class TcpAdvertiser(
                     }
                 },
             )
-            activeProxy = proxy
             val port = proxy.start()
+            activeProxy = proxy
             if (port > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
             CompanionLog.i(TAG, "Started proxy for WPP on localhost:$port")
             port
@@ -248,9 +253,9 @@ class TcpAdvertiser(
                         }
                     },
                 )
-                activeProxy = proxy
                 isLaunching = true
                 val localPort = proxy.start()
+                activeProxy = proxy
                 if (localPort > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
                 // Do NOT tell Android Auto to connect yet.
                 //
@@ -581,8 +586,8 @@ class TcpAdvertiser(
                         }
                     },
                 )
-                activeProxy = proxy
                 val localPort = proxy.start()
+                activeProxy = proxy
                 if (localPort > 0) PhoneWppDiagnostics.record(PhoneWppStage.WARM_PROXY_READY)
 
                 fireAaLaunchIntent(localPort)

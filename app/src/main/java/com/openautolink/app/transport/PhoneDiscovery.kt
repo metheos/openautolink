@@ -168,30 +168,14 @@ class PhoneDiscovery private constructor(private val context: Context) {
      * mid-session; publishing on every discovery keeps it current rather than
      * pinning a value that was right a minute ago.
      */
-    private fun publishPhoneAddress(host: String) {
+    private fun publishPhoneAddress(host: String, reportedProxyPort: Int? = null) {
         val bt = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
         bt.lastKnownPhoneIp = host
-        // Learning the companion's address late is the whole cause of the ~40s
-        // stall. The handshake fires promptly (median 3s from publishing the SDP
-        // record), but if the scan inside it finds nothing we advertise the
-        // car's own address — which cannot work through the car's access point —
-        // and then wait for the phone to retry on its own:
-        //
-        //     15:33:13  Phone dialled back                    (2.6s — fast)
-        //     15:33:18  No companion on any local subnet
-        //     15:33:31  preferred sweep complete: 1 phone(s)  (we knew it HERE)
-        //     15:33:50  Phone dialled back again              (37.8s wasted)
-        //
-        // Discovery had the answer 19s before the phone tried again. Bouncing the
-        // SDP record now makes the phone re-handshake immediately: measured
-        // republish-to-dial-back is 0-4s, median 0.5s.
-        // Deliberately NOT gated on the address having changed. lastKnownPhoneIp
-        // lives in a singleton and survives sessions, so after any previous run
-        // the address is already correct and "changed" is false forever — the
-        // stall is that the HANDSHAKE could not reach the companion, not that we
-        // learned something new. Measured: discovery reported the phone eight
-        // times over two minutes and this never fired once.
-        bt.readvertiseForNewCompanionAddress(host)
+        // During an attempt-owned WPP bootstrap, pass through the proxy port the
+        // identity response actually reported. Port 5280 completes the current
+        // exchange; an older companion's dynamic port triggers one compatibility
+        // re-advertise after the current handshake exits.
+        bt.readvertiseForNewCompanionAddress(host, reportedProxyPort)
     }
 
     private val _isDiscovering = MutableStateFlow(false)
@@ -571,7 +555,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
                         if (ident != null) {
                             // Remember where the companion lives so the Bluetooth
                             // advertiser can ask it for its AA proxy port.
-                            publishPhoneAddress(ip)
+                            publishPhoneAddress(ip, ident.wppProxyPort)
                             addOrUpdate(
                                 phoneId = ident.phoneId,
                                 friendlyName = ident.friendlyName,
@@ -618,8 +602,8 @@ class PhoneDiscovery private constructor(private val context: Context) {
      * Reads the optional "wpp=<port>" field from an identity response.
      *
      * Absent on older companions, so a missing or malformed value is not an
-     * error — it simply means no local proxy, and the caller falls back to
-     * advertising the car's own address.
+     * error — callers either keep the attempt-owned reserved bootstrap port or
+     * perform one compatibility re-advertise after a positive identity reply.
      */
     private fun parseWppPort(parts: List<String>): Int =
         parts.firstOrNull { it.startsWith("wpp=") }
