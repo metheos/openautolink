@@ -68,6 +68,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -86,6 +87,7 @@ fun MainScreen(
     onStop: () -> Unit,
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val prefs = remember {
         context.getSharedPreferences(CompanionPrefs.NAME, Context.MODE_PRIVATE)
     }
@@ -174,8 +176,13 @@ fun MainScreen(
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
             )
+            TextButton(
+                onClick = { uriHandler.openUri("https://buymeacoffee.com/mossyhub") },
+            ) {
+                Text("☕ Buy me a coffee")
+            }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
 
             // ── Status Card ────────────────────────────────────────
             StatusCard(isRunning, isConnected, statusText)
