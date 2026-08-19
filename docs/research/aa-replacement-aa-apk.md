@@ -219,18 +219,28 @@ Preserved layouts include narrow portrait, hero SOIP, projected-app, map-templat
 
 The targeted virtual-display class (`rab` in this obfuscated build) creates or attaches a `VirtualDisplay`, owns its `Surface`, swaps surfaces, and fails hard on `SecurityException`.
 
-The gearhead manifest declares privileges unavailable to OAL, including:
+The gearhead manifest declares several capabilities that a normal OAL install does
+not receive. The load-bearing display/hosting restrictions include:
 
 - `android.permission.CREATE_VIRTUAL_DEVICE`
 - `android.permission.ADD_TRUSTED_DISPLAY`
 - `android.permission.ADD_ALWAYS_UNLOCKED_DISPLAY`
 - `android.permission.CAPTURE_SECURE_VIDEO_OUTPUT`
 - `android.permission.ACTIVITY_EMBEDDING`
-- `android.permission.QUERY_ALL_PACKAGES`
-- `android.permission.SYSTEM_ALERT_WINDOW`
 - automotive projection-control permissions
 
-Projection-window flags include secure-video detection/capture behavior.
+Two adjacent permissions have different boundaries and should not be described as
+signature-only:
+
+- `android.permission.QUERY_ALL_PACKAGES` is a normal manifest permission, but
+  Google Play restricts and reviews its use. It enables package visibility; it
+  does not grant task hosting, display capture, or caller trust.
+- `android.permission.SYSTEM_ALERT_WINDOW` is a special app-op that a user may
+  grant through system settings. It permits overlays within platform policy; it
+  does not grant secure-surface capture, trusted-display creation, or arbitrary
+  task embedding.
+
+Projection-window flags also include secure-video detection/capture behavior.
 
 **Implication:** OAL can create ordinary virtual displays/surfaces that it owns, but it cannot reproduce gearhead's trusted/always-unlocked/secure-output environment as a stock app. This affects arbitrary Activity hosting, protected content, lock state, and secure surfaces.
 

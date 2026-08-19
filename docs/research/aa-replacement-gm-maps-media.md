@@ -2,13 +2,25 @@
 
 **Vehicle corpus:** GM Android 12 / SDK 32, build family `VCUSR5-163/239`
 
-**Templates Host APK:** `com.google.android.apps.automotive.templates.host` 1.007.893018827.00-arm64-v8a (`versionCode=18034`)
+**Load-bearing GM/AAOS artifacts:**
+
+| Package | Version | SHA-256 |
+|---|---|---|
+| `com.google.android.apps.automotive.templates.host` | `1.007.893018827.00-arm64-v8a` (`versionCode=18034`) | `0da77a8b895494839cb636c05f0557d15deb4b69d54c122c271f6d6be2fa31e8` |
+| `com.gm.homescreen` | `12` (`versionCode=32`) | `4845b12e4c0e8eb0dc332ae8ff5055cc5952034e95d5cb3709f2a1c79477ec4b` |
+| `com.android.systemui` | `12` (`versionCode=32`) | `61e1fe5cc6641e4fe4dc708aac9084eecab541ce7002982560a68357baee0b21` |
+| `com.gm.hmi.androidauto` | `1.0` (`versionCode=1`) | `d53e783bef22423c2160a216bd7cefa1b8cf15ca6106137197af4d3a0021401c` |
 
 **Phone Maps refreshed:** 26.32.06.958047303 (`versionCode=1068717991`; XAPK SHA-256 `67b4f29201baa43aa04061d952ee6c3b3ecd5d1b92ab82bdece1c00b1cacbec3`; base APK SHA-256 `3d40ac68458ae0c573ce4d99e5082159d3d5369feb091b11700ba8064e535e0a`)
 
 **Phone Spotify refreshed:** 9.1.72.1891 (`versionCode=144716725`; XAPK SHA-256 `db0cee9975c9599535dd3b5520e0e69e42284e12b9f7049d60e80e8f74db27dd`; base APK SHA-256 `946aa2b57107f1c9fd387512b8c80951a5f8af9843d86107babb635fcf67cc91`)
 
-**Method:** targeted inspection of the GM/AAOS packages, an in-car Maps build, current phone APK manifests, the current Maps presentation gate, and selected Spotify classes. The conclusions below summarize the decisive evidence and do not require access to local decompile output. Heavy decompilation was avoided.
+**Method:** targeted inspection of the identified GM/AAOS packages, current phone
+APK manifests, the current Maps presentation gate, and selected Spotify classes.
+A legacy in-car Maps Java corpus was used only as contextual corroboration; its
+original APK identity was not retained, so no load-bearing feasibility conclusion
+rests solely on it. The conclusions below summarize the decisive evidence and do
+not require access to local decompile output. Heavy decompilation was avoided.
 
 ## Executive conclusion
 
@@ -129,7 +141,12 @@ The verifier calls GMS `GoogleCertificatesLookupQuery`/`GoogleCertificatesLookup
 
 ## 5. Native AAOS Maps is a separate product
 
-The analyzed in-car Maps build is distinct from the phone APK. It contains Android for Cars App Library models plus EV-energy/navigation logic of the same kind used by OAL's battery/range integration.
+A legacy in-car Maps Java corpus—retained without its original APK identity—shows
+Android for Cars App Library models plus EV-energy/navigation logic of the same
+kind used by OAL's battery/range integration. Treat that corpus as contextual
+corroboration only. The load-bearing product boundary here comes from the
+identified GM homescreen/SystemUI artifacts: native apps run as separate tasks,
+while embedding/reparenting another app requires system task-organizer authority.
 
 Native AAOS Maps can be:
 
