@@ -336,6 +336,19 @@ If your car doesn't have a built-in WiFi hotspot:
 - **Uninstall or disable music apps on the head unit.** If Spotify, YouTube Music, or another music app is installed on both the AAOS head unit and the phone, media controls (steering wheel buttons, play/pause, skip) can get confused — the car may try to control the AAOS app and the AA app simultaneously. Uninstall or disable the AAOS versions (Settings → Apps) so media controls go exclusively to the phone's AA session.
 - **Disable the car's "Hey Google" detection.** The AAOS built-in Google Assistant and Android Auto's assistant will both try to respond to "Hey Google," causing conflicts. Turn off "Hey Google" detection in the car's Settings → Google → Google Assistant. The steering wheel voice button will still trigger the car's built-in assistant (this can't be changed), but "Hey Google" will go exclusively to the AA session on the phone.
 
+#### Keep phone calls inside Android Auto (GM vehicles)
+
+By default, GM's native Phone app takes over the center display when a call arrives or is answered. Change these two settings once to keep Android Auto on screen and use Android Auto's Answer, Decline, and in-call controls:
+
+1. Open the car's native **Phone** app.
+2. Tap the **Settings** gear.
+3. Turn **Active Call** **OFF**. Its description is **“Show active call view when answering call.”**
+4. Turn **Privacy** **ON**. Its description is **“Only show call alerts in cluster.”**
+
+The result is the intended Android Auto call experience: Android Auto displays and controls the call, while the car's native Bluetooth hands-free system carries the microphone and speaker audio.
+
+> **Leave the Bluetooth profile named Phone Calls enabled** for your phone. It carries the call audio and, on Android Auto 17.4+, keeps the Bluetooth link needed to start wireless projection. Do not confuse it with the two Phone-app display settings above.
+
 ## Video and Display
 
 ### Resolution Tiers
