@@ -11,7 +11,7 @@
 
 > # Android Auto 17.4 broke wireless — OpenAutoLink has it working again
 >
-> **Wireless projection is restored, with sustained video and touch.** It needs a few setup changes, and recovery after a disconnect is still being smoothed out.
+> **Wireless projection is restored, with sustained video and touch.** It needs a few setup changes.
 >
 > 17.4 ships `WirelessStartupReceiver` with `android:enabled="false"`, and the activity it forwards to is not exported. The broadcast every third-party wireless implementation relied on is now silently swallowed — `result=0`, no log, no error. Even `adb pm enable` is refused.
 >
@@ -29,12 +29,6 @@
 > 6. A manually saved profile for the car's Wi-Fi network is optional. Keep it if your car has an active data plan and you want the phone to use the car for internet. If the car has no internet, or duplicate entries cause rough handoffs, forget the manually saved profile and let Android Auto create its local-only WPP connection. See [Saved car Wi-Fi profile and internet](#saved-car-wi-fi-profile-and-internet).
 >
 > The companion app is required in this mode — it holds the network path open on the phone side. A walkthrough video is coming shortly.
->
-> ### Expect some bumps
->
-> Connecting is reliable. Recovering from a disconnect is better than it was but not finished — an ignition cycle may show a brief error before it connects, and dropping Wi-Fi or toggling Bluetooth may need a retry. Logs are welcome: [open an issue](https://github.com/mossyhub/openautolink/issues).
->
-> USB remains the reliable fallback: Settings → Transport → USB. *(On GM head units USB re-prompts for permission on every connect — a separate, known GM AAOS bug.)*
 >
 > Background: [#66](https://github.com/mossyhub/openautolink/issues/66)
 
@@ -142,7 +136,7 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 - **Steering wheel controls** — media, voice, and DPAD forwarded to AA
 - **Configurable display** — fullscreen/windowed, safe area insets, DPI, margins, scaling mode
 - **Stats overlay** — codec, resolution, FPS, bitrate, WiFi band, decoder info
-- **Automatic reconnect** — car sleep → wake → projection resumes on its own (see the 17.4 notice for current rough edges)
+- **Automatic reconnect** — car sleep → wake → projection resumes on its own
 - **Built-in diagnostics** — USB device scanner, network probe, remote log server (TCP 6555), VHAL browser
 
 ## EV Range Estimates
@@ -383,7 +377,6 @@ The original architecture used an SBC (single-board computer) running a C++ brid
 ## Known Issues
 
 - **Android Auto 17.4+ needs the new setup** — wireless works, but only over Wireless (WPP) with Bluetooth paired and the car re-paired after updating. See the [notice at the top](#aa174).
-- **Recovery after a disconnect is imperfect** — an ignition cycle may show a brief error before it connects, and dropping WiFi or toggling Bluetooth may need a retry. Being worked on; USB is the reliable fallback.
 - **H.265 video may appear green-tinted** on first connection for 30–45 seconds. May be Qualcomm-specific — not yet confirmed on other SoCs
 
 If you encounter other problems, please [open an issue](https://github.com/mossyhub/openautolink/issues).
