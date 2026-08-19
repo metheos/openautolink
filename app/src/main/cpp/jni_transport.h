@@ -80,6 +80,7 @@ private:
     // JNI method IDs (cached on construction)
     jmethodID readMethodId_ = nullptr;
     jmethodID writeMethodId_ = nullptr;
+    jmethodID closeMethodId_ = nullptr;
 };
 
 } // namespace openautolink::jni

@@ -61,8 +61,10 @@ class UsbTransportPipe(
                     if (off > 0) System.arraycopy(buffer, 0, b, off, result)
                     return result
                 }
-                if (result < 0 && closed) throw IOException("USB pipe closed")
-                // result == 0 or timeout: retry
+                if (closed) throw IOException("USB pipe closed")
+                // A timeout/error is a bounded empty poll. Returning to JNI lets
+                // its stopped flag end teardown even if Java close is unavailable.
+                if (result <= 0) return 0
             }
             throw IOException("USB pipe closed")
         }

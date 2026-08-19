@@ -2,6 +2,7 @@ package com.openautolink.app.transport.aasdk
 
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 
 /**
  * Bidirectional byte pipe that the native aasdk transport reads/writes through.
@@ -19,6 +20,10 @@ class AasdkTransportPipe(
     private val inputStream: InputStream,
     private val outputStream: OutputStream
 ) {
+    companion object {
+        const val READ_POLL_TIMEOUT_MS = 1000
+    }
+
     /**
      * Read up to [maxSize] bytes from the TCP input stream.
      * Called from native read thread — blocks until data is available.
@@ -28,10 +33,14 @@ class AasdkTransportPipe(
         val buffer = ByteArray(maxSize)
         val bytesRead = try {
             inputStream.read(buffer, 0, maxSize)
-        } catch (e: Exception) {
+        } catch (_: SocketTimeoutException) {
+            // A bounded socket poll keeps the native loop responsive to stop().
+            return ByteArray(0)
+        } catch (_: Exception) {
             return null
         }
-        if (bytesRead <= 0) return null
+        if (bytesRead < 0) return null
+        if (bytesRead == 0) return ByteArray(0)
         return if (bytesRead == maxSize) buffer else buffer.copyOf(bytesRead)
     }
 
