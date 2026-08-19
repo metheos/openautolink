@@ -57,8 +57,10 @@ secrets/
 app_v1/
 
 # Reverse engineering / teardown artifacts
-Gmaps_teardown/  # legacy name
-teardowns/       # current name
+# Legacy name retained for older worktrees.
+Gmaps_teardown/
+# Current teardown corpus.
+teardowns/
 recon_dump/
 
 # Temp files
