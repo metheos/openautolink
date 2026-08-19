@@ -355,6 +355,7 @@ private:
         bool hideClock = false;
         bool hideSignal = false;
         bool hideBattery = false;
+        bool gpsForwarding = true;
         bool autoNegotiate = true;
         std::string videoCodec = "h265";
         int realDensity = 0;

@@ -542,6 +542,7 @@ class SessionManager(
 
     // Direct mode location listener
     private var _directLocationListener: android.location.LocationListener? = null
+    private var gpsForwardingEnabled: Boolean = true
 
     // Navigation display
     private val _navigationDisplay: NavigationDisplay = NavigationDisplayImpl()
@@ -855,10 +856,12 @@ class SessionManager(
         safeAreaBottom: Int = 0,
         safeAreaLeft: Int = 0,
         safeAreaRight: Int = 0,
+        gpsForwarding: Boolean = true,
     ) {
         // Cache for later reconnects that don't know the resolved IP (e.g.
         // Settings "Save & Reconnect" in Car Hotspot mode).
         if (!manualIpAddress.isNullOrBlank()) _lastManualIpAddress = manualIpAddress
+        gpsForwardingEnabled = gpsForwarding
         micSource = micSourcePreference
         observeJob?.cancel()
 
@@ -1133,7 +1136,8 @@ class SessionManager(
                 videoFps,
                 driveSide, hideClock, hideSignal, hideBattery, scalingMode,
                 manualIpAddress,
-                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight)
+                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+                gpsForwarding)
         }
 
         // Listen for system sleep so we can gracefully tear down before the
@@ -1156,6 +1160,7 @@ class SessionManager(
         scalingMode: String = "letterbox",
         manualIpAddress: String? = null,
         safeAreaTop: Int = 0, safeAreaBottom: Int = 0, safeAreaLeft: Int = 0, safeAreaRight: Int = 0,
+        gpsForwarding: Boolean = true,
     ) {
         aasdkSession?.stop()
         _transportMode.value = directTransport
@@ -1397,6 +1402,7 @@ class SessionManager(
             hideClock = hideClock,
             hideSignal = hideSignal,
             hideBattery = hideBattery,
+            gpsForwarding = gpsForwarding,
             autoNegotiate = videoAutoNegotiate,
             videoCodec = codec,
             // realDensity removed — interferes with pixel_aspect_ratio_e4 on some AA versions
@@ -1533,6 +1539,10 @@ class SessionManager(
     @android.annotation.SuppressLint("MissingPermission")
     private fun startLocationForwarding(session: AasdkSession) {
         stopDirectLocationForwarding()
+        if (!gpsForwardingEnabled) {
+            OalLog.i(TAG, "GPS forwarding disabled by setting — phone will use its own location")
+            return
+        }
         val ctx = context ?: return
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager ?: return
         if (!lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
@@ -1717,6 +1727,7 @@ class SessionManager(
         safeAreaBottom: Int = 0,
         safeAreaLeft: Int = 0,
         safeAreaRight: Int = 0,
+        gpsForwarding: Boolean = true,
     ) {
         // "Save & Reconnect" from Settings doesn't know the resolved Car
         // Hotspot IP — fall back to the last value we successfully used so
@@ -1735,6 +1746,7 @@ class SessionManager(
                 driveSide, hideClock, hideSignal, hideBattery,
                 volumeOffsetMedia, volumeOffsetNavigation, volumeOffsetAssistant,
                 effectiveManualIp, safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+                gpsForwarding,
             )
             return
         }
@@ -1773,6 +1785,7 @@ class SessionManager(
         }
         reconnectInProgress = true
         reconnectStartedAt = System.currentTimeMillis()
+        gpsForwardingEnabled = gpsForwarding
         OalLog.i(TAG, "Reconnecting AA session with new settings (minimal restart)")
         micSource = micSourcePreference
 
@@ -1815,6 +1828,7 @@ class SessionManager(
                     videoFps, driveSide, hideClock, hideSignal, hideBattery,
                     volumeOffsetMedia, volumeOffsetNavigation, volumeOffsetAssistant,
                     effectiveManualIp, safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+                    gpsForwarding,
                 )
             } catch (e: Exception) {
                 OalLog.e(TAG, "reconnect() failed: ${e.message}")
@@ -1840,6 +1854,7 @@ class SessionManager(
         volumeOffsetMedia: Int, volumeOffsetNavigation: Int, volumeOffsetAssistant: Int,
         manualIpAddress: String?,
         safeAreaTop: Int, safeAreaBottom: Int, safeAreaLeft: Int, safeAreaRight: Int,
+        gpsForwarding: Boolean,
     ) {
         observeJob = null
         decoderWatchJob = null
@@ -1900,7 +1915,8 @@ class SessionManager(
                 videoFps,
                 driveSide, hideClock, hideSignal, hideBattery, scalingMode,
                 manualIpAddress,
-                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight)
+                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+                gpsForwarding)
         }
 
         // 9. Re-establish cluster binding — GM Templates Host may have killed

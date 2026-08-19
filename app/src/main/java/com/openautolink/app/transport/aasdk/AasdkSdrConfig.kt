@@ -62,6 +62,9 @@ class AasdkSdrConfig(
     /** Hide battery indicator in AA status bar. */
     @JvmField val hideBattery: Boolean = false,
 
+    /** Advertise and send the head unit's location to Android Auto. */
+    @JvmField val gpsForwarding: Boolean = true,
+
     /** Auto-negotiate video: true = send all resolutions/codecs, false = send only the configured one. */
     @JvmField val autoNegotiate: Boolean = true,
 

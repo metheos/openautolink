@@ -620,6 +620,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val hideClock = preferences.hideAaClock.first()
             val hideSignal = preferences.hidePhoneSignal.first()
             val hideBattery = preferences.hideBatteryLevel.first()
+            val gpsForwarding = preferences.gpsForwarding.first()
             val volMedia = preferences.volumeOffsetMedia.first()
             val volNav = preferences.volumeOffsetNavigation.first()
             val volAssistant = preferences.volumeOffsetAssistant.first()
@@ -660,6 +661,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 safeAreaBottom = saBottom,
                 safeAreaLeft = saLeft,
                 safeAreaRight = saRight,
+                gpsForwarding = gpsForwarding,
             )
         }
     }
