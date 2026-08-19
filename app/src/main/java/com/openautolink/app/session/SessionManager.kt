@@ -82,6 +82,9 @@ class SessionManager(
          * goodbye is never worth delaying shutdown for.
          */
         private const val BYEBYE_TIMEOUT_MS = 400
+        private const val STREAM_MUTE_CHANGED_ACTION = "android.media.STREAM_MUTE_CHANGED_ACTION"
+        private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
+        private const val EXTRA_STREAM_VOLUME_MUTED = "android.media.EXTRA_STREAM_VOLUME_MUTED"
 
         // aasdk SensorType ordinals (app/src/main/proto/oal/sensors.proto).
         // Used to answer the phone's SensorStartRequest with current state.
@@ -883,6 +886,9 @@ class SessionManager(
 
     /** SCREEN_OFF/_ON receiver registration tracker. */
     private var screenReceiver: android.content.BroadcastReceiver? = null
+    /** Mirrors AAOS STREAM_MUSIC mute state into AA audio focus. */
+    private var muteStateReceiver: android.content.BroadcastReceiver? = null
+    @Volatile private var lastKnownHuMuted: Boolean? = null
 
     private fun currentUiNightMode(): Boolean? {
         val nightMask = context?.resources?.configuration?.uiMode?.and(Configuration.UI_MODE_NIGHT_MASK)
@@ -1727,6 +1733,7 @@ class SessionManager(
         // Without this, a parked car never sends driving status and the phone
         // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.
         session.onSensorSubscribedListener = { type -> onPhoneSubscribedSensor(type) }
+        syncHuMuteStateToPhone("session_start")
         // Reset the mirrored reconnect counter at session boundary. The
         // per-session collector below will republish updates as they fire.
         _reconnectAttempt.value = 0
@@ -1961,6 +1968,7 @@ class SessionManager(
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.releaseActivePhone()
 
         unregisterScreenReceiver()
+        unregisterMuteStateReceiver()
         unregisterDebugReceiver()
         if (cancelObserveJob) observeJob?.cancelAndJoin()
         observeJob = null
@@ -2608,6 +2616,66 @@ class SessionManager(
             try { ctx.unregisterReceiver(it) } catch (_: Exception) {}
         }
         screenReceiver = null
+    }
+
+    private fun registerMuteStateReceiver() {
+        if (muteStateReceiver != null) return
+        val ctx = context ?: return
+        val manager = audioManager ?: return
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                if (intent?.action != STREAM_MUTE_CHANGED_ACTION) return
+                val stream = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1)
+                if (stream != AudioManager.STREAM_MUSIC) return
+                val muted = if (intent.hasExtra(EXTRA_STREAM_VOLUME_MUTED)) {
+                    intent.getBooleanExtra(EXTRA_STREAM_VOLUME_MUTED, false)
+                } else {
+                    runCatching { manager.isStreamMute(AudioManager.STREAM_MUSIC) }
+                        .getOrDefault(false)
+                }
+                applyHuMuteState(muted, "broadcast")
+            }
+        }
+        val filter = android.content.IntentFilter(STREAM_MUTE_CHANGED_ACTION)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                ctx.registerReceiver(receiver, filter)
+            }
+            muteStateReceiver = receiver
+            OalLog.i(TAG, "Mute-state receiver registered")
+            syncHuMuteStateToPhone("receiver_registered")
+        } catch (e: Exception) {
+            OalLog.w(TAG, "Mute-state receiver registration failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterMuteStateReceiver() {
+        val ctx = context ?: return
+        muteStateReceiver?.let {
+            try { ctx.unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        muteStateReceiver = null
+        lastKnownHuMuted = null
+    }
+
+    private fun syncHuMuteStateToPhone(reason: String) {
+        val manager = audioManager ?: return
+        val muted = runCatching { manager.isStreamMute(AudioManager.STREAM_MUSIC) }
+            .getOrElse {
+                OalLog.w(TAG, "Failed to read HU mute state ($reason): ${it.message}")
+                return
+            }
+        applyHuMuteState(muted, reason)
+    }
+
+    private fun applyHuMuteState(muted: Boolean, reason: String) {
+        if (lastKnownHuMuted == muted) return
+        lastKnownHuMuted = muted
+        OalLog.i(TAG, "HU mute changed: muted=$muted source=$reason")
+        aasdkSession?.setHeadUnitMuted(muted)
     }
 
     // ------------------------------------------------------------------

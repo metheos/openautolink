@@ -261,6 +261,20 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeRequestKeyframe(
     }
 }
 
+/*
+ * Class:     com_openautolink_app_transport_aasdk_AasdkNative
+ * Method:    nativeSetHuMuted
+ */
+JNIEXPORT void JNICALL
+Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSetHuMuted(
+    JNIEnv* /*env*/, jclass /*clazz*/, jboolean muted)
+{
+    std::lock_guard<std::mutex> lock(gSessionMutex);
+    if (gSession) {
+        gSession->setHeadUnitMuted(muted == JNI_TRUE);
+    }
+}
+
 // Typed vehicle sensor JNI methods — each calls the corresponding C++ method
 // that builds the correct SensorBatch protobuf and sends via sensorChannel_.
 

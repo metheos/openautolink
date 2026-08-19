@@ -134,6 +134,13 @@ object AasdkNative {
     @JvmStatic
     external fun nativeRequestKeyframe()
 
+    /**
+     * Notify native aasdk when the head unit media stream mute state changes.
+     * Native maps this to unsolicited audio-focus loss/gain for the phone.
+     */
+    @JvmStatic
+    external fun nativeSetHuMuted(muted: Boolean)
+
     @JvmStatic
     external fun nativeIsStreaming(): Boolean
 }
