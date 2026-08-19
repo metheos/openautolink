@@ -33,6 +33,7 @@ JniTransport::JniTransport(boost::asio::io_service& ioService, JavaVM* jvm, jobj
         jclass cls = env->GetObjectClass(javaTransport_);
         readMethodId_ = env->GetMethodID(cls, "readBytes", "(I)[B");
         writeMethodId_ = env->GetMethodID(cls, "writeBytes", "([B)V");
+        closeMethodId_ = env->GetMethodID(cls, "close", "()V");
         env->DeleteLocalRef(cls);
     }
 
@@ -154,11 +155,38 @@ void JniTransport::stop()
 
     LOGI("JniTransport stopping");
 
-    // Wake up read thread
+    // readThread_ is blocked inside AasdkTransportPipe.readBytes(). Closing the
+    // Java pipe first closes the socket streams and releases that blocking read;
+    // joining before this call creates an unbreakable wait cycle.
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    jint result = jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (result == JNI_EDETACHED) {
+        result = jvm_->AttachCurrentThread(&env, nullptr);
+        attached = result == JNI_OK;
+        if (!attached) env = nullptr;
+    } else if (result != JNI_OK) {
+        env = nullptr;
+    }
+    if (env && closeMethodId_) {
+        env->CallVoidMethod(javaTransport_, closeMethodId_);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+            LOGW("Java transport pipe close threw before read-thread join");
+        } else {
+            LOGI("Java transport pipe closed before read-thread join");
+        }
+    } else {
+        LOGW("Cannot call Java transport close — relying on bounded read poll before join");
+    }
+    if (attached) jvm_->DetachCurrentThread();
+
     receiveCv_.notify_all();
 
     if (readThread_.joinable()) {
         readThread_.join();
+        LOGI("Read thread joined after transport close");
     }
 
     // Reject all pending receive promises

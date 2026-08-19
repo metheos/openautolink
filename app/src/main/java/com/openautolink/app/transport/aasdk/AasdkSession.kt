@@ -422,6 +422,14 @@ class AasdkSession(
             }
         }
 
+        try {
+            socket.soTimeout = AasdkTransportPipe.READ_POLL_TIMEOUT_MS
+        } catch (e: Exception) {
+            OalLog.e(TAG, "Cannot bound TCP read for safe teardown: ${e.message}")
+            runCatching { socket.close() }
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
         val input = socket.getInputStream()
         val output = socket.getOutputStream()
 
@@ -472,9 +480,11 @@ class AasdkSession(
         _wppServer = null
         _usbConnectionManager?.stop()
         _usbConnectionManager = null
-        AasdkNative.nativeStopSession()
-        transportPipe?.close()
-        transportPipe = null
+        transportPipe = NativeTransportTeardown.closePipeBeforeNativeStop(transportPipe) {
+            OalLog.i(TAG, "Transport pipe closed — stopping native session")
+            AasdkNative.nativeStopSession()
+            OalLog.i(TAG, "Native session stop completed after transport close")
+        }
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 
@@ -503,9 +513,11 @@ class AasdkSession(
             _wppServer = null
             _usbConnectionManager?.stop()
             _usbConnectionManager = null
-            AasdkNative.nativeStopSession()
-            transportPipe?.close()
-            transportPipe = null
+            transportPipe = NativeTransportTeardown.closePipeBeforeNativeStop(transportPipe) {
+                OalLog.i(TAG, "Transport pipe closed — stopping native session")
+                AasdkNative.nativeStopSession()
+                OalLog.i(TAG, "Native session stop completed after transport close")
+            }
             _connectionState.value = ConnectionState.DISCONNECTED
             // Now clear the explicitStop flag so the freshly-started session can
             // auto-reconnect normally if its connection later dies.
