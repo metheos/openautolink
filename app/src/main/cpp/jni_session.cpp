@@ -248,6 +248,7 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     sdrConfig_.hideClock = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideClock", "Z"));
     sdrConfig_.hideSignal = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideSignal", "Z"));
     sdrConfig_.hideBattery = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "hideBattery", "Z"));
+    sdrConfig_.gpsForwarding = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "gpsForwarding", "Z"));
     sdrConfig_.autoNegotiate = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "autoNegotiate", "Z"));
     sdrConfig_.videoCodec = readString("videoCodec");
     sdrConfig_.realDensity = env->GetIntField(sdrConfig, env->GetFieldID(sdrClass, "realDensity", "I"));
@@ -1551,7 +1552,9 @@ void JniSession::buildServiceDiscoveryResponse(
       namespace ST = aap_protobuf::service::sensorsource::message;
       auto* ss = svc->mutable_sensor_source_service();
       ss->add_sensors()->set_sensor_type(ST::SENSOR_DRIVING_STATUS_DATA);
-      ss->add_sensors()->set_sensor_type(ST::SENSOR_LOCATION);
+      if (sdrConfig_.gpsForwarding) {
+          ss->add_sensors()->set_sensor_type(ST::SENSOR_LOCATION);
+      }
       ss->add_sensors()->set_sensor_type(ST::SENSOR_NIGHT_MODE);
       ss->add_sensors()->set_sensor_type(ST::SENSOR_SPEED);
       ss->add_sensors()->set_sensor_type(ST::SENSOR_GEAR);
@@ -1586,7 +1589,8 @@ void JniSession::buildServiceDiscoveryResponse(
               ss->add_supported_ev_connector_types(static_cast<FT::EvConnectorType>(ct));
           }
       }
-      LOGI("SDR sensor: %zu fuel types, %zu ev connectors",
+      LOGI("SDR sensor: location=%s, %zu fuel types, %zu ev connectors",
+           sdrConfig_.gpsForwarding ? "advertised" : "omitted",
            sdrConfig_.fuelTypes.empty() ? 1u : sdrConfig_.fuelTypes.size(),
            sdrConfig_.evConnectorTypes.empty() ? 2u : sdrConfig_.evConnectorTypes.size());
     }

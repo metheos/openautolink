@@ -594,6 +594,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val hideClock = preferences.hideAaClock.first()
             val hideSignal = preferences.hidePhoneSignal.first()
             val hideBattery = preferences.hideBatteryLevel.first()
+            val gpsForwarding = preferences.gpsForwarding.first()
 
             // Safe area insets
             val saTop = preferences.safeAreaTop.first()
@@ -797,6 +798,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 safeAreaBottom = saBottom,
                 safeAreaLeft = saLeft,
                 safeAreaRight = saRight,
+                gpsForwarding = gpsForwarding,
             )
     }
 

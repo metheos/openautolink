@@ -186,6 +186,7 @@ class SettingsReceiver : BroadcastReceiver() {
                     aaAutoMargins = prefs.aaAutoMargins.first(),
                     videoFps = prefs.videoFps.first(),
                     driveSide = prefs.driveSide.first(),
+                    gpsForwarding = prefs.gpsForwarding.first(),
                     manualIpAddress = if (prefs.manualIpEnabled.first())
                         prefs.manualIpAddress.first().takeIf { it.isNotBlank() } else null,
                 )
