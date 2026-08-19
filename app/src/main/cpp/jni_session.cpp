@@ -687,13 +687,38 @@ void JniSession::onAudioFocusRequest(
 
 void JniSession::sendUnsolicitedAudioFocusGain()
 {
-    LOGI("Sending unsolicited AUDIO_FOCUS_STATE_GAIN");
-    aap_protobuf::service::control::message::AudioFocusNotification notification;
-    notification.set_focus_state(aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN);
-    notification.set_unsolicited(true);
-    auto promise = aasdk::channel::SendPromise::defer(*strand_);
-    promise->then([]() {}, [this](const auto& e) { this->onChannelError(e); });
-    controlChannel_->sendAudioFocusResponse(notification, std::move(promise));
+    auto focus = headUnitMuted_.load()
+        ? aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_LOSS
+        : aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN;
+    sendUnsolicitedAudioFocusState(static_cast<int>(focus));
+}
+
+void JniSession::setHeadUnitMuted(bool muted)
+{
+    bool previous = headUnitMuted_.exchange(muted);
+    if (previous == muted) return;
+
+    LOGI("HU mute state changed: %s", muted ? "muted" : "unmuted");
+    auto focus = muted
+        ? aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_LOSS
+        : aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN;
+    sendUnsolicitedAudioFocusState(static_cast<int>(focus));
+}
+
+void JniSession::sendUnsolicitedAudioFocusState(int state)
+{
+    auto self = shared_from_this();
+    ioService_->post([this, self, state]() {
+        if (stopped_ || !controlChannel_ || !strand_) return;
+        LOGI("Sending unsolicited audio focus state=%d", state);
+        aap_protobuf::service::control::message::AudioFocusNotification notification;
+        notification.set_focus_state(
+            static_cast<aap_protobuf::service::control::message::AudioFocusStateType>(state));
+        notification.set_unsolicited(true);
+        auto promise = aasdk::channel::SendPromise::defer(*strand_);
+        promise->then([]() {}, [this](const auto& e) { this->onChannelError(e); });
+        controlChannel_->sendAudioFocusResponse(notification, std::move(promise));
+    });
 }
 
 void JniSession::onNavigationFocusRequest(

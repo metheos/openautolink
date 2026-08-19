@@ -155,6 +155,9 @@ public:
     /** Send unsolicited AUDIO_FOCUS_STATE_GAIN to phone. */
     void sendUnsolicitedAudioFocusGain();
 
+    /** Mirror HU mute/unmute into unsolicited AA audio-focus notifications. */
+    void setHeadUnitMuted(bool muted);
+
     // ---- IControlServiceChannelEventHandler ----
     void onVersionResponse(uint16_t majorCode, uint16_t minorCode,
                            aap_protobuf::shared::MessageStatus status) override;
@@ -281,6 +284,7 @@ private:
     std::atomic<bool> pingOutstanding_{false};
     std::atomic<bool> aborted_{false};
     std::atomic<bool> sessionStoppedFired_{false};
+    std::atomic<bool> headUnitMuted_{false};
     // Reason string passed to Kotlin onSessionStopped. Defaults to "stopped";
     // ByeByeRequest from phone overrides this (e.g. "byebye_user_selection" when
     // the user taps the Exit button in the AA app launcher) so Kotlin can decide
@@ -310,6 +314,7 @@ private:
 
     void sendPing();
     void schedulePing();
+    void sendUnsolicitedAudioFocusState(int state);
 
 public:
     /**

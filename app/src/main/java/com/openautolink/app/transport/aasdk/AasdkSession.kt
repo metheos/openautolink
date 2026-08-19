@@ -602,6 +602,14 @@ class AasdkSession(
     }
 
     /**
+     * Mirrors AAOS stream mute state into AA so phone apps can react
+     * (e.g., pause/resume on mute/unmute).
+     */
+    fun setHeadUnitMuted(muted: Boolean) {
+        AasdkNative.nativeSetHuMuted(muted)
+    }
+
+    /**
      * Invoked when the phone subscribes to a sensor type, so the owner
      * (SessionManager) can push current vehicle state immediately instead of
      * waiting for a VHAL change event that a parked car never produces.
