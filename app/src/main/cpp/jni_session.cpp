@@ -251,6 +251,18 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     sdrConfig_.gpsForwarding = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "gpsForwarding", "Z"));
     sdrConfig_.autoNegotiate = env->GetBooleanField(sdrConfig, env->GetFieldID(sdrClass, "autoNegotiate", "Z"));
     sdrConfig_.videoCodec = readString("videoCodec");
+    sdrConfig_.experimentalGal6 = env->GetBooleanField(
+        sdrConfig, env->GetFieldID(sdrClass, "experimentalGal6", "Z")) != JNI_FALSE;
+    sdrConfig_.requestedGalMajor = env->GetIntField(
+        sdrConfig, env->GetFieldID(sdrClass, "requestedGalMajor", "I"));
+    sdrConfig_.requestedGalMinor = env->GetIntField(
+        sdrConfig, env->GetFieldID(sdrClass, "requestedGalMinor", "I"));
+    sdrConfig_.mediaSetupMaxUnacked = env->GetIntField(
+        sdrConfig, env->GetFieldID(sdrClass, "mediaSetupMaxUnacked", "I"));
+    sdrConfig_.sendAudioAcks = env->GetBooleanField(
+        sdrConfig, env->GetFieldID(sdrClass, "sendAudioAcks", "Z")) != JNI_FALSE;
+    sdrConfig_.hevcKeyframeIntervalSeconds = env->GetIntField(
+        sdrConfig, env->GetFieldID(sdrClass, "hevcKeyframeIntervalSeconds", "I"));
     sdrConfig_.realDensity = env->GetIntField(sdrConfig, env->GetFieldID(sdrClass, "realDensity", "I"));
     sdrConfig_.safeAreaTop = env->GetIntField(sdrConfig, env->GetFieldID(sdrClass, "safeAreaTop", "I"));
     sdrConfig_.safeAreaBottom = env->GetIntField(sdrConfig, env->GetFieldID(sdrClass, "safeAreaBottom", "I"));
@@ -278,6 +290,22 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     sdrConfig_.evConnectorTypes = readIntArray("evConnectorTypes");
 
     env->DeleteLocalRef(sdrClass);
+
+    const int requestedMajor = sdrConfig_.requestedGalMajor;
+    const int requestedMinor = sdrConfig_.requestedGalMinor;
+    requestedGalMajor_.store(requestedMajor);
+    requestedGalMinor_.store(requestedMinor);
+    const int expectedGop = expectedHevcGopFrames();
+    LOGI("GAL policy: requested=%d.%d experimental=%d maxUnacked=%d "
+         "audioAcks=%d expectedHevcGopFrames=%d",
+         requestedMajor, requestedMinor, sdrConfig_.experimentalGal6 ? 1 : 0,
+         mediaSetupMaxUnacked(), shouldSendAudioAcks() ? 1 : 0, expectedGop);
+    nativeDiag(1, "gal6", "GAL policy: requested=" + std::to_string(requestedMajor) +
+               "." + std::to_string(requestedMinor) +
+               " experimental=" + (sdrConfig_.experimentalGal6 ? "true" : "false") +
+               " maxUnacked=" + std::to_string(mediaSetupMaxUnacked()) +
+               " audioAcks=" + (shouldSendAudioAcks() ? "true" : "false") +
+               " expectedHevcGopFrames=" + std::to_string(expectedGop));
 
     LOGI("Starting session: video=%dx%d@%dfps dpi=%d realDpi=%d pixelAspect=%d marginW=%d marginH=%d viewDistMm=%d decAddDepth=%d autoNeg=%d codec=%s targetLayoutDp=%d",
          sdrConfig_.videoWidth, sdrConfig_.videoHeight,
@@ -370,8 +398,12 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
                 *strand_, messenger_);
         }
 
-        // 5. Initiate version exchange (request v1.7 — DHU uses 1.7, aasdk defaults to 1.6)
-        LOGI("Sending version request (v1.7)...");
+        // 5. Initiate version exchange. Legacy mode preserves 1.7; the
+        // default-off experimental toggle requests 6.0 to activate Gearhead's
+        // modern media envelopes and short HEVC keyframe policy.
+        const uint16_t requestedMajor = static_cast<uint16_t>(requestedGalMajor_.load());
+        const uint16_t requestedMinor = static_cast<uint16_t>(requestedGalMinor_.load());
+        LOGI("Sending version request (v%d.%d)...", requestedMajor, requestedMinor);
         {
             auto message = std::make_shared<aasdk::messenger::Message>(
                 aasdk::messenger::ChannelId::CONTROL,
@@ -381,11 +413,10 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
                 aasdk::messenger::MessageId(
                     aap_protobuf::service::control::message::ControlMessageType::MESSAGE_VERSION_REQUEST).getData());
             aasdk::common::Data versionBuffer(4, 0);
-            uint16_t major = 1, minor = 7;
-            versionBuffer[0] = (major >> 8) & 0xFF;
-            versionBuffer[1] = major & 0xFF;
-            versionBuffer[2] = (minor >> 8) & 0xFF;
-            versionBuffer[3] = minor & 0xFF;
+            versionBuffer[0] = (requestedMajor >> 8) & 0xFF;
+            versionBuffer[1] = requestedMajor & 0xFF;
+            versionBuffer[2] = (requestedMinor >> 8) & 0xFF;
+            versionBuffer[3] = requestedMinor & 0xFF;
             message->insertPayload(versionBuffer);
             auto promise = aasdk::channel::SendPromise::defer(*strand_);
             promise->then([]() {},
@@ -544,6 +575,39 @@ void JniSession::nativeDiag(int level, const char* tag, const std::string& msg)
     releaseEnv(attached);
 }
 
+void JniSession::reportGal6StartEnvelope(
+    const char* channel,
+    const aap_protobuf::service::media::shared::message::Start& indication)
+{
+    if (!sdrConfig_.experimentalGal6) return;
+    const int unknownCount = indication.unknown_fields().field_count();
+    const auto bytes = indication.ByteSizeLong();
+    const int sessionType = indication.has_session_type() ? indication.session_type() : -1;
+    const size_t mediaConfigBytes = indication.has_media_config()
+        ? indication.media_config().size() : 0;
+    const std::string msg = "GAL6 " + std::string(channel) +
+        " Start envelope: session=" + std::to_string(indication.session_id()) +
+        " config_idx=" + std::to_string(indication.configuration_index()) +
+        " session_type=" + std::to_string(sessionType) +
+        " media_config_bytes=" + std::to_string(mediaConfigBytes) +
+        " bytes=" + std::to_string(bytes) +
+        " unknown_fields=" + std::to_string(unknownCount);
+    LOGI("%s", msg.c_str());
+    nativeDiag(1, "gal6", msg);
+}
+
+void JniSession::reportGal6RawEnvelope(
+    const char* channel,
+    const char* envelope,
+    const aasdk::common::DataConstBuffer& buffer)
+{
+    const std::string msg = std::string(envelope) + " channel=" + channel +
+        " bytes=" + std::to_string(buffer.size) +
+        " raw=" + hexDump(buffer.cdata, buffer.size, 128);
+    LOGI("%s", msg.c_str());
+    nativeDiag(1, "gal6", msg);
+}
+
 void JniSession::notifySensorSubscribed(int sensorType)
 {
     if (!cbMethods_.onSensorSubscribed || !callbackRef_) return;
@@ -563,7 +627,25 @@ void JniSession::notifySensorSubscribed(int sensorType)
 void JniSession::onVersionResponse(uint16_t majorCode, uint16_t minorCode,
                                     aap_protobuf::shared::MessageStatus status)
 {
-    LOGI("Version response: %d.%d status=%d", majorCode, minorCode, static_cast<int>(status));
+    LOGI("Version response: %d.%d status=%d (requested=%d.%d experimental=%d)",
+         majorCode, minorCode, static_cast<int>(status),
+         requestedGalMajor_.load(), requestedGalMinor_.load(),
+         sdrConfig_.experimentalGal6 ? 1 : 0);
+    nativeDiag(1, "gal6", "GAL negotiated: requested=" +
+               std::to_string(requestedGalMajor_.load()) + "." +
+               std::to_string(requestedGalMinor_.load()) + " response=" +
+               std::to_string(majorCode) + "." + std::to_string(minorCode) +
+               " status=" + std::to_string(static_cast<int>(status)));
+
+    if (status != aap_protobuf::shared::STATUS_SUCCESS) {
+        const std::string reason = "GAL version negotiation rejected: requested=" +
+            std::to_string(requestedGalMajor_.load()) + "." +
+            std::to_string(requestedGalMinor_.load()) +
+            " status=" + std::to_string(static_cast<int>(status));
+        nativeDiag(3, "gal6", reason);
+        triggerAbort(reason);
+        return;
+    }
 
     try {
         cryptor_->doHandshake();
@@ -958,7 +1040,7 @@ void JniSession::onMediaChannelSetupRequest(
 
     aap_protobuf::service::media::shared::message::Config config;
     config.set_status(aap_protobuf::service::media::shared::message::Config::STATUS_READY);
-    config.set_max_unacked(30);
+    config.set_max_unacked(mediaSetupMaxUnacked());
     if (sdrConfig_.autoNegotiate) {
         // Auto mode: accept every config we advertised.
         int n = advertisedVideoConfigCount_.load();
@@ -994,9 +1076,11 @@ void JniSession::onMediaChannelSetupRequest(
 void JniSession::onMediaChannelStartIndication(
     const aap_protobuf::service::media::shared::message::Start& indication)
 {
+    activeVideoSessionId_.store(indication.session_id());
     LOGI("Video stream starting: session=%d config_idx=%d",
          indication.session_id(), indication.configuration_index());
     logProtoRaw("VideoStart", indication);
+    reportGal6StartEnvelope("video", indication);
     nativeDiag(1, "video", "phone->us VideoStart session=" +
                std::to_string(indication.session_id()) + " config_idx=" +
                std::to_string(indication.configuration_index()) +
@@ -1017,6 +1101,7 @@ void JniSession::onMediaChannelStartIndication(
 void JniSession::onMediaChannelStopIndication(
     const aap_protobuf::service::media::shared::message::Stop& /*indication*/)
 {
+    activeVideoSessionId_.store(0);
     LOGI("Video stream stopping");
     nativeDiag(2, "video", "phone->us VideoStop (stream stopping)");
     videoChannel_->receive(shared_from_this());
@@ -1028,7 +1113,7 @@ void JniSession::onMediaWithTimestampIndication(
 {
     // Hot path Ã¢â‚¬â€ video frame. Send ACK immediately (flow control).
     aap_protobuf::service::media::source::message::Ack ack;
-    ack.set_session_id(0);
+    ack.set_session_id(activeVideoSessionId_.load());
     ack.set_ack(1);
     auto promise = aasdk::channel::SendPromise::defer(*strand_);
     promise->then([]() {}, [](const auto&) {});
@@ -1114,6 +1199,11 @@ void JniSession::onMediaWithTimestampIndication(
 void JniSession::onMediaIndication(const aasdk::common::DataConstBuffer& buffer)
 {
     onMediaWithTimestampIndication(0, buffer);
+}
+
+void JniSession::onMediaOptions(const aasdk::common::DataConstBuffer& buffer)
+{
+    reportGal6RawEnvelope("video", "GAL6 MediaOptions", buffer);
 }
 
 void JniSession::onVideoFocusRequest(
@@ -1406,6 +1496,15 @@ void JniSession::buildServiceDiscoveryResponse(
           if (sdrConfig_.viewingDistanceMm > 0) vc->set_viewing_distance(sdrConfig_.viewingDistanceMm);
           if (sdrConfig_.decoderAdditionalDepth > 0) vc->set_decoder_additional_depth(sdrConfig_.decoderAdditionalDepth);
           applySafeArea(vc);
+          // GAL 4.3+ stops deriving these ownership flags from the legacy
+          // ServiceDiscoveryResponse.session_configuration bitmask. Preserve
+          // the existing user choices in the modern UiConfig envelope.
+          if (sdrConfig_.experimentalGal6) {
+              auto* ui = vc->mutable_ui_config();
+              if (sdrConfig_.hideClock) ui->add_hidden_ui_elements(1);
+              if (sdrConfig_.hideBattery) ui->add_hidden_ui_elements(2);
+              if (sdrConfig_.hideSignal) ui->add_hidden_ui_elements(3);
+          }
       };
 
       auto computeDensity = [&](int tier) -> int {

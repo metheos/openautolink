@@ -153,7 +153,7 @@ void JniAudioSinkHandler::onMediaChannelSetupRequest(
     logProtoRaw("AudioSetup", request);
     aap_protobuf::service::media::shared::message::Config config;
     config.set_status(aap_protobuf::service::media::shared::message::Config::STATUS_READY);
-    config.set_max_unacked(30);
+    config.set_max_unacked(session_.mediaSetupMaxUnacked());
     config.add_configuration_indices(0);
     auto promise = aasdk::channel::SendPromise::defer(strand_);
     promise->then([]() {}, [this](const auto& e) { this->onChannelError(e); });
@@ -167,15 +167,20 @@ void JniAudioSinkHandler::onMediaChannelSetupRequest(
 void JniAudioSinkHandler::onMediaChannelStartIndication(
     const aap_protobuf::service::media::shared::message::Start& indication)
 {
+    activeSessionId_.store(indication.session_id());
     LOGI("Audio start (type=%d) session=%d config_idx=%d", static_cast<int>(type_),
          indication.session_id(), indication.configuration_index());
     logProtoRaw("AudioStart", indication);
+    char channelName[32];
+    snprintf(channelName, sizeof(channelName), "audio[%d]", static_cast<int>(type_));
+    session_.reportGal6StartEnvelope(channelName, indication);
     channel_->receive(shared_from_this());
 }
 
 void JniAudioSinkHandler::onMediaChannelStopIndication(
     const aap_protobuf::service::media::shared::message::Stop& indication)
 {
+    activeSessionId_.store(0);
     LOGI("Audio stop (type=%d)", static_cast<int>(type_));
     logProtoRaw("AudioStop", indication);
     channel_->receive(shared_from_this());
@@ -185,13 +190,16 @@ void JniAudioSinkHandler::onMediaWithTimestampIndication(
     aasdk::messenger::Timestamp::ValueType /*timestamp*/,
     const aasdk::common::DataConstBuffer& buffer)
 {
-    // ACK immediately for flow control
-    aap_protobuf::service::media::source::message::Ack ack;
-    ack.set_session_id(0);
-    ack.set_ack(1);
-    auto promise = aasdk::channel::SendPromise::defer(strand_);
-    promise->then([]() {}, [](const auto&) {});
-    channel_->sendMediaAckIndication(ack, std::move(promise));
+    // GAL 5+/6 audio is ackless. Legacy mode keeps per-frame ACKs and uses
+    // the active Start.session_id rather than the historical hard-coded zero.
+    if (session_.shouldSendAudioAcks()) {
+        aap_protobuf::service::media::source::message::Ack ack;
+        ack.set_session_id(activeSessionId_.load());
+        ack.set_ack(1);
+        auto promise = aasdk::channel::SendPromise::defer(strand_);
+        promise->then([]() {}, [](const auto&) {});
+        channel_->sendMediaAckIndication(ack, std::move(promise));
+    }
 
     // Dispatch to Kotlin via JniSession
     int purpose = purposeFromType();
@@ -205,6 +213,13 @@ void JniAudioSinkHandler::onMediaWithTimestampIndication(
 void JniAudioSinkHandler::onMediaIndication(const aasdk::common::DataConstBuffer& buffer)
 {
     onMediaWithTimestampIndication(0, buffer);
+}
+
+void JniAudioSinkHandler::onMediaOptions(const aasdk::common::DataConstBuffer& buffer)
+{
+    char channelName[32];
+    snprintf(channelName, sizeof(channelName), "audio[%d]", static_cast<int>(type_));
+    session_.reportGal6RawEnvelope(channelName, "GAL6 MediaOptions", buffer);
 }
 
 void JniAudioSinkHandler::onChannelError(const aasdk::error::Error& e)
@@ -777,6 +792,12 @@ void JniNavStatusHandler::onCurrentPosition(
         destDistanceMeters, destDistDisplay, destDistUnit);
 
     channel_->receive(shared_from_this());
+}
+
+void JniNavStatusHandler::onVehicleEnergyForecast(
+    const aasdk::common::DataConstBuffer& buffer)
+{
+    session_.reportGal6RawEnvelope("navigation", "GAL6 VehicleEnergyForecast", buffer);
 }
 
 void JniNavStatusHandler::onChannelError(const aasdk::error::Error& e)

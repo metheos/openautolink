@@ -38,6 +38,7 @@ import kotlinx.coroutines.runBlocking
  *   video_auto_negotiate --ez bvalue <bool>    true/false
  *   video_codec         --es svalue <str>      h264, h265
  *   video_fps           --ei value <int>       30, 60
+ *   experimental_gal6   --ez bvalue <bool>     request GAL/PDK 6.0 (experimental)
  *   direct_transport    --es svalue <str>      hotspot, usb
  *   drive_side          --es svalue <str>      left, right
  *   manual_ip_enabled   --ez bvalue <bool>     true/false
@@ -109,6 +110,10 @@ class SettingsReceiver : BroadcastReceiver() {
                 "video_fps" -> {
                     val v = intent.getIntExtra("value", -1)
                     if (v > 0) { prefs.setVideoFps(v); log("video_fps=$v") }
+                }
+                "experimental_gal6" -> {
+                    val v = intent.getBooleanExtra("bvalue", false)
+                    prefs.setExperimentalGal6(v); log("experimental_gal6=$v")
                 }
                 "direct_transport" -> {
                     val v = intent.getStringExtra("svalue") ?: return@runBlocking
@@ -189,6 +194,7 @@ class SettingsReceiver : BroadcastReceiver() {
                     gpsForwarding = prefs.gpsForwarding.first(),
                     manualIpAddress = if (prefs.manualIpEnabled.first())
                         prefs.manualIpAddress.first().takeIf { it.isNotBlank() } else null,
+                    experimentalGal6 = prefs.experimentalGal6.first(),
                 )
                 OalLog.i("SettingsRcv", "RECONNECT: triggered")
             } catch (e: Exception) {

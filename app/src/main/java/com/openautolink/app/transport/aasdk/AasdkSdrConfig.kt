@@ -71,6 +71,9 @@ class AasdkSdrConfig(
     /** Video codec preference for manual mode: "h264" or "h265". */
     @JvmField val videoCodec: String = "h265",
 
+    /** Request experimental GAL/PDK 6.0 compatibility instead of legacy 1.7. */
+    @JvmField val experimentalGal6: Boolean = false,
+
     /** Physical pixel density of the AAOS display (from DisplayMetrics.densityDpi). */
     @JvmField val realDensity: Int = 0,
 
@@ -121,4 +124,13 @@ class AasdkSdrConfig(
      */
     @JvmField val panelWidth: Int = 0,
     @JvmField val panelHeight: Int = 0,
-)
+) {
+    private val galPolicy = GalProtocolPolicy.forExperimentalGal6(experimentalGal6)
+
+    /** Materialized policy fields consumed directly by JNI; do not re-derive natively. */
+    @JvmField val requestedGalMajor: Int = galPolicy.requestedVersion.major
+    @JvmField val requestedGalMinor: Int = galPolicy.requestedVersion.minor
+    @JvmField val mediaSetupMaxUnacked: Int = galPolicy.maxUnacked
+    @JvmField val sendAudioAcks: Boolean = galPolicy.sendAudioAcks
+    @JvmField val hevcKeyframeIntervalSeconds: Int = galPolicy.hevcKeyframeIntervalSeconds
+}

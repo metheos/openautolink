@@ -33,6 +33,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         val VIDEO_AUTO_NEGOTIATE = booleanPreferencesKey("video_auto_negotiate")
         val VIDEO_CODEC = stringPreferencesKey("video_codec")
         val VIDEO_FPS = intPreferencesKey("video_fps")
+        val EXPERIMENTAL_GAL6 = booleanPreferencesKey("experimental_gal6")
         val DISPLAY_MODE = stringPreferencesKey("display_mode")
         val MIC_SOURCE = stringPreferencesKey("mic_source")
         // Manual override for the head unit's Bluetooth MAC, advertised in
@@ -248,6 +249,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_VIDEO_AUTO_NEGOTIATE = true
         const val DEFAULT_VIDEO_CODEC = "h264"
         const val DEFAULT_VIDEO_FPS = 60
+        const val DEFAULT_EXPERIMENTAL_GAL6 = false
         const val DEFAULT_DISPLAY_MODE = "fullscreen_immersive"
         const val DEFAULT_MIC_SOURCE = "car"
         const val DEFAULT_BT_MAC_OVERRIDE = ""
@@ -389,6 +391,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     val videoFps: Flow<Int> = dataStore.data.map { prefs ->
         prefs[VIDEO_FPS] ?: DEFAULT_VIDEO_FPS
+    }
+
+    val experimentalGal6: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[EXPERIMENTAL_GAL6] ?: DEFAULT_EXPERIMENTAL_GAL6
     }
 
     val displayMode: Flow<String> = dataStore.data.map { prefs ->
@@ -720,6 +726,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setVideoFps(fps: Int) {
         dataStore.edit { it[VIDEO_FPS] = fps }
+    }
+
+    suspend fun setExperimentalGal6(enabled: Boolean) {
+        dataStore.edit { it[EXPERIMENTAL_GAL6] = enabled }
     }
 
     suspend fun setDisplayMode(mode: String) {
