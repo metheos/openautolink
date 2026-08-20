@@ -125,7 +125,7 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 - **USB cable support** — AOA v2 direct connection for wired setups
 - **aasdk v1.6 native protocol** — battle-tested C++ AA library via JNI, not a reimplementation
 - **EV battery data in Android Auto** — battery %, range, fuel type, charge port forwarded from VHAL into AA. Google Maps shows battery level alongside navigation
-- **H.264, H.265, and VP9** video with auto-negotiation. Up to 4K with AA Developer Mode
+- **H.264, H.265, and VP9** video with auto-negotiation. Up to 4K with AA Developer Mode. H.265 startup is verified clean over USB and wireless with GAL 6.0
 - **PCM and AAC-LC audio** — PCM for compatibility, AAC-LC for ~10× WiFi bandwidth reduction
 - **Display adaptation** *(work in progress)* — auto-computed AA scaling so wide and ultra-wide AAOS screens use the full panel without stretching the UI
 - **Per-purpose audio volume** — separate sliders for media, navigation, and assistant
@@ -365,6 +365,11 @@ The result is the intended Android Auto call experience: Android Auto displays a
 
 By default, the app uses auto-negotiation — the phone picks the best codec and resolution it supports.
 
+**H.265 startup is verified clean over USB and wireless.** With GAL 6.0,
+Gearhead uses a 120-frame GOP (one IDR after 119 P-frames), replacing the legacy
+approximately 3,600-frame cadence. In vehicle testing at 2560×1440, the first
+rendered frame arrived in 2.208 seconds over USB and 2.479 seconds wirelessly.
+
 ### Display Adaptation
 
 OpenAutoLink auto-computes a scale for the Android Auto UI, but you will want to tune it for your car's screen using the **DPI** setting.
@@ -392,7 +397,6 @@ The original architecture used an SBC (single-board computer) running a C++ brid
 ## Known Issues
 
 - **Android Auto 17.4+ needs the new setup** — wireless works, but only over Wireless (WPP) with Bluetooth paired and the car re-paired after updating. See the [notice at the top](#aa174).
-- **H.265 video may appear green-tinted** on first connection for 30–45 seconds. May be Qualcomm-specific — not yet confirmed on other SoCs
 
 If you encounter other problems, please [open an issue](https://github.com/mossyhub/openautolink/issues).
 

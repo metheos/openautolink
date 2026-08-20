@@ -1229,9 +1229,9 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         }
         Text(
             text = "Save & Reconnect applies the selected raw HU-requested version. " +
-                    "GAL 6.0 remains an implementation attempt until an in-car log confirms the 6.x response and runtime paths.",
+                    "GAL 6.0 is verified over USB and wireless with H.265 at 1440p.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 20.dp),
         )
 
@@ -1280,10 +1280,9 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Text(
             text = "Video codec the phone uses to encode the AA stream. " +
-                    "H.264 is the safe default — instant clean startup, capped at 1080p. " +
-                    "H.265 supports up to 4K but legacy GAL can take roughly two minutes " +
-                    "to deliver a full content IDR at 60 FPS. GAL 6.0 requests " +
-                    "Gearhead's short HEVC keyframe policy.",
+                    "H.264 supports resolutions through 1080p. H.265 / HEVC supports " +
+                    "1440p and 4K. With GAL 6.0, H.265 startup is verified over USB and wireless " +
+                    "with one IDR every 120 frames.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp)
@@ -1291,8 +1290,8 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         val isHighRes = uiState.aaResolution in listOf("1440p", "4k", "1440p_p", "4k_p")
         listOf(
-            Triple("h264", "H.264", " (Recommended)"),
-            Triple("h265", "H.265 / HEVC", if (isHighRes) " — needed for 1440p/4K" else " — green-startup risk"),
+            Triple("h264", "H.264", " — through 1080p"),
+            Triple("h265", "H.265 / HEVC", if (isHighRes) " — selected for 1440p/4K" else " — supports 1440p/4K"),
             Triple("vp9", "VP9", ""),
         ).forEach { (key, label, suffix) ->
             Row(
