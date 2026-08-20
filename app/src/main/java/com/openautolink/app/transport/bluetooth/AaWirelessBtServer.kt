@@ -349,7 +349,7 @@ class AaWirelessBtServer(
                 // may not be scheduled for several milliseconds.
                 val handshakeLease = AaWirelessBtControl.beginHandshake()
                 if (handshakeLease == null) {
-                    OalLog.i(TAG, "Rejecting dial-back while compatibility re-advertise replaces SDP")
+                    OalLog.i(TAG, "Rejecting dial-back — handshake admission denied")
                     runCatching { client.close() }
                     continue
                 }

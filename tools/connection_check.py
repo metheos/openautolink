@@ -63,7 +63,7 @@ M_CARDIRECT = "No companion proxy — advertising this head unit"
 M_HANDSHAKE_OK = "Handshake complete"
 M_SESSION_UP = "AA session started (native)"
 M_SURFACE_ATTACH = "Surface attached"
-M_CODEC = "Codec selected"
+M_CODEC_MARKERS = ("Codec selected", "Phone negotiated codec type:")
 M_NO_COMPANION = "No companion on any local subnet"
 M_COMPANION_FOUND = "reports AA proxy on port"
 M_COMPANION_SCAN_FOUND = "Companion found at"
@@ -76,11 +76,11 @@ M_IGNITION_OFF = "IGNITION_STATE → 2 (OFF)"
 # dropped while video streamed perfectly).
 M_NATIVE_START = "Starting native aasdk session"
 M_FULL_SETUP = "aasdk JNI session started"
-# 0.1.417 re-adopts the session on a transport restart instead of re-running full
-# setup, so this line covers a native start just as a full setup does. Without it
-# the rule reports every fixed session as broken — a checker that flags the fix is
-# worse than no checker.
+# Legacy intent marker retained for display only. It was conditional, so its
+# absence cannot prove dependencies were skipped. New builds emit the explicit
+# per-start outcome below, which is the only marker used for enforcement.
 M_READOPT = "Re-adopting the session after a transport restart"
+M_SESSION_DEPS_READY = "Native session dependencies ready:"
 # Audio: the phone announcing playback vs frames actually reaching the player.
 # "Audio start" with no aflow means every upstream signal is healthy — channel
 # open, codec agreed, phone sending — and nothing arrives. Silent playback with
@@ -142,6 +142,8 @@ class Attempt:
     handshake_ok_at: float | None = None
     session_up_at: float | None = None
     codec_at: float | None = None
+    last_event_at: float = 0.0
+    last_native_transport: str | None = None
     surface_attached: bool = False
     readvertised: bool = False
     retries: int = 0
@@ -175,8 +177,8 @@ def parse_log(path: str) -> list[Attempt]:
     attempts: list[Attempt] = []
     current: Attempt | None = None
     name = os.path.basename(path)
-    # Full-setup timestamps for the whole log. Setup is logged a few ms before the
-    # native start it belongs to, which can straddle an attempt boundary.
+    # Explicit dependency-outcome timestamps for the whole log. The outcome is
+    # logged within milliseconds of its native start and can straddle a bucket.
     setup_times: list[float] = []
 
     with open(path, errors="ignore") as fh:
@@ -212,6 +214,7 @@ def parse_log(path: str) -> list[Attempt]:
 
             if current is None:
                 continue
+            current.last_event_at = t
 
             if M_LOOPBACK in line and current.endpoint is None:
                 current.endpoint = "loopback"
@@ -227,21 +230,27 @@ def parse_log(path: str) -> list[Attempt]:
                 current.handshake_ok_at = t
             elif M_SESSION_UP in line and current.session_up_at is None:
                 current.session_up_at = t
-            elif M_CODEC in line and current.codec_at is None:
+            elif any(marker in line for marker in M_CODEC_MARKERS) and current.codec_at is None:
                 current.codec_at = t
             elif M_SURFACE_ATTACH in line:
                 current.surface_attached = True
             elif M_NATIVE_START in line:
                 current.native_starts += 1
                 current.native_start_times.append(t)
-            elif M_FULL_SETUP in line or M_READOPT in line:
+                current.last_native_transport = "usb" if "(USB)" in line else "tcp"
+            elif M_SESSION_DEPS_READY in line:
                 current.full_setups += 1
                 setup_times.append(t)
+            elif M_FULL_SETUP in line or M_READOPT in line:
+                # Legacy intent/proxy markers are not proof that every dependency
+                # was ready for this exact native start. Keep the count for display
+                # but enforce only the explicit outcome marker above.
+                current.full_setups += 1
             elif M_HANDSHAKE_OK_LINE in line:
                 current.handshakes += 1
                 if current.handshake_ok_at is None:
                     current.handshake_ok_at = t
-            elif M_HANDSHAKE_TIMEOUT in line:
+            elif M_HANDSHAKE_TIMEOUT in line and current.last_native_transport != "usb":
                 current.ssl_timeouts += 1
             elif M_GATEWAY_DIAL in line:
                 current.gateway_dials += 1
@@ -256,18 +265,41 @@ def parse_log(path: str) -> list[Attempt]:
             elif M_DISCOVERY_FOUND in line and not current.connected:
                 current.discovery_found_after = True
 
-    # A native start is "covered" if a full setup ran within 2s of it.
+    # A native start is "covered" if its explicit dependency outcome is within 2s.
     # Judge EVERY native start on its own. An attempt can span minutes — the one
     # at 22:33:54 ran until 22:37 — so "does this attempt contain a setup?" lets a
     # later recovery's setup vouch for an earlier start that never had one, which
     # is exactly backwards. The first native start after a stop() is the one at
     # risk, and it is the one that must have its own setup.
-    for a in attempts:
-        a.uncovered_starts = [
-            n for n in a.native_start_times
-            if not any(abs(s - n) <= 2.0 for s in setup_times)
+    if not setup_times:
+        for attempt in attempts:
+            attempt.uncovered_starts = []
+            attempt.setup_nearby = True
+    else:
+        start_refs = [
+            (attempt_index, start_index, started_at)
+            for attempt_index, attempt in enumerate(attempts)
+            for start_index, started_at in enumerate(attempt.native_start_times)
         ]
-        a.setup_nearby = not a.uncovered_starts
+        unmatched = set(range(len(start_refs)))
+        covered: set[int] = set()
+        for outcome_at in sorted(setup_times):
+            candidates = [
+                ref_index for ref_index in unmatched
+                if abs(start_refs[ref_index][2] - outcome_at) <= 2.0
+            ]
+            if not candidates:
+                continue
+            winner = min(candidates, key=lambda index: abs(start_refs[index][2] - outcome_at))
+            unmatched.remove(winner)
+            covered.add(winner)
+        for attempt_index, attempt in enumerate(attempts):
+            attempt.uncovered_starts = [
+                started_at
+                for ref_index, (owner_index, _, started_at) in enumerate(start_refs)
+                if owner_index == attempt_index and ref_index not in covered
+            ]
+            attempt.setup_nearby = not attempt.uncovered_starts
     return attempts
 
 
@@ -492,8 +524,8 @@ def check(a: Attempt) -> list[Finding]:
         out.append(Finding(
             "WARN", "session-start-without-setup",
             f"{len(a.uncovered_starts)} of {a.native_starts} native session "
-            "start(s) had no full setup — decoder, surface and session reference "
-            "may be stale (touch silently dropped while video looks perfect)",
+            "start(s) had no dependency-ready outcome — decoder, surface, session "
+            "reference or audio collectors may be stale",
         ))
 
     # A dense burst is already the feedback loop, even when the whole file has
@@ -530,7 +562,13 @@ def check(a: Attempt) -> list[Finding]:
             "companion is never the gateway, this is usually the house router",
         ))
 
-    if a.connected and a.codec_at is None:
+    # A final upload can cut the log between native-start success and codec
+    # selection. Give a completed attempt two seconds of observed tail before
+    # calling the codec absent; otherwise the checker invents a fault at EOF.
+    has_codec_observation_window = (
+        a.session_up_at is not None and a.last_event_at - a.session_up_at >= 2.0
+    )
+    if a.connected and a.codec_at is None and has_codec_observation_window:
         out.append(Finding(
             "WARN", "no-codec",
             "session started but no codec was selected",
@@ -570,19 +608,20 @@ def check_transport_agnostic(path: str) -> list:
     except OSError:
         logcat_text = ""
 
-    # A native session start that never re-ran full setup keeps whatever the last
-    # stop() left behind: null decoder, no surface, stale session reference.
+    # New builds positively report every native start's dependencies. Enforce only
+    # when that marker exists; legacy silence cannot distinguish safe conditional
+    # rebinding from a skipped setup.
     starts = text.count(M_NATIVE_START_LINE)
-    setups = text.count(M_FULL_SETUP) + text.count(M_READOPT)
-    if starts > 0 and setups < starts:
-        uncovered = starts - setups
+    dependency_outcomes = text.count(M_SESSION_DEPS_READY)
+    if starts > 0 and dependency_outcomes > 0 and dependency_outcomes < starts:
+        uncovered = starts - dependency_outcomes
         # Only worth reporting when it is a pattern, not a single restart.
         if uncovered >= 5:
             out.append(Finding(
                 "WARN", "setup-skipped-sessions",
-                f"{uncovered} of {starts} native session starts had no matching "
-                "full setup — decoder, surface, session reference or audio "
-                "collectors may be stale",
+                f"{uncovered} of {starts} native session starts had no explicit "
+                "dependency-ready outcome — decoder, surface, session reference "
+                "or audio collectors may be stale",
             ))
 
     # Main thread stopped responding.

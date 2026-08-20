@@ -130,6 +130,28 @@ class SessionManager(
 
     // aasdk JNI session -- native C++ handles AA protocol
     private var aasdkSession: AasdkSession? = null
+    private val wirelessAdmissionLock = Any()
+    private var wirelessSessionAdmission:
+        com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token? = null
+
+    private fun installWirelessSessionAdmission(transportMode: String) {
+        synchronized(wirelessAdmissionLock) {
+            wirelessSessionAdmission?.let {
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.clearSessionOwner(it)
+            }
+            wirelessSessionAdmission =
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                    .installSessionOwner(transportMode)
+        }
+    }
+
+    private fun clearWirelessSessionAdmission() {
+        synchronized(wirelessAdmissionLock) {
+            val token = wirelessSessionAdmission ?: return
+            wirelessSessionAdmission = null
+            com.openautolink.app.transport.bluetooth.AaWirelessBtControl.clearSessionOwner(token)
+        }
+    }
 
     /** Rate-limit for the "no session, dropping input" warning. */
     @Volatile
@@ -1471,20 +1493,7 @@ class SessionManager(
             }
         }
         session.onNativeSessionStarting = {
-            ensureVideoDecoder()
-            ensureAudioPlayer()
-            // Re-adopt before restarting any producer: its first refreshed
-            // snapshot must target this replacement session, never a null/stale one.
-            if (aasdkSession !== session) {
-                OalLog.i(TAG, "Re-adopting the session after a transport restart — " +
-                        "without this, touch input and sensor data are silently dropped")
-                aasdkSession = session
-            }
-            // Re-subscribe to this session's flows. A transport restart makes a
-            // new native session; without this the collectors stay bound to the
-            // previous one and its frames go nowhere — silent audio with every
-            // upstream signal reporting healthy.
-            bindSessionCollectors(session)
+            prepareNativeSessionStart(session)
         }
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.sessionIsStreaming = {
             sessionState.value == SessionState.STREAMING
@@ -1497,9 +1506,6 @@ class SessionManager(
         // handshake completing.
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.onCompanionSelected =
             { ip -> if (ip.isNotBlank()) session.dialCompanion(ip) }
-        // The new session is now current and its live companion callback is
-        // installed. Report readiness only at this truthful lifecycle point.
-        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady("callback-installed")
         // Answer the phone's SensorStartRequest with current vehicle state.
         // Without this, a parked car never sends driving status and the phone
         // stays FULLY_RESTRICTED (no Maps keyboard). Issue #61.
@@ -1562,7 +1568,26 @@ class SessionManager(
         }
 
         session.start()
+        // Publish SDP only after this exact protocol owner has installed all
+        // callbacks and bound its transport. This closes the cold-start and
+        // USB→WPP preference races without delaying native negotiation itself.
+        installWirelessSessionAdmission(directTransport)
+        com.openautolink.app.wake.PreWakeMonitor.reportSessionReady("admission-ready")
         OalLog.i(TAG, "aasdk JNI session started ($directTransport transport)")
+    }
+
+    private fun prepareNativeSessionStart(session: AasdkSession) {
+        ensureVideoDecoder()
+        ensureAudioPlayer()
+        if (aasdkSession !== session) {
+            OalLog.i(TAG, "Re-adopting the session after a transport restart — " +
+                    "without this, touch input and sensor data are silently dropped")
+        }
+        aasdkSession = session
+        bindSessionCollectors(session)
+        OalLog.i(TAG, "Native session dependencies ready: " +
+                "decoder=${_videoDecoder != null} surface=${lastKnownSurface != null} " +
+                "audio=${_audioPlayer != null} session=current collectors=bound")
     }
 
     @android.annotation.SuppressLint("MissingPermission")
@@ -1656,6 +1681,7 @@ class SessionManager(
     }
 
     fun stop() {
+        clearWirelessSessionAdmission()
         // Let another phone claim the session. Without this the first phone to
         // dial holds it until the app restarts, so a second phone in the car can
         // never connect even after the first one leaves.
@@ -1898,7 +1924,9 @@ class SessionManager(
         videoStallWatchJob = null
         callStateJob = null
 
-        // 2. Stop old AA session + location forwarding
+        // 2. Stop old AA session + location forwarding. Revoke SDP first so
+        // the phone cannot enter through callbacks owned by the retiring session.
+        clearWirelessSessionAdmission()
         aasdkSession?.stop()
         aasdkSession = null
         stopDirectLocationForwarding()
