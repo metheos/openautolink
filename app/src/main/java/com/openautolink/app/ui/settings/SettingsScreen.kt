@@ -1188,6 +1188,51 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(4.dp))
 
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .clickable { viewModel.updateExperimentalGal6(!uiState.experimentalGal6) }
+                .padding(vertical = 10.dp)
+                .testTag("experimentalGal6Toggle"),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Switch(
+                checked = uiState.experimentalGal6,
+                onCheckedChange = viewModel::updateExperimentalGal6,
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = "Experimental GAL 6.0",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = if (uiState.experimentalGal6) {
+                        "Enabled — Save & Reconnect to request the modern media protocol"
+                    } else {
+                        "Off (recommended until tested in your vehicle)"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Text(
+            text = "Requests Gearhead GAL/PDK 6.0. This enables modern media envelopes, " +
+                    "ackless audio, and the short HEVC keyframe policy that may remove " +
+                    "H.265 startup green. It is compatibility-tested only at build level " +
+                    "and may affect audio, navigation, or video until road-tested.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(bottom = 20.dp),
+        )
+
+        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
+
+        Spacer(modifier = Modifier.height(20.dp))
+
         Text(
             text = "When enabled, the phone picks the best codec and resolution it supports. " +
                     "Disable to manually choose a specific codec and resolution.",
@@ -1230,8 +1275,9 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
         Text(
             text = "Video codec the phone uses to encode the AA stream. " +
                     "H.264 is the safe default — instant clean startup, capped at 1080p. " +
-                    "H.265 supports up to 4K but may show a brief green/distorted picture " +
-                    "for the first 30–60 seconds while the phone's encoder warms up.",
+                    "H.265 supports up to 4K but legacy GAL can take roughly two minutes " +
+                    "to deliver a full content IDR at 60 FPS. The experimental GAL 6.0 " +
+                    "toggle requests Gearhead's short HEVC keyframe policy.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp)

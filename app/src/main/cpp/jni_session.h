@@ -10,6 +10,7 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <string>
@@ -192,6 +193,7 @@ public:
         aasdk::messenger::Timestamp::ValueType timestamp,
         const aasdk::common::DataConstBuffer& buffer) override;
     void onMediaIndication(const aasdk::common::DataConstBuffer& buffer) override;
+    void onMediaOptions(const aasdk::common::DataConstBuffer& buffer) override;
     void onVideoFocusRequest(
         const aap_protobuf::service::media::video::message::VideoFocusRequestNotification& request) override;
 
@@ -289,6 +291,11 @@ private:
     /** Set once a ByeBye has been dispatched, so two callers cannot double-send. */
     std::atomic<bool> byeByeSent_{false};
     std::atomic<int> negotiatedCodecType_{0};
+    std::atomic<int> activeVideoSessionId_{0};
+    std::atomic<int> requestedGalMajor_{1};
+    std::atomic<int> requestedGalMinor_{7};
+    std::atomic<uint64_t> gal6EnvelopeSequence_{0};
+
     // Current video focus state for the main display.
     // 1 = VIDEO_FOCUS_PROJECTED (default — we always project on AAOS).
     // Tracking this lets onVideoFocusRequest reply with our actual current
@@ -312,6 +319,27 @@ private:
     void schedulePing();
 
 public:
+    bool shouldSendAudioAcks() const { return sdrConfig_.sendAudioAcks; }
+    int mediaAckSessionId(int activeSessionId) const {
+        return sdrConfig_.experimentalGal6 ? activeSessionId : 0;
+    }
+    int mediaSetupMaxUnacked() const { return sdrConfig_.mediaSetupMaxUnacked; }
+    int expectedHevcGopFrames() const {
+        return sdrConfig_.hevcKeyframeIntervalSeconds * std::max(0, sdrConfig_.videoFps);
+    }
+    void reportGal6StartEnvelope(
+        const char* channel,
+        const aap_protobuf::service::media::shared::message::Start& indication);
+    void reportGal6RawEnvelope(
+        const char* channel,
+        const char* envelope,
+        const aasdk::common::DataConstBuffer& buffer);
+    void reportGal6Payload(
+        const char* channel,
+        const char* envelope,
+        const uint8_t* data,
+        size_t size);
+
     /**
      * Centralized channel-error reporting. Called by per-channel handlers.
      * Coalesces log spam and escalates to triggerAbort() when many errors
@@ -358,6 +386,12 @@ private:
         bool gpsForwarding = true;
         bool autoNegotiate = true;
         std::string videoCodec = "h265";
+        bool experimentalGal6 = false;
+        int requestedGalMajor = 1;
+        int requestedGalMinor = 7;
+        int mediaSetupMaxUnacked = 30;
+        bool sendAudioAcks = true;
+        int hevcKeyframeIntervalSeconds = 60;
         int realDensity = 0;
         int safeAreaTop = 0;
         int safeAreaBottom = 0;

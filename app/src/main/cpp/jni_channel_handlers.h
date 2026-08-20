@@ -63,6 +63,7 @@ private:
     void onMediaWithTimestampIndication(aasdk::messenger::Timestamp::ValueType timestamp,
                                         const aasdk::common::DataConstBuffer& buffer) override;
     void onMediaIndication(const aasdk::common::DataConstBuffer& buffer) override;
+    void onMediaOptions(const aasdk::common::DataConstBuffer& buffer) override;
     void onChannelError(const aasdk::error::Error& e) override;
 
     int purposeFromType() const;
@@ -71,6 +72,7 @@ private:
     std::shared_ptr<aasdk::channel::mediasink::audio::AudioMediaSinkService> channel_;
     JniSession& session_;
     AudioType type_;
+    std::atomic<int> activeSessionId_{0};
 };
 
 // ============================================================================
@@ -146,6 +148,7 @@ private:
     void onDistanceEvent(const aap_protobuf::service::navigationstatus::message::NavigationNextTurnDistanceEvent& distanceEvent) override;
     void onNavigationState(const aap_protobuf::service::navigationstatus::message::NavigationState& navState) override;
     void onCurrentPosition(const aap_protobuf::service::navigationstatus::message::NavigationCurrentPosition& position) override;
+    void onVehicleEnergyForecast(const aasdk::common::DataConstBuffer& buffer) override;
 
     boost::asio::io_service::strand& strand_;
     std::shared_ptr<aasdk::channel::navigationstatus::NavigationStatusService> channel_;

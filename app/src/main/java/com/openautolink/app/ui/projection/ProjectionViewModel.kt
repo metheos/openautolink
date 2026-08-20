@@ -590,6 +590,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val aaDecAddDepth = preferences.aaDecoderAdditionalDepth.first()
             val aaAutoM = preferences.aaAutoMargins.first()
             val videoFps = preferences.videoFps.first()
+            val experimentalGal6 = preferences.experimentalGal6.first()
             val driveSide = preferences.driveSide.first()
             val hideClock = preferences.hideAaClock.first()
             val hideSignal = preferences.hidePhoneSignal.first()
@@ -799,6 +800,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 safeAreaLeft = saLeft,
                 safeAreaRight = saRight,
                 gpsForwarding = gpsForwarding,
+                experimentalGal6 = experimentalGal6,
             )
     }
 
