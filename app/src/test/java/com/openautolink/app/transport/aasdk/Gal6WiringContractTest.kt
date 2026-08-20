@@ -25,7 +25,8 @@ class Gal6WiringContractTest {
 
         assertTrue(preferences.contains("val galVersion: Flow<String>"))
         assertTrue(preferences.contains("suspend fun setGalVersion"))
-        assertTrue(preferences.contains("prefs[EXPERIMENTAL_GAL6]"))
+        assertTrue(preferences.contains("stringPreferencesKey(\"gal_version_v2\")"))
+        assertTrue(preferences.contains("remove(EXPERIMENTAL_GAL6)"))
         assertTrue(settingsVm.contains("fun updateGalVersion"))
         assertTrue(settingsVm.contains("val galVersion: StateFlow<String>"))
         assertTrue(settingsUi.contains("testTag(\"galVersion_"))

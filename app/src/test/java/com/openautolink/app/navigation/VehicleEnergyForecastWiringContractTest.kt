@@ -75,6 +75,28 @@ class VehicleEnergyForecastWiringContractTest {
     }
 
     @Test
+    fun `projection omits floating arrival badge while cluster and diagnostics retain forecast`() {
+        val screen = projectFile(
+            "app/src/main/java/com/openautolink/app/ui/projection/ProjectionScreen.kt",
+        )
+        val viewModel = projectFile(
+            "app/src/main/java/com/openautolink/app/ui/projection/ProjectionViewModel.kt",
+        )
+        val diagnostics = projectFile(
+            "app/src/main/java/com/openautolink/app/ui/diagnostics/DiagnosticsViewModel.kt",
+        )
+        val cluster = projectFile(
+            "app/src/main/java/com/openautolink/app/cluster/ClusterMainSession.kt",
+        )
+
+        assertFalse(screen.contains("mapsArrivalBatteryBadge"))
+        assertFalse(screen.contains("arrivalBatteryText"))
+        assertFalse(viewModel.contains("arrivalBatteryText"))
+        assertTrue(diagnostics.contains("mapsArrivalBatteryPct"))
+        assertTrue(cluster.contains("setTripText"))
+    }
+
+    @Test
     fun `VHAL charge power is converted from milliwatts and never becomes max capability`() {
         val forwarder = projectFile("app/src/main/java/com/openautolink/app/input/VehicleDataForwarderImpl.kt")
         val native = projectFile("app/src/main/cpp/jni_session.cpp")

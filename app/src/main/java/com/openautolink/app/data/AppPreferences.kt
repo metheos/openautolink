@@ -34,8 +34,10 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         val VIDEO_AUTO_NEGOTIATE = booleanPreferencesKey("video_auto_negotiate")
         val VIDEO_CODEC = stringPreferencesKey("video_codec")
         val VIDEO_FPS = intPreferencesKey("video_fps")
-        val GAL_VERSION = stringPreferencesKey("gal_version")
-        /** Retained only to migrate installs that used the former Boolean toggle. */
+        // v2 deliberately starts every existing install on verified GAL 6.0.
+        // Choices made after this migration persist normally under the new key.
+        val GAL_VERSION = stringPreferencesKey("gal_version_v2")
+        /** Retained only to remove the former Boolean toggle on the next write. */
         val EXPERIMENTAL_GAL6 = booleanPreferencesKey("experimental_gal6")
         val DISPLAY_MODE = stringPreferencesKey("display_mode")
         val MIC_SOURCE = stringPreferencesKey("mic_source")
@@ -252,7 +254,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_VIDEO_AUTO_NEGOTIATE = true
         const val DEFAULT_VIDEO_CODEC = "h264"
         const val DEFAULT_VIDEO_FPS = 60
-        const val DEFAULT_GAL_VERSION = "1.7"
+        const val DEFAULT_GAL_VERSION = "6.0"
         const val DEFAULT_DISPLAY_MODE = "fullscreen_immersive"
         const val DEFAULT_MIC_SOURCE = "car"
         const val DEFAULT_BT_MAC_OVERRIDE = ""
@@ -397,10 +399,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
     }
 
     val galVersion: Flow<String> = dataStore.data.map { prefs ->
-        GalProtocolPolicy.resolvePersistedVersion(
-            configuredVersion = prefs[GAL_VERSION],
-            legacyEnabled = prefs[EXPERIMENTAL_GAL6],
-        )
+        GalProtocolPolicy.resolvePersistedVersion(prefs[GAL_VERSION])
     }
 
     val displayMode: Flow<String> = dataStore.data.map { prefs ->
