@@ -47,12 +47,14 @@ class Gal6WiringContractTest {
         assertTrue(native.contains("requestedGalMinor_"))
         assertTrue(native.contains("GAL policy: requested="))
         assertTrue(native.contains("activeVideoSessionId_"))
-        assertTrue(native.contains("ack.set_session_id(activeVideoSessionId_.load())"))
+        assertTrue(native.contains("ack.set_session_id(mediaAckSessionId(activeVideoSessionId_.load()))"))
         assertTrue(native.contains("mediaSetupMaxUnacked()"))
         assertTrue(native.contains("expectedHevcGopFrames"))
         assertTrue(nativeHeader.contains("shouldSendAudioAcks"))
+        assertTrue(nativeHeader.contains("return sdrConfig_.experimentalGal6 ? activeSessionId : 0"))
         assertTrue(handlers.contains("activeSessionId_"))
         assertTrue(handlers.contains("session_.shouldSendAudioAcks()"))
+        assertTrue(handlers.contains("session_.mediaAckSessionId(activeSessionId_.load())"))
         assertTrue(handlerHeader.contains("activeSessionId_"))
     }
 

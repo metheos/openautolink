@@ -190,11 +190,12 @@ void JniAudioSinkHandler::onMediaWithTimestampIndication(
     aasdk::messenger::Timestamp::ValueType /*timestamp*/,
     const aasdk::common::DataConstBuffer& buffer)
 {
-    // GAL 5+/6 audio is ackless. Legacy mode keeps per-frame ACKs and uses
-    // the active Start.session_id rather than the historical hard-coded zero.
+    // GAL 5+/6 audio is ackless. Legacy mode keeps its historical per-frame
+    // ACK behavior, including session_id=0, so disabling the toggle is a true
+    // compatibility fallback.
     if (session_.shouldSendAudioAcks()) {
         aap_protobuf::service::media::source::message::Ack ack;
-        ack.set_session_id(activeSessionId_.load());
+        ack.set_session_id(session_.mediaAckSessionId(activeSessionId_.load()));
         ack.set_ack(1);
         auto promise = aasdk::channel::SendPromise::defer(strand_);
         promise->then([]() {}, [](const auto&) {});

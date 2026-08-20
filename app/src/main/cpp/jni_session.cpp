@@ -74,6 +74,16 @@ static std::string hexDump(const uint8_t* data, size_t len, size_t maxBytes = 51
     return ss.str();
 }
 
+static std::string hexCompact(const uint8_t* data, size_t len) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string result(len * 2, '0');
+    for (size_t i = 0; i < len; ++i) {
+        result[i * 2] = digits[(data[i] >> 4) & 0x0f];
+        result[i * 2 + 1] = digits[data[i] & 0x0f];
+    }
+    return result;
+}
+
 // Log raw bytes + unknown fields for any protobuf message
 template<typename T>
 static void logProtoRaw(const char* label, const T& msg) {
@@ -594,6 +604,11 @@ void JniSession::reportGal6StartEnvelope(
         " unknown_fields=" + std::to_string(unknownCount);
     LOGI("%s", msg.c_str());
     nativeDiag(1, "gal6", msg);
+
+    std::string raw;
+    indication.SerializeToString(&raw);
+    reportGal6Payload(channel, "Start",
+        reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
 }
 
 void JniSession::reportGal6RawEnvelope(
@@ -601,11 +616,46 @@ void JniSession::reportGal6RawEnvelope(
     const char* envelope,
     const aasdk::common::DataConstBuffer& buffer)
 {
-    const std::string msg = std::string(envelope) + " channel=" + channel +
-        " bytes=" + std::to_string(buffer.size) +
-        " raw=" + hexDump(buffer.cdata, buffer.size, 128);
-    LOGI("%s", msg.c_str());
-    nativeDiag(1, "gal6", msg);
+    reportGal6Payload(channel, envelope, buffer.cdata, buffer.size);
+}
+
+void JniSession::reportGal6Payload(
+    const char* channel,
+    const char* envelope,
+    const uint8_t* data,
+    size_t size)
+{
+    if (!sdrConfig_.experimentalGal6) return;
+
+    // DiagnosticLog truncates messages at 500 characters. Compact-hex chunks
+    // preserve the complete opaque payload in uploaded logs for later decoding.
+    static constexpr size_t GAL6_PAYLOAD_CHUNK_BYTES = 128;
+    const uint64_t id = gal6EnvelopeSequence_.fetch_add(1) + 1;
+    const size_t totalChunks = std::max<size_t>(1,
+        (size + GAL6_PAYLOAD_CHUNK_BYTES - 1) / GAL6_PAYLOAD_CHUNK_BYTES);
+
+    for (size_t chunk = 0; chunk < totalChunks; ++chunk) {
+        const size_t offset = chunk * GAL6_PAYLOAD_CHUNK_BYTES;
+        const size_t chunkBytes = offset < size
+            ? std::min(GAL6_PAYLOAD_CHUNK_BYTES, size - offset) : 0;
+        const std::string hex = chunkBytes > 0
+            ? hexCompact(data + offset, chunkBytes) : std::string();
+        const std::string line = "GAL6 payload id=" + std::to_string(id) +
+            " envelope=" + envelope +
+            " channel=" + channel +
+            " bytes=" + std::to_string(size) +
+            " chunk=" + std::to_string(chunk + 1) +
+            " total_chunks=" + std::to_string(totalChunks) +
+            " offset=" + std::to_string(offset) +
+            " hex=" + hex;
+        if (line.size() <= 500) {
+            LOGI("%s", line.c_str());
+            nativeDiag(1, "gal6", line);
+        } else {
+            nativeDiag(3, "gal6", "GAL6 payload chunk formatting overflow id=" +
+                std::to_string(id));
+        }
+    }
 }
 
 void JniSession::notifySensorSubscribed(int sensorType)
@@ -1113,7 +1163,7 @@ void JniSession::onMediaWithTimestampIndication(
 {
     // Hot path Ã¢â‚¬â€ video frame. Send ACK immediately (flow control).
     aap_protobuf::service::media::source::message::Ack ack;
-    ack.set_session_id(activeVideoSessionId_.load());
+    ack.set_session_id(mediaAckSessionId(activeVideoSessionId_.load()));
     ack.set_ack(1);
     auto promise = aasdk::channel::SendPromise::defer(*strand_);
     promise->then([]() {}, [](const auto&) {});

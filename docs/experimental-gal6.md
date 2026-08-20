@@ -15,11 +15,15 @@ The toggle is **off by default**.
   longer uses this value as per-buffer ACK credit.
 - Treats phone-to-head-unit audio as ackless; legacy sessions continue sending
   per-frame audio ACKs.
-- Uses the active `Start.session_id` for legacy audio ACKs and all video ACKs.
+- Preserves the legacy `session_id=0` ACK behavior when disabled; GAL 6 uses the
+  active `Start.session_id` for video ACKs. GAL 6 audio is ackless.
 - Parses and logs GAL 5/6 `Start` extensions (`session_type` and raw
   `media_config`).
 - Explicitly accepts and logs standalone audio/video `MediaOptions` (`0x8014`).
 - Explicitly accepts and logs navigation `VehicleEnergyForecast` (`0x8008`).
+- Writes complete Start, MediaOptions, and VehicleEnergyForecast protobuf bytes
+  as numbered compact-hex chunks. Each line stays below DiagnosticLog's
+  500-character cap, so uploaded logs can reconstruct opaque payloads exactly.
 - Sends modern `UiConfig.hidden_ui_elements` values for the existing hide-clock,
   hide-battery, and hide-signal preferences; the legacy session bitmask remains
   populated too.
@@ -48,6 +52,8 @@ Uploaded diagnostic logs use the `gal6` tag. A useful GAL 6 test must contain:
 - `GAL negotiated: requested=6.0 response=... status=...`
 - `GAL6 video Start envelope: ... session_type=... media_config_bytes=...`
 - any `GAL6 MediaOptions ...` and `GAL6 VehicleEnergyForecast ...` lines
+- matching `GAL6 payload id=... chunk=... total_chunks=... hex=...` lines for
+  every opaque Start, MediaOptions, and VehicleEnergyForecast envelope
 - `H265-IDR` and `H265-pflow` lines
 - continuous `vflow` after the session reaches streaming
 

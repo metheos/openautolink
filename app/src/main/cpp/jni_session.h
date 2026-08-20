@@ -294,6 +294,7 @@ private:
     std::atomic<int> activeVideoSessionId_{0};
     std::atomic<int> requestedGalMajor_{1};
     std::atomic<int> requestedGalMinor_{7};
+    std::atomic<uint64_t> gal6EnvelopeSequence_{0};
 
     // Current video focus state for the main display.
     // 1 = VIDEO_FOCUS_PROJECTED (default — we always project on AAOS).
@@ -319,6 +320,9 @@ private:
 
 public:
     bool shouldSendAudioAcks() const { return sdrConfig_.sendAudioAcks; }
+    int mediaAckSessionId(int activeSessionId) const {
+        return sdrConfig_.experimentalGal6 ? activeSessionId : 0;
+    }
     int mediaSetupMaxUnacked() const { return sdrConfig_.mediaSetupMaxUnacked; }
     int expectedHevcGopFrames() const {
         return sdrConfig_.hevcKeyframeIntervalSeconds * std::max(0, sdrConfig_.videoFps);
@@ -330,6 +334,11 @@ public:
         const char* channel,
         const char* envelope,
         const aasdk::common::DataConstBuffer& buffer);
+    void reportGal6Payload(
+        const char* channel,
+        const char* envelope,
+        const uint8_t* data,
+        size_t size);
 
     /**
      * Centralized channel-error reporting. Called by per-channel handlers.

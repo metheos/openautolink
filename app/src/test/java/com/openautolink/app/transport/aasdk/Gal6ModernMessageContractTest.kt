@@ -37,6 +37,22 @@ class Gal6ModernMessageContractTest {
     }
 
     @Test
+    fun `opaque GAL6 payloads are fully reconstructable below the diagnostic line cap`() {
+        val native = projectFile("app/src/main/cpp/jni_session.cpp")
+        val header = projectFile("app/src/main/cpp/jni_session.h")
+
+        assertTrue(native.contains("GAL6_PAYLOAD_CHUNK_BYTES = 128"))
+        assertTrue(header.contains("gal6EnvelopeSequence_"))
+        assertTrue(native.contains("chunk="))
+        assertTrue(native.contains("total_chunks="))
+        assertTrue(native.contains("offset="))
+        assertTrue(native.contains("indication.SerializeToString(&raw)"))
+        assertTrue(native.contains("reportGal6Payload(channel, \"Start\""))
+        assertTrue(native.contains("reportGal6Payload(channel, envelope, buffer.cdata, buffer.size)"))
+        assertTrue(native.contains("line.size() <= 500"))
+    }
+
+    @Test
     fun `GAL6 preserves HU-provided status UI ownership in modern UiConfig`() {
         val uiConfig = projectFile("external/opencardev-aasdk/protobuf/aap_protobuf/service/media/shared/message/UiConfig.proto")
         val native = projectFile("app/src/main/cpp/jni_session.cpp")
