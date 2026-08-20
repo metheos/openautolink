@@ -6,13 +6,124 @@ import unittest
 from pathlib import Path
 
 from tools.connection_check import (
+    check,
     check_summary_text,
     check_transport_agnostic,
+    parse_log,
     positive_cross_side_success,
 )
 
 
 class StableSummaryRulesTest(unittest.TestCase):
+    def test_dependency_ready_marker_covers_every_native_restart(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.100 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:00.101 I/SessionManager: Native session dependencies ready: "
+            "decoder=true surface=true audio=true session=current collectors=bound\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:00.600 I/AasdkSession: Phone negotiated codec type: 7\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertEqual([], attempt.uncovered_starts)
+        self.assertFalse(any(f.rule == "session-start-without-setup" for f in check(attempt)))
+
+    def test_legacy_log_without_dependency_outcome_does_not_invent_setup_failure(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.100 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:03.000 I/vflow: frames=120 idr=1 bytes=1000 window=2000ms\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertEqual([], attempt.uncovered_starts)
+        self.assertFalse(any(f.rule == "session-start-without-setup" for f in check(attempt)))
+
+    def test_new_dependency_outcomes_expose_an_uncovered_restart(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.100 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:00.101 I/SessionManager: Native session dependencies ready: ok\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:05.000 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:05.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:08.000 I/vflow: frames=120 idr=1 bytes=1000 window=2000ms\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertEqual(1, len(attempt.uncovered_starts))
+        self.assertTrue(any(f.rule == "session-start-without-setup" for f in check(attempt)))
+
+    def test_one_dependency_outcome_cannot_cover_two_rapid_native_starts(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.100 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:00.200 I/AasdkSession: Starting native aasdk session: 2560x1440\n"
+            "12:00:00.250 I/SessionManager: Native session dependencies ready: ok\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:03.000 I/vflow: frames=120 idr=1 bytes=1000 window=2000ms\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertEqual(1, len(attempt.uncovered_starts))
+
+    def test_usb_timeout_is_not_attributed_to_last_wireless_attempt(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.100 I/AasdkSession: AA session started (native)\n"
+            "12:00:05.000 I/AasdkSession: Starting native aasdk session (USB): 2560x1440\n"
+            "12:00:20.000 I/AasdkSession: AA session stopped: handshake timeout "
+            "(15s, no SSL/version response)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertEqual(0, attempt.ssl_timeouts)
+        self.assertFalse(any(f.rule == "connected-but-no-handshake" for f in check(attempt)))
+
+    def test_negotiated_codec_marker_satisfies_codec_rule(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:00.600 I/AasdkSession: Phone negotiated codec type: 7\n"
+            "12:00:04.000 I/vflow: frames=120 idr=1 bytes=1000 window=2000ms\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertFalse(any(f.rule == "no-codec" for f in check(attempt)))
+
+    def test_truncated_attempt_is_not_called_no_codec(self):
+        text = (
+            "12:00:00.000 I/AaWirelessBt: Phone dialled back on the AA Wireless UUID\n"
+            "12:00:00.500 I/AasdkSession: AA session started (native)\n"
+            "12:00:00.700 I/log: upload begins and file ends\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oal.log"
+            path.write_text(text)
+            attempt = parse_log(str(path))[0]
+
+        self.assertFalse(any(f.rule == "no-codec" for f in check(attempt)))
+
     def test_unobserved_gm_signal_is_info_only(self):
         text = (
             "12:00:01.000 I/wake: WAKE SUMMARY attempt=7 trigger=IGNITION_ON "

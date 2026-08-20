@@ -8,7 +8,7 @@ import org.junit.Test
 class SessionReadinessInstrumentationTest {
 
     @Test
-    fun `readiness is reported only after native success while reconnect setup is retained`() {
+    fun `admission readiness follows callback wiring and transport ownership`() {
         val managerSource = projectFile(
             "app/src/main/java/com/openautolink/app/session/SessionManager.kt",
         ).readText()
@@ -20,15 +20,10 @@ class SessionReadinessInstrumentationTest {
 
         assertTrue("Native session start hook must exist", nativeStart >= 0)
         assertTrue("Native session start block must have a boundary", nativeEnd > nativeStart)
-
         val nativeStartBlock = managerSource.substring(nativeStart, nativeEnd)
         assertTrue(
-            "Native start must still bind session collectors",
-            nativeStartBlock.contains("bindSessionCollectors(session)"),
-        )
-        assertTrue(
-            "Native start must still re-adopt the session",
-            nativeStartBlock.contains("aasdkSession = session"),
+            "Every native start must use the complete dependency preparer",
+            nativeStartBlock.contains("prepareNativeSessionStart(session)"),
         )
         assertEquals(
             "Pre-native setup must never report session readiness",
@@ -37,12 +32,19 @@ class SessionReadinessInstrumentationTest {
                 .findAll(nativeStartBlock)
                 .count(),
         )
-        assertTrue(
-            "Initial setup must retain exact callback-installed readiness",
-            managerSource.contains(
-                "PreWakeMonitor.reportSessionReady(\"callback-installed\")",
-            ),
+
+        val sessionStart = managerSource.indexOf("session.start()", startIndex = nativeEnd)
+        val installOwner = managerSource.indexOf(
+            "installWirelessSessionAdmission(directTransport)",
+            startIndex = sessionStart,
         )
+        val reportAdmission = managerSource.indexOf(
+            "PreWakeMonitor.reportSessionReady(\"admission-ready\")",
+            startIndex = installOwner,
+        )
+        assertTrue("Transport must start before admission is installed", sessionStart >= 0)
+        assertTrue("Admission owner must be installed after transport start", installOwner > sessionStart)
+        assertTrue("Readiness must follow admission ownership", reportAdmission > installOwner)
 
         val sessionSource = projectFile(
             "app/src/main/java/com/openautolink/app/transport/aasdk/AasdkSession.kt",
@@ -61,18 +63,12 @@ class SessionReadinessInstrumentationTest {
         assertTrue("Native success log must remain", nativeStartedLog >= 0)
         assertTrue("CONNECT SUMMARY must remain", connectSummary >= 0)
         assertTrue("Native success callback must report exact readiness source", reportReady >= 0)
-        assertTrue(
-            "Native readiness must follow the actual native-start success log",
-            reportReady > nativeStartedLog,
-        )
-        assertTrue(
-            "Native readiness must follow CONNECT SUMMARY",
-            reportReady > connectSummary,
-        )
+        assertTrue(reportReady > nativeStartedLog)
+        assertTrue(reportReady > connectSummary)
 
         val productionSources = managerSource + sessionSource
         assertEquals(
-            "Production must have exactly the initial and native-success readiness calls",
+            "Production must have exactly admission-ready and native-success calls",
             2,
             Regex("""PreWakeMonitor\.reportSessionReady\(""")
                 .findAll(productionSources)

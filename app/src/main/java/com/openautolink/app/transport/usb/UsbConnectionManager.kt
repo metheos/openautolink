@@ -63,6 +63,7 @@ class UsbConnectionManager(
     private val context: Context,
     private val scope: CoroutineScope,
     private val onTransportReady: (AasdkTransportPipe) -> Unit,
+    private val onTransportDetached: (AasdkTransportPipe, () -> Unit) -> Unit = { _, retired -> retired() },
 ) {
     companion object {
         private const val TAG = "UsbConnectionManager"
@@ -109,6 +110,15 @@ class UsbConnectionManager(
 
     @Volatile
     private var currentPipe: UsbTransportPipe? = null
+
+    @Volatile
+    private var currentAasdkPipe: AasdkTransportPipe? = null
+
+    private val transportOwnership = UsbTransportOwnership()
+    private val transportStateLock = Any()
+    private val detachedDeviceNames =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val retirementPending = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Guards the connect path against being entered twice for the same
@@ -160,8 +170,14 @@ class UsbConnectionManager(
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    OalLog.i(TAG, "USB device detached")
-                    handleDeviceDetached()
+                    @Suppress("DEPRECATION")
+                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    if (device == null) {
+                        OalLog.w(TAG, "USB detach had no device identity — leaving active transport alone")
+                    } else {
+                        OalLog.i(TAG, "USB device detached: ${device.deviceName}")
+                        handleDeviceDetached(device)
+                    }
                 }
                 ACTION_USB_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
@@ -213,6 +229,7 @@ class UsbConnectionManager(
             context.unregisterReceiver(usbReceiver)
         } catch (_: IllegalArgumentException) { }
         closePipe()
+        retirementPending.set(false)
         pendingPermissionDevice.set(null)
         _availableDevices.value = emptyList()
         _connectionState.value = UsbConnectionState.IDLE
@@ -230,6 +247,7 @@ class UsbConnectionManager(
         for ((_, device) in devices) {
             if (UsbConstants.isAccessoryDevice(device.vendorId, device.productId)) {
                 OalLog.i(TAG, "Found device already in accessory mode: ${device.deviceName}")
+                detachedDeviceNames.remove(device.deviceName)
                 _connectionState.value = UsbConnectionState.ACCESSORY_DETECTED
                 requestPermissionOrConnect(device)
                 return
@@ -285,6 +303,7 @@ class UsbConnectionManager(
     }
 
     private fun handleDeviceAttached(device: UsbDevice) {
+        detachedDeviceNames.remove(device.deviceName)
         if (UsbConstants.isAccessoryDevice(device.vendorId, device.productId)) {
             // Accessory came back after our AOA switch — connect without prompting again.
             _connectionState.value = UsbConnectionState.ACCESSORY_DETECTED
@@ -299,14 +318,52 @@ class UsbConnectionManager(
         }
     }
 
-    private fun handleDeviceDetached() {
+    private fun handleDeviceDetached(device: UsbDevice) {
+        // Record the physical event before taking the publication lock. A connect
+        // that has opened endpoints but not yet published ownership must see this
+        // tombstone and refuse to deliver the now-detached pipe.
+        detachedDeviceNames.add(device.deviceName)
+        val retiredState = synchronized(transportStateLock) {
+            val retired = transportOwnership.detach(device.deviceName)
+                ?: return@synchronized null
+            retirementPending.set(true)
+            val detachedPipe = currentAasdkPipe
+            currentAasdkPipe = null
+            retired to detachedPipe
+        }
+        if (retiredState == null) {
+            OalLog.i(TAG, "Ignoring detach for ${device.deviceName} — it does not own " +
+                    "the active phone transport; any in-flight publication is tombstoned")
+            pendingPermissionDevice.compareAndSet(device.deviceName, null)
+            publishCandidates()
+            return
+        }
+        val (retired, detachedPipe) = retiredState
+
         closePipe()
-        // The device is gone, so any dialog we raised for it is moot. Clearing this
-        // matters for the car-sleeps-mid-session case: the head unit cuts USB power,
-        // the device detaches, and on wake we must be able to prompt again.
-        pendingPermissionDevice.set(null)
+        // closePipe clears ordinary ownership; retirement remains a separate
+        // barrier until the native owner positively acknowledges its stop.
+        pendingPermissionDevice.compareAndSet(device.deviceName, null)
         _connectionState.value = UsbConnectionState.IDLE
         _status.value = "USB device disconnected"
+        if (detachedPipe != null) {
+            OalLog.i(TAG, "Active USB transport detached: generation=${retired.generation} — " +
+                    "retiring its native attempt before accepting re-enumeration")
+            val acknowledgeRetired = {
+                if (retirementPending.compareAndSet(true, false)) {
+                    OalLog.i(TAG, "USB native retirement acknowledged — rescanning accessories")
+                    if (isRunning) scope.launch(Dispatchers.IO) { scanExistingDevices() }
+                }
+                Unit
+            }
+            runCatching { onTransportDetached(detachedPipe, acknowledgeRetired) }
+                .onFailure {
+                    OalLog.e(TAG, "USB native retirement callback failed: ${it.message}; " +
+                            "replacement remains blocked")
+                }
+        } else {
+            retirementPending.set(false)
+        }
         publishCandidates()
     }
 
@@ -377,6 +434,10 @@ class UsbConnectionManager(
     }
 
     private fun requestPermissionOrConnect(device: UsbDevice) {
+        if (retirementPending.get()) {
+            OalLog.i(TAG, "Deferring ${device.deviceName} until the detached native attempt retires")
+            return
+        }
         // Idempotency gate — see [connectClaimed]. A session is already
         // established or being established; a second caller must not start
         // another native session on top of it.
@@ -466,6 +527,7 @@ class UsbConnectionManager(
                 if (UsbConstants.isAccessoryDevice(d.vendorId, d.productId)) {
                     OalLog.i(TAG, "Accessory device found after AOA switch: ${d.deviceName} " +
                             "(${attempts * ACCESSORY_SCAN_INTERVAL_MS}ms after switch)")
+                    detachedDeviceNames.remove(d.deviceName)
                     _connectionState.value = UsbConnectionState.ACCESSORY_DETECTED
                     requestPermissionOrConnect(d)
                     return
@@ -480,6 +542,10 @@ class UsbConnectionManager(
     }
 
     private fun connectToAccessory(device: UsbDevice) {
+        if (retirementPending.get()) {
+            OalLog.i(TAG, "connectToAccessory deferred — previous native attempt is retiring")
+            return
+        }
         // Atomically claim the connect slot. If another path (permission
         // broadcast vs. AOA re-enumeration poll) beat us here, abort — a
         // duplicate onTransportReady() starts a second native aasdk session
@@ -523,14 +589,35 @@ class UsbConnectionManager(
         OalLog.i(TAG, "USB endpoints opened — IN: ${epIn.address} OUT: ${epOut.address} " +
                 "maxPacket: ${epIn.maxPacketSize}/${epOut.maxPacketSize}")
 
-        currentConnection = connection
         val pipe = UsbTransportPipe(connection, epIn, epOut)
-        currentPipe = pipe
-
         val transportPipe = AasdkTransportPipe(pipe.toInputStream(), pipe.toOutputStream())
+        val ownership = synchronized(transportStateLock) {
+            if (!isRunning || retirementPending.get() ||
+                detachedDeviceNames.contains(device.deviceName)
+            ) {
+                null
+            } else {
+                currentConnection = connection
+                currentPipe = pipe
+                val claimed = transportOwnership.claim(device.deviceName)
+                currentAasdkPipe = transportPipe
+                claimed
+            }
+        }
+        if (ownership == null) {
+            OalLog.i(TAG, "USB endpoint publication cancelled for ${device.deviceName} — " +
+                    "device detached or previous native attempt is retiring")
+            pipe.close()
+            connectClaimed.set(false)
+            _connectionState.value = UsbConnectionState.IDLE
+            _status.value = "Waiting for USB re-enumeration..."
+            return
+        }
 
         _connectionState.value = UsbConnectionState.CONNECTED
         _status.value = "Connected via USB"
+        OalLog.i(TAG, "USB transport owner installed: generation=${ownership.generation} " +
+                "device=${ownership.deviceName}")
 
         onTransportReady(transportPipe)
     }
@@ -564,12 +651,18 @@ class UsbConnectionManager(
     }
 
     private fun closePipe() {
-        currentPipe?.close()
-        currentPipe = null
-        currentConnection = null
-        // Release the connect slot so a genuine re-attach (cable replug,
-        // detach broadcast, session restart) can establish a new session.
-        connectClaimed.set(false)
+        val pipe = synchronized(transportStateLock) {
+            val current = currentPipe
+            currentPipe = null
+            currentAasdkPipe = null
+            currentConnection = null
+            transportOwnership.clear()
+            // Release the connect slot so a genuine re-attach (cable replug,
+            // detach broadcast, session restart) can establish a new session.
+            connectClaimed.set(false)
+            current
+        }
+        pipe?.close()
     }
 
     /**

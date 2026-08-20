@@ -87,6 +87,9 @@ object AaWirelessBtControl {
     @Volatile
     private var btServer: AaWirelessBtServer? = null
 
+    /** Only the current WPP protocol owner may make the phone act on SDP. */
+    private val sessionAdmission = WppSessionAdmission()
+
     /**
      * Last IPv4 we saw the companion on, used to ask it for its proxy port.
      *
@@ -224,17 +227,67 @@ object AaWirelessBtControl {
     @Volatile
     var onStatus: ((String) -> Unit)? = null
 
+    fun installSessionOwner(transportMode: String): WppSessionAdmission.Token {
+        val token = synchronized(this) {
+            sessionAdmission.installSession(transportMode)
+        }
+        OalLog.i(TAG, "Session admission installed: generation=${token.generation} " +
+                "transport=${token.transportMode}")
+        if (transportMode == "wpp") {
+            ensureAdvertising()
+        } else {
+            stopAdvertisingNow("non-WPP owner", expectedOwner = token)
+        }
+        return token
+    }
+
+    fun clearSessionOwner(token: WppSessionAdmission.Token) {
+        val server = synchronized(this) {
+            if (!sessionAdmission.clearSession(token)) {
+                OalLog.i(TAG, "Ignoring stale session admission clear: generation=${token.generation}")
+                return
+            }
+            val current = btServer
+            btServer = null
+            current
+        }
+        server?.stop()
+        OalLog.i(TAG, "Session admission cleared and advertiser stopped: " +
+                "generation=${token.generation}")
+    }
+
+    private fun stopAdvertisingNow(
+        reason: String,
+        expectedOwner: WppSessionAdmission.Token? = null,
+    ): Boolean {
+        val server = synchronized(this) {
+            if (expectedOwner != null && !sessionAdmission.isCurrent(expectedOwner)) {
+                OalLog.i(TAG, "Advertiser stop cancelled ($reason) — session owner changed")
+                return false
+            }
+            val current = btServer
+            btServer = null
+            current
+        }
+        server?.stop()
+        OalLog.i(TAG, "Advertiser stopped ($reason)")
+        return true
+    }
+
     fun stopAdvertising() {
         scope.launch(kotlinx.coroutines.NonCancellable) {
             runCatching {
-                btServer?.stop()
-                btServer = null
-                OalLog.i(TAG, "Advertiser stopped on request")
+                stopAdvertisingNow("request")
             }.onFailure { OalLog.w(TAG, "stopAdvertising failed: ${it.message}") }
         }
     }
 
     fun ensureAdvertising() {
+        val owner = sessionAdmission.currentWppOwner()
+        if (owner == null) {
+            OalLog.i(TAG, "Advertiser deferred — no current WPP session owner")
+            return
+        }
         val ctx = appContext ?: return
         if (btServer?.isRunning == true) {
             OalLog.i(TAG, "Bluetooth advertiser already live — ignition re-arm not needed")
@@ -277,12 +330,22 @@ object AaWirelessBtControl {
                     OalLog.w(TAG, "Bluetooth never came back — not advertising")
                     return@launch
                 }
+                if (!sessionAdmission.isCurrent(owner)) {
+                    OalLog.i(TAG, "Advertiser start cancelled — session owner changed")
+                    return@launch
+                }
                 if (btServer?.isRunning == true) return@launch
-                runCatching { startFromPreferences(ctx) }
+                runCatching { startFromPreferences(ctx, expectedOwner = owner) }
                     .onFailure { OalLog.w(TAG, "ensureAdvertising failed: ${it.message}") }
             } finally {
+                val replacementWaiting = !sessionAdmission.isCurrent(owner) &&
+                    sessionAdmission.currentWppOwner() != null
                 ensureInFlight.set(false)
                 ensureInFlightSince = 0L
+                if (replacementWaiting) {
+                    OalLog.i(TAG, "A replacement WPP owner arrived during advertiser start — retrying")
+                    ensureAdvertising()
+                }
             }
         }
     }
@@ -576,6 +639,12 @@ object AaWirelessBtControl {
     fun readvertise() = readvertise(null)
 
     private fun readvertise(admissionToken: Long?) {
+        val owner = sessionAdmission.currentWppOwner()
+        if (owner == null) {
+            OalLog.i(TAG, "Re-advertise deferred — no current WPP session owner")
+            releaseHandshakeAdmission(admissionToken)
+            return
+        }
         val ctx = appContext
         if (ctx == null) {
             OalLog.w(TAG, "Cannot re-advertise — no context yet")
@@ -589,11 +658,16 @@ object AaWirelessBtControl {
         scope.launch(kotlinx.coroutines.NonCancellable) {
             try {
                 runCatching {
+                    if (!sessionAdmission.isCurrent(owner)) {
+                        OalLog.i(TAG, "Re-advertise cancelled — session owner changed")
+                        return@runCatching
+                    }
                     OalLog.i(TAG, "Re-advertising: stopping the current SDP record")
-                    btServer?.stop()
-                    btServer = null
+                    if (!stopAdvertisingNow("re-advertise", expectedOwner = owner)) {
+                        return@runCatching
+                    }
                     kotlinx.coroutines.delay(1_000)
-                    startFromPreferences(ctx)
+                    startFromPreferences(ctx, expectedOwner = owner)
                     if (btServer?.isRunning == true) {
                         OalLog.i(TAG, "Re-advertise complete — SDP record is live again")
                     } else {
@@ -684,6 +758,11 @@ object AaWirelessBtControl {
     }
 
     fun beginHandshake(): HandshakeLease? = synchronized(handshakeStateLock) {
+        if (!sessionAdmission.canAdvertise()) return null
+        if (sessionIsStreaming?.invoke() == true) {
+            OalLog.i(TAG, "Suppressing redundant WPP activation — projection is already streaming")
+            return null
+        }
         if (handshakeAdmissionBlocked) return null
         if (activeHandshakeCount.incrementAndGet() == 1) {
             handshakeStartedAtMs = System.currentTimeMillis()
@@ -958,16 +1037,11 @@ object AaWirelessBtControl {
                 .distinctUntilChanged()
                 .collect { isWpp ->
                     if (isWpp) {
-                        OalLog.i(TAG, "WPP transport selected — starting Bluetooth advertiser")
-                        // Do not advertise before the car's own access point is
-                        // actually serving. On a cold start the telematics module
-                        // takes longer to bring up Blazing than the app takes to
-                        // boot: at 08:44 the advertiser ran 7s after ignition and
-                        // published 172.16.101.100 — a telematics interface —
-                        // because ap_br_swlan0 did not exist yet. The phone was
-                        // then pointed at an address it could never reach.
-                        awaitApInterface(prefs.wppApInterface.first())
-                        startFromPreferences(context)
+                        OalLog.i(TAG, "WPP transport selected — requesting Bluetooth advertiser")
+                        // The preference changes before Save & Reconnect has
+                        // replaced the old USB session. Only the active protocol
+                        // owner may publish, or the phone dials a stale callback.
+                        ensureAdvertising()
                     } else if (btServer != null) {
                         OalLog.i(TAG, "Transport is no longer WPP — stopping Bluetooth advertiser")
                         btServer?.stop()
@@ -1011,8 +1085,25 @@ object AaWirelessBtControl {
      * and begin advertising. Shared by the automatic transport trigger and the
      * adb bring-up broadcast so both validate identically.
      */
-    private suspend fun startFromPreferences(context: Context, intent: Intent? = null) {
+    private suspend fun startFromPreferences(
+        context: Context,
+        intent: Intent? = null,
+        expectedOwner: WppSessionAdmission.Token? = sessionAdmission.currentWppOwner(),
+    ) {
+            if (expectedOwner == null || !sessionAdmission.isCurrent(expectedOwner)) {
+                OalLog.i(TAG, "Not advertising — current protocol owner is not WPP")
+                return
+            }
             val prefs = com.openautolink.app.data.AppPreferences.getInstance(context)
+            val apInterface = prefs.wppApInterface.first()
+
+            // Common readiness chokepoint. Ignition/socket-death recovery used to
+            // bypass this and could publish a telematics address before the car AP.
+            awaitApInterface(apInterface)
+            if (!sessionAdmission.isCurrent(expectedOwner)) {
+                OalLog.i(TAG, "Not advertising — WPP owner changed while waiting for AP")
+                return
+            }
 
             val ssid = intent?.getStringExtra("ssid")?.takeIf { it.isNotBlank() }
                 ?: prefs.hotspotSsid.first()
@@ -1025,7 +1116,7 @@ object AaWirelessBtControl {
             // interface rather than stored, because it changes with the network.
             val ip = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
                 ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() }
-                ?: localIpv4Address(prefs.wppApInterface.first())
+                ?: localIpv4Address(apInterface)
                 ?: ""
 
             val problems = buildList {
@@ -1051,7 +1142,8 @@ object AaWirelessBtControl {
                 context, creds,
                 manualIp = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
                     ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() },
-                apInterface = prefs.wppApInterface.first(),
+                apInterface = apInterface,
+                expectedOwner = expectedOwner,
             )
     }
 
@@ -1391,7 +1483,12 @@ object AaWirelessBtControl {
         creds: AaWirelessBtServer.WifiCredentials,
         manualIp: String?,
         apInterface: String,
+        expectedOwner: WppSessionAdmission.Token,
     ) {
+        if (!sessionAdmission.isCurrent(expectedOwner)) {
+            OalLog.i(TAG, "SDP publish cancelled — no current WPP session owner")
+            return
+        }
         // Switching the session into WPP mode is what binds the listener — see
         // AasdkSession.startWpp(). Doing it here rather than starting our own
         // server avoids two components racing for the same port.
@@ -1402,7 +1499,6 @@ object AaWirelessBtControl {
         OalLog.i(TAG, "Advertising ${creds.ip}:${creds.port} — session must be in 'wpp' " +
                 "transport mode for that port to be bound")
 
-        btServer?.stop()
         val bt = AaWirelessBtServer(
             context = context,
             parentScope = scope,
@@ -1419,7 +1515,15 @@ object AaWirelessBtControl {
                 com.openautolink.app.wake.PreWakeMonitor.reportPhoneDialback(elapsedMs)
             },
         )
-        btServer = bt
+        synchronized(this) {
+            if (!sessionAdmission.isCurrent(expectedOwner)) {
+                OalLog.i(TAG, "SDP publish cancelled before ownership swap")
+                bt.stop()
+                return
+            }
+            btServer?.stop()
+            btServer = bt
+        }
         // Probe first: if the BT stack refuses to publish the record we want that
         // stated plainly in the log, not inferred later from the phone's silence.
         val canAdvertise = bt.canAdvertise()
@@ -1684,6 +1788,14 @@ object AaWirelessBtControl {
             }
         }
         bt.updateCredentials(creds)
+        if (!sessionAdmission.isCurrent(expectedOwner)) {
+            OalLog.i(TAG, "SDP publish cancelled at final boundary — session owner changed")
+            bt.stop()
+            synchronized(this) {
+                if (btServer === bt) btServer = null
+            }
+            return
+        }
         bt.start()
     }
 }

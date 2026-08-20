@@ -144,6 +144,8 @@ class AasdkSession(
     private var lastFailureWasProtocolError = false
 
     private var transportPipe: AasdkTransportPipe? = null
+    private val detachedUsbTransports =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<AasdkTransportPipe>()
 
     /**
      * Handle to the single pending auto-reconnect coroutine (the backoff delay +
@@ -201,7 +203,7 @@ class AasdkSession(
      * The native session neither knows nor cares which side dialled — it needs a
      * connected socket — so this reuses [handleConnection] unchanged.
      */
-    private fun startWpp() {
+    private fun startWpp(recovery: Boolean = false) {
         // Which side dials depends on which endpoint we advertised over Bluetooth.
         //
         //   companion loopback  -> the COMPANION is the server (it listens on 5277
@@ -223,20 +225,21 @@ class AasdkSession(
         // listening forever showing "searching for phone" while the phone showed
         // "connected". Discovery even found the phone; nothing acted on it,
         // because in WPP mode only the handshake triggers a dial.
-        val known = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
-            .withIdentityValidatedCompanion { address ->
-                OalLog.i(TAG, "WPP restart with a known companion at $address — dialling " +
-                        "rather than waiting for a handshake that is not coming")
-                startTcp(manualIp = address)
-            }
-        if (known != null) {
-            // Dialling the companion is only half the connection. Android Auto's
-            // previous localhost socket belonged to the bridge that just ended;
-            // reconnecting the car socket does not by itself make AA open a new
-            // one, even though the reserved loopback port is now stable. Re-run
-            // the Bluetooth exchange to provoke that fresh AA attach.
+        if (recovery) {
+            val known = com.openautolink.app.transport.bluetooth.AaWirelessBtControl
+                .withIdentityValidatedCompanion { address ->
+                    OalLog.i(TAG, "WPP recovery with a known companion at $address — dialling " +
+                            "and refreshing SDP so Android Auto opens a replacement socket")
+                    startTcp(manualIp = address)
+                }
+            // One recovery owner performs exactly one refresh. If a companion is
+            // known, its connector is started first so the phone cannot beat us to
+            // the proxy; otherwise the listener below is bound while SDP returns.
             com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
-            return
+            if (known != null) return
+        } else {
+            OalLog.i(TAG, "Initial WPP owner installed — waiting for its admitted Bluetooth " +
+                    "handshake instead of pre-dialling a cached companion")
         }
         // NOTE: the ByeBye for this path lives in startTcp(), not here — Save &
         // Reconnect reaches the transport through connect(), never through
@@ -404,33 +407,81 @@ class AasdkSession(
     private fun startUsb() {
         OalLog.i(TAG, "Starting aasdk session (USB transport)")
         _usbConnectionManager?.stop()
-        _usbConnectionManager = UsbConnectionManager(context, scope) { usbTransportPipe ->
-            scope.launch(Dispatchers.IO) {
-                OalLog.i(TAG, "USB transport ready — starting aasdk native session")
-                handleUsbConnection(usbTransportPipe)
-            }
-        }
+        _usbConnectionManager = UsbConnectionManager(
+            context = context,
+            scope = scope,
+            onTransportReady = { usbTransportPipe ->
+                scope.launch(Dispatchers.IO) {
+                    OalLog.i(TAG, "USB transport ready — starting aasdk native session")
+                    handleUsbConnection(usbTransportPipe)
+                }
+            },
+            onTransportDetached = { usbTransportPipe, retired ->
+                // Revoke synchronously at the manager callback boundary. The
+                // ready callback is queued on IO too; without this marker it can
+                // run after retirement acknowledged and start a detached pipe.
+                detachedUsbTransports.add(usbTransportPipe)
+                scope.launch(Dispatchers.IO) {
+                    if (retireDetachedUsbTransport(usbTransportPipe)) {
+                        retired()
+                    } else {
+                        OalLog.e(TAG, "Detached USB native attempt did not retire — " +
+                                "replacement remains blocked")
+                    }
+                }
+            },
+        )
         _usbConnectionManager?.start()
     }
 
     private fun handleUsbConnection(pipe: AasdkTransportPipe) {
-        _connectionState.value = ConnectionState.CONNECTING
+        synchronized(connectionStartLock) {
+            if (detachedUsbTransports.remove(pipe)) {
+                OalLog.i(TAG, "Queued USB transport was detached before native start — discarding it")
+                pipe.close()
+                return
+            }
+            _connectionState.value = ConnectionState.CONNECTING
+            OalLog.i(TAG, "Starting native aasdk session (USB): " +
+                    "${sdrConfig.videoWidth}x${sdrConfig.videoHeight}")
+            onNativeSessionStarting?.invoke()
+            transportPipe = pipe
 
-        OalLog.i(TAG, "Starting native aasdk session (USB): ${sdrConfig.videoWidth}x${sdrConfig.videoHeight}")
-        onNativeSessionStarting?.invoke()
-
-        transportPipe = pipe
-
-        try {
-            AasdkNative.nativeCreateSession()
-            AasdkNative.nativeStartSession(pipe, this, sdrConfig)
-        } catch (e: Exception) {
-            OalLog.e(TAG, "Native session start failed (USB): ${e.message}")
-            pipe.close()
-            transportPipe = null
-            _connectionState.value = ConnectionState.DISCONNECTED
+            try {
+                AasdkNative.nativeCreateSession()
+                AasdkNative.nativeStartSession(pipe, this, sdrConfig)
+            } catch (e: Exception) {
+                OalLog.e(TAG, "Native session start failed (USB): ${e.message}")
+                pipe.close()
+                transportPipe = null
+                _connectionState.value = ConnectionState.DISCONNECTED
+            }
         }
     }
+
+    private fun retireDetachedUsbTransport(pipe: AasdkTransportPipe): Boolean =
+        synchronized(connectionStartLock) {
+            if (transportPipe !== pipe) {
+                OalLog.i(TAG, "Ignoring stale USB detach — its native transport is no longer current")
+                return@synchronized true
+            }
+            OalLog.i(TAG, "Active USB pipe detached — closing transport before native stop")
+            explicitStop = true
+            try {
+                transportPipe = NativeTransportTeardown.closePipeBeforeNativeStop(transportPipe) {
+                    AasdkNative.nativeStopSession()
+                }
+                detachedUsbTransports.remove(pipe)
+                _connectionState.value = ConnectionState.DISCONNECTED
+                OalLog.i(TAG, "Detached USB native attempt retired — ready for re-enumeration")
+                true
+            } catch (e: Exception) {
+                OalLog.e(TAG, "Detached USB native retirement failed: ${e.message}")
+                false
+            } finally {
+                explicitStop = false
+            }
+        }
 
     private fun handleConnection(socket: Socket) {
         _connectionState.value = ConnectionState.CONNECTING
@@ -563,7 +614,7 @@ class AasdkSession(
             // Restart transport.
             when (transportMode) {
                 "usb" -> startUsb()
-                "wpp" -> startWpp()
+                "wpp" -> startWpp(recovery = true)
                 else -> {
                     // Same reason as the retry path: without the known address this
                     // falls through to the gateway heuristic and dials the house
@@ -716,26 +767,9 @@ class AasdkSession(
                 if (lastFailureWasProtocolError) " (protocol error, extended backoff)" else "")
             lastFailureWasProtocolError = false
 
-            // Re-advertise over Bluetooth after repeated failures in WPP mode.
-            //
-            // Reconnecting the TCP transport is not enough here. The car's socket
-            // to the companion comes back every time, but Android Auto is gone —
-            // it disconnected when the network dropped and nothing can summon it.
-            // The AA-launch broadcast targets WirelessStartupReceiver, which 17.4
-            // disables, so it is a no-op. The ONLY working way to tell AA where to
-            // connect is the Bluetooth WPP handshake, and that only runs when the
-            // PHONE dials back on the AA UUID.
-            //
-            // Bouncing the SDP record makes the phone re-dial, which re-runs the
-            // handshake with a freshly-resolved endpoint. Without this, any
-            // network blip is unrecoverable: observed as 217 keyframe re-requests
-            // and nine retries over eight minutes, TCP connecting happily each
-            // time with no peer behind it.
-            if (transportMode == "wpp" && consecutiveReconnectFailures >= 2) {
-                OalLog.i(TAG, "WPP: re-advertising over Bluetooth so the phone re-dials " +
-                        "and Android Auto is told where to connect")
-                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
-            }
+            // Recovery owns SDP refresh at the transport-restart boundary below.
+            // Doing it here as well produced two refreshes for one failure and let
+            // the second handshake replace the session created by the first.
 
             cancelPendingReconnect("superseded by newer teardown")
             val job = scope.launch {
@@ -754,7 +788,7 @@ class AasdkSession(
                     OalLog.i(TAG, "Restarting transport connector")
                     when (transportMode) {
                         "usb" -> startUsb()
-                        "wpp" -> startWpp()
+                        "wpp" -> startWpp(recovery = true)
                         else -> {
                             // Keep the companion's address on a retry.
                             //

@@ -38,11 +38,11 @@ class VehicleEnergyReconnectContractTest {
     @Test
     fun `transport reconnect retains cached vehicle data without resurrecting its owner`() {
         val source = sessionManagerSource()
-        val start = source.indexOf("session.onNativeSessionStarting = {")
-        val end = source.indexOf("AaWirelessBtControl.sessionIsStreaming", startIndex = start)
+        val start = source.indexOf("private fun prepareNativeSessionStart(session: AasdkSession)")
+        val end = source.indexOf("private fun startLocationForwarding", startIndex = start)
 
-        assertTrue("Native restart hook must exist", start >= 0)
-        assertTrue("Native restart hook must have a boundary", end > start)
+        assertTrue("Native dependency preparer must exist", start >= 0)
+        assertTrue("Native dependency preparer must have a boundary", end > start)
         val hook = source.substring(start, end)
         val adopt = hook.indexOf("aasdkSession = session")
         val collectors = hook.indexOf("bindSessionCollectors(session)")
