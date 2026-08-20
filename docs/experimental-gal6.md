@@ -63,7 +63,16 @@ Gearhead's legacy wireless HEVC policy uses a 60-second I-frame interval. GAL 6.
 | 60 | ~3600 frames | ~120 frames |
 | 30 | ~1800 frames | ~60 frames |
 
-These are framework-derived predictions, not vehicle verification.
+The frame-count prediction was subsequently confirmed by the in-vehicle result below.
+
+## Verified in vehicle
+
+Build 0.1.454 verified the GAL 6 H.265 path at 2560×1440 over both USB and
+wireless. Gearhead negotiated 6.1 for the raw 6.0 request and emitted a real IDR
+after exactly 119 P-frames: a 120-frame GOP instead of the legacy approximately
+3,600-frame cadence. The first rendered frame arrived in 2.208 seconds over USB
+and 2.479 seconds wirelessly. Thirteen consecutive USB IDRs repeated the same
+119-P-frame spacing, and the startup image was visually clean on both transports.
 
 ## Runtime evidence required
 
@@ -82,4 +91,5 @@ The positive success signal is not merely a 6.x response. It is a stable end-to-
 
 If projection, audio, touch, or navigation regresses, select **1.7** and use **Save & Reconnect**. Do not use video-focus bouncing as a keyframe workaround; it caused a verified encoder-throttle regression.
 
-A Play release containing this code is an implementation attempt until the next in-vehicle upload proves the selected policy ran and projection remained healthy.
+GAL 6 H.265 startup is verified in vehicle. Select 1.7 only when testing legacy
+phone compatibility or isolating behavior outside the verified GAL 6 path.
