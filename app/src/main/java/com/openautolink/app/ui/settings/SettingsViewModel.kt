@@ -30,7 +30,7 @@ data class SettingsUiState(
     val videoAutoNegotiate: Boolean = AppPreferences.DEFAULT_VIDEO_AUTO_NEGOTIATE,
     val videoCodec: String = AppPreferences.DEFAULT_VIDEO_CODEC,
     val videoFps: Int = AppPreferences.DEFAULT_VIDEO_FPS,
-    val experimentalGal6: Boolean = AppPreferences.DEFAULT_EXPERIMENTAL_GAL6,
+    val galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
     val displayMode: String = AppPreferences.DEFAULT_DISPLAY_MODE,
     val micSource: String = AppPreferences.DEFAULT_MIC_SOURCE,
     val btMacOverride: String = AppPreferences.DEFAULT_BT_MAC_OVERRIDE,
@@ -205,10 +205,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         SettingsUiState()
     )
 
-    val experimentalGal6: StateFlow<Boolean> = preferences.experimentalGal6.stateIn(
+    val galVersion: StateFlow<String> = preferences.galVersion.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
-        AppPreferences.DEFAULT_EXPERIMENTAL_GAL6,
+        AppPreferences.DEFAULT_GAL_VERSION,
     )
 
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
@@ -254,7 +254,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _wppLocalIpOverride,
         _wppApInterfaceOverride,
         _wppChannelMhzOverride,
-        experimentalGal6,
+        galVersion,
     ) { arr ->
         val state = arr[0] as SettingsUiState
         state.copy(
@@ -263,7 +263,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             wppLocalIp = arr[5] as String,
             wppApInterface = arr[6] as String,
             wppChannelMhz = arr[7] as String,
-            experimentalGal6 = arr[8] as Boolean,
+            galVersion = arr[8] as String,
         )
     }.stateIn(
         viewModelScope,
@@ -395,8 +395,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferences.setVideoFps(fps) }
     }
 
-    fun updateExperimentalGal6(enabled: Boolean) {
-        viewModelScope.launch { preferences.setExperimentalGal6(enabled) }
+    fun updateGalVersion(version: String) {
+        viewModelScope.launch { preferences.setGalVersion(version) }
     }
 
     fun updateDisplayMode(mode: String) {
@@ -629,7 +629,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val aaDecAddDepth = preferences.aaDecoderAdditionalDepth.first()
             val aaAutoM = preferences.aaAutoMargins.first()
             val videoFps = preferences.videoFps.first()
-            val experimentalGal6 = preferences.experimentalGal6.first()
+            val galVersion = preferences.galVersion.first()
             val driveSide = preferences.driveSide.first()
             val hideClock = preferences.hideAaClock.first()
             val hideSignal = preferences.hidePhoneSignal.first()
@@ -676,7 +676,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 safeAreaLeft = saLeft,
                 safeAreaRight = saRight,
                 gpsForwarding = gpsForwarding,
-                experimentalGal6 = experimentalGal6,
+                galVersion = galVersion,
             )
         }
     }

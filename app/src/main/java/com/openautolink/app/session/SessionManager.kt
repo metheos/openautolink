@@ -928,7 +928,7 @@ class SessionManager(
         safeAreaLeft: Int = 0,
         safeAreaRight: Int = 0,
         gpsForwarding: Boolean = true,
-        experimentalGal6: Boolean = false,
+        galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
     ) {
         // Cache for later reconnects that don't know the resolved IP (e.g.
         // Settings "Save & Reconnect" in Car Hotspot mode).
@@ -1141,7 +1141,7 @@ class SessionManager(
                 driveSide, hideClock, hideSignal, hideBattery, scalingMode,
                 manualIpAddress,
                 safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                gpsForwarding, experimentalGal6)
+                gpsForwarding, galVersion)
         }
 
         // Listen for system sleep so we can gracefully tear down before the
@@ -1165,7 +1165,7 @@ class SessionManager(
         manualIpAddress: String? = null,
         safeAreaTop: Int = 0, safeAreaBottom: Int = 0, safeAreaLeft: Int = 0, safeAreaRight: Int = 0,
         gpsForwarding: Boolean = true,
-        experimentalGal6: Boolean = false,
+        galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
     ) {
         aasdkSession?.stop()
         _transportMode.value = directTransport
@@ -1410,7 +1410,7 @@ class SessionManager(
             gpsForwarding = gpsForwarding,
             autoNegotiate = videoAutoNegotiate,
             videoCodec = codec,
-            experimentalGal6 = experimentalGal6,
+            galVersion = galVersion,
             // realDensity removed — interferes with pixel_aspect_ratio_e4 on some AA versions
             safeAreaTop = effSafeTop,
             safeAreaBottom = effSafeBottom,
@@ -1727,7 +1727,7 @@ class SessionManager(
         safeAreaLeft: Int = 0,
         safeAreaRight: Int = 0,
         gpsForwarding: Boolean = true,
-        experimentalGal6: Boolean = false,
+        galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
     ) {
         // "Save & Reconnect" from Settings doesn't know the resolved Car
         // Hotspot IP — fall back to the last value we successfully used so
@@ -1746,7 +1746,7 @@ class SessionManager(
                 driveSide, hideClock, hideSignal, hideBattery,
                 volumeOffsetMedia, volumeOffsetNavigation, volumeOffsetAssistant,
                 effectiveManualIp, safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                gpsForwarding, experimentalGal6,
+                gpsForwarding, galVersion,
             )
             return
         }
@@ -1828,7 +1828,7 @@ class SessionManager(
                     videoFps, driveSide, hideClock, hideSignal, hideBattery,
                     volumeOffsetMedia, volumeOffsetNavigation, volumeOffsetAssistant,
                     effectiveManualIp, safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                    gpsForwarding, experimentalGal6,
+                    gpsForwarding, galVersion,
                 )
             } catch (e: Exception) {
                 OalLog.e(TAG, "reconnect() failed: ${e.message}")
@@ -1855,7 +1855,7 @@ class SessionManager(
         manualIpAddress: String?,
         safeAreaTop: Int, safeAreaBottom: Int, safeAreaLeft: Int, safeAreaRight: Int,
         gpsForwarding: Boolean,
-        experimentalGal6: Boolean,
+        galVersion: String,
     ) {
         observeJob = null
         decoderWatchJob = null
@@ -1917,7 +1917,7 @@ class SessionManager(
                 driveSide, hideClock, hideSignal, hideBattery, scalingMode,
                 manualIpAddress,
                 safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                gpsForwarding, experimentalGal6)
+                gpsForwarding, galVersion)
         }
 
         // 9. Re-establish cluster binding — GM Templates Host may have killed

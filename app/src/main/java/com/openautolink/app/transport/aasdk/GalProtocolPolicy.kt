@@ -1,53 +1,61 @@
 package com.openautolink.app.transport.aasdk
 
 /** Raw GAL protocol version requested by the head unit before TLS. */
-data class GalProtocolVersion(val major: Int, val minor: Int)
+data class GalProtocolVersion(val major: Int, val minor: Int) : Comparable<GalProtocolVersion> {
+    override fun compareTo(other: GalProtocolVersion): Int =
+        compareValuesBy(this, other, GalProtocolVersion::major, GalProtocolVersion::minor)
 
-/**
- * Behavior selected by the experimental GAL 6 compatibility toggle.
- *
- * GAL 6.0 is not just a version label: Gearhead switches audio to ackless,
- * enriches AV start envelopes, and selects the HEVC encoder's short (2-second)
- * keyframe interval. The setup window remains OAL's proven value of 30.
- */
+    override fun toString(): String = "$major.$minor"
+}
+
+/** Cumulative behavior selected solely from the raw HU-requested GAL version. */
 data class GalProtocolConfig(
     val requestedVersion: GalProtocolVersion,
     val maxUnacked: Int,
+    val requireMinimumCompatibleResponse: Boolean,
+    val modernDisplayPolicy: Boolean,
     val sendAudioAcks: Boolean,
+    val singleVideoCodecFamily: Boolean,
+    val useActiveMediaSessionIds: Boolean,
     val hevcKeyframeIntervalSeconds: Int,
 )
 
 object GalProtocolPolicy {
-    private const val LEGACY_KEYFRAME_INTERVAL_SECONDS = 60
-    private const val GAL6_KEYFRAME_INTERVAL_SECONDS = 2
+    private val GAL_1_7 = GalProtocolVersion(1, 7)
+    private val GAL_4_3 = GalProtocolVersion(4, 3)
+    private val GAL_5_0 = GalProtocolVersion(5, 0)
+    private val GAL_5_1 = GalProtocolVersion(5, 1)
+    private val GAL_6_0 = GalProtocolVersion(6, 0)
 
-    fun forExperimentalGal6(enabled: Boolean): GalProtocolConfig =
-        if (enabled) {
-            GalProtocolConfig(
-                requestedVersion = GalProtocolVersion(6, 0),
-                // The audited GAL gates require only a positive setup value;
-                // ackless audio does not consume this as per-buffer credit.
-                maxUnacked = 30,
-                sendAudioAcks = false,
-                hevcKeyframeIntervalSeconds = GAL6_KEYFRAME_INTERVAL_SECONDS,
-            )
-        } else {
-            GalProtocolConfig(
-                requestedVersion = GalProtocolVersion(1, 7),
-                maxUnacked = 30,
-                sendAudioAcks = true,
-                hevcKeyframeIntervalSeconds = LEGACY_KEYFRAME_INTERVAL_SECONDS,
-            )
+    val supportedVersions: List<String> = listOf(GAL_1_7, GAL_4_3, GAL_5_0, GAL_5_1, GAL_6_0)
+        .map(GalProtocolVersion::toString)
+
+    private val versionsByName = supportedVersions.zip(
+        listOf(GAL_1_7, GAL_4_3, GAL_5_0, GAL_5_1, GAL_6_0),
+    ).toMap()
+
+    fun forVersion(configuredVersion: String): GalProtocolConfig {
+        val requested = versionsByName[configuredVersion] ?: GAL_1_7
+        return GalProtocolConfig(
+            requestedVersion = requested,
+            maxUnacked = 30,
+            requireMinimumCompatibleResponse = requested >= GAL_4_3,
+            modernDisplayPolicy = requested >= GAL_4_3,
+            sendAudioAcks = requested < GAL_5_0,
+            singleVideoCodecFamily = requested >= GAL_5_0,
+            useActiveMediaSessionIds = requested >= GAL_4_3,
+            hevcKeyframeIntervalSeconds = if (requested >= GAL_6_0) 2 else 60,
+        )
+    }
+
+    /** Resolve the new string setting with a one-way fallback to the former Boolean. */
+    fun resolvePersistedVersion(configuredVersion: String?, legacyEnabled: Boolean?): String =
+        when {
+            configuredVersion in supportedVersions -> configuredVersion!!
+            legacyEnabled == true -> "6.0"
+            else -> "1.7"
         }
 
-    /**
-     * Expected OMX HEVC GOP frame count.
-     *
-     * AOSP converts I-frame seconds to frames using configured fps. This is a
-     * diagnostic prediction, not a guarantee for every vendor encoder.
-     */
-    fun expectedHevcGopFrames(experimentalGal6: Boolean, advertisedFps: Int): Int {
-        return forExperimentalGal6(experimentalGal6).hevcKeyframeIntervalSeconds *
-            advertisedFps.coerceAtLeast(0)
-    }
+    fun expectedHevcGopFrames(configuredVersion: String, advertisedFps: Int): Int =
+        forVersion(configuredVersion).hevcKeyframeIntervalSeconds * advertisedFps.coerceAtLeast(0)
 }

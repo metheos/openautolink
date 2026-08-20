@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "gal_version_policy.h"
+
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -53,6 +55,9 @@
 #include <aasdk/Channel/MediaPlaybackStatus/IMediaPlaybackStatusServiceEventHandler.hpp>
 #include <aasdk/Channel/PhoneStatus/PhoneStatusService.hpp>
 #include <aasdk/Channel/PhoneStatus/IPhoneStatusServiceEventHandler.hpp>
+#include <aap_protobuf/service/media/shared/message/MediaConfig.pb.h>
+#include <aap_protobuf/service/media/shared/message/MediaOptions.pb.h>
+#include <aap_protobuf/service/navigationstatus/VehicleEnergyForecast.pb.h>
 
 namespace openautolink::jni {
 
@@ -159,6 +164,10 @@ public:
     // ---- IControlServiceChannelEventHandler ----
     void onVersionResponse(uint16_t majorCode, uint16_t minorCode,
                            aap_protobuf::shared::MessageStatus status) override;
+    void onVersionResponse(uint16_t majorCode, uint16_t minorCode,
+                           aap_protobuf::shared::MessageStatus status,
+                           const aasdk::common::DataConstBuffer& trailingBytes) override;
+    void onVersionResponseMalformed(size_t payloadSize) override;
     void onHandshake(const aasdk::common::DataConstBuffer& payload) override;
     void onServiceDiscoveryRequest(
         const aap_protobuf::service::control::message::ServiceDiscoveryRequest& request) override;
@@ -295,7 +304,7 @@ private:
     std::atomic<int> activeVideoSessionId_{0};
     std::atomic<int> requestedGalMajor_{1};
     std::atomic<int> requestedGalMinor_{7};
-    std::atomic<uint64_t> gal6EnvelopeSequence_{0};
+    std::atomic<uint64_t> galEnvelopeSequence_{0};
     std::atomic<uint32_t> energyModelDiagMask_{0};
 
     // Current video focus state for the main display.
@@ -322,25 +331,33 @@ private:
 
 public:
     bool shouldSendAudioAcks() const { return sdrConfig_.sendAudioAcks; }
-    int mediaAckSessionId(int activeSessionId) const {
-        return sdrConfig_.experimentalGal6 ? activeSessionId : 0;
+    int audioAckSessionId(int activeSessionId) const {
+        return gal::mediaAckSessionId(sdrConfig_.useActiveMediaSessionIds, activeSessionId);
+    }
+    int videoAckSessionId(int activeSessionId) const {
+        return gal::mediaAckSessionId(sdrConfig_.useActiveMediaSessionIds, activeSessionId);
     }
     int mediaSetupMaxUnacked() const { return sdrConfig_.mediaSetupMaxUnacked; }
     int expectedHevcGopFrames() const {
         return sdrConfig_.hevcKeyframeIntervalSeconds * std::max(0, sdrConfig_.videoFps);
     }
-    void reportGal6StartEnvelope(
+    void reportGalStartEnvelope(
         const char* channel,
         const aap_protobuf::service::media::shared::message::Start& indication);
-    void reportGal6RawEnvelope(
+    void reportGalRawEnvelope(
         const char* channel,
         const char* envelope,
         const aasdk::common::DataConstBuffer& buffer);
-    void reportGal6Payload(
+    void reportGalPayload(
         const char* channel,
         const char* envelope,
         const uint8_t* data,
         size_t size);
+    void reportMediaOptions(
+        const char* channel,
+        const aasdk::common::DataConstBuffer& buffer);
+    void reportVehicleEnergyForecast(
+        const aasdk::common::DataConstBuffer& buffer);
 
     /**
      * Centralized channel-error reporting. Called by per-channel handlers.
@@ -388,11 +405,14 @@ private:
         bool gpsForwarding = true;
         bool autoNegotiate = true;
         std::string videoCodec = "h265";
-        bool experimentalGal6 = false;
         int requestedGalMajor = 1;
         int requestedGalMinor = 7;
         int mediaSetupMaxUnacked = 30;
         bool sendAudioAcks = true;
+        bool requireMinimumCompatibleResponse = false;
+        bool modernDisplayPolicy = false;
+        bool singleVideoCodecFamily = false;
+        bool useActiveMediaSessionIds = false;
         int hevcKeyframeIntervalSeconds = 60;
         int realDensity = 0;
         int safeAreaTop = 0;

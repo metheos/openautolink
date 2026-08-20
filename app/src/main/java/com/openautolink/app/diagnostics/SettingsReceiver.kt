@@ -38,7 +38,8 @@ import kotlinx.coroutines.runBlocking
  *   video_auto_negotiate --ez bvalue <bool>    true/false
  *   video_codec         --es svalue <str>      h264, h265
  *   video_fps           --ei value <int>       30, 60
- *   experimental_gal6   --ez bvalue <bool>     request GAL/PDK 6.0 (experimental)
+ *   gal_version         --es svalue <1.7|4.3|5.0|5.1|6.0>
+ *   experimental_gal6   --ez bvalue <bool>     legacy alias for 1.7/6.0
  *   direct_transport    --es svalue <str>      hotspot, usb
  *   drive_side          --es svalue <str>      left, right
  *   manual_ip_enabled   --ez bvalue <bool>     true/false
@@ -111,9 +112,18 @@ class SettingsReceiver : BroadcastReceiver() {
                     val v = intent.getIntExtra("value", -1)
                     if (v > 0) { prefs.setVideoFps(v); log("video_fps=$v") }
                 }
+                "gal_version" -> {
+                    val v = intent.getStringExtra("svalue") ?: return@runBlocking
+                    val safeVersion = com.openautolink.app.transport.aasdk.GalProtocolPolicy
+                        .resolvePersistedVersion(v, null)
+                    prefs.setGalVersion(safeVersion); log("gal_version=$safeVersion")
+                }
+                // Backward-compatible maintainer command for scripts that still
+                // set the former Boolean toggle.
                 "experimental_gal6" -> {
                     val v = intent.getBooleanExtra("bvalue", false)
-                    prefs.setExperimentalGal6(v); log("experimental_gal6=$v")
+                    val version = if (v) "6.0" else "1.7"
+                    prefs.setGalVersion(version); log("gal_version=$version (legacy toggle)")
                 }
                 "direct_transport" -> {
                     val v = intent.getStringExtra("svalue") ?: return@runBlocking
@@ -194,7 +204,7 @@ class SettingsReceiver : BroadcastReceiver() {
                     gpsForwarding = prefs.gpsForwarding.first(),
                     manualIpAddress = if (prefs.manualIpEnabled.first())
                         prefs.manualIpAddress.first().takeIf { it.isNotBlank() } else null,
-                    experimentalGal6 = prefs.experimentalGal6.first(),
+                    galVersion = prefs.galVersion.first(),
                 )
                 OalLog.i("SettingsRcv", "RECONNECT: triggered")
             } catch (e: Exception) {

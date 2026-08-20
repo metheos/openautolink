@@ -194,6 +194,46 @@ if [ ! -f "$HOST_PROTOC" ]; then
     find "$HOST_BUILD_DIR" -name "libaasdk.a" 2>&1
 fi
 
+# Run the GAL compatibility tests against the host-generated protobuf objects.
+# These exercise the exact parser/admission helpers and assert serialized field
+# presence for explicit zero insets before any Android prebuilt is published.
+echo ""
+echo "=== Running host GAL protocol tests ==="
+GAL_TEST_DIR="$SHARED_DIR/gal-tests"
+mkdir -p "$GAL_TEST_DIR"
+HOST_CXX="${CXX:-g++}"
+
+"$HOST_CXX" -std=c++20 -Wall -Wextra \
+    -I"$AASDK_NATIVE/include" \
+    "$REPO_ROOT/app/src/test/native/version_response_parser_test.cpp" \
+    -o "$GAL_TEST_DIR/version_response_parser_test"
+"$GAL_TEST_DIR/version_response_parser_test"
+
+"$HOST_CXX" -std=c++20 -Wall -Wextra \
+    -I"$REPO_ROOT/app/src/main/cpp" \
+    -I"$HOST_BUILD_DIR/protobuf" \
+    -I"$HOST_BUILD_DIR/_deps/protobuf-src/src" \
+    -I"$HOST_BUILD_DIR/_deps/abseil-src" \
+    "$REPO_ROOT/app/src/test/native/gal_version_policy_test.cpp" \
+    -o "$GAL_TEST_DIR/gal_version_policy_test"
+"$GAL_TEST_DIR/gal_version_policy_test"
+
+"$HOST_CXX" -std=c++20 -Wall -Wextra \
+    -I"$REPO_ROOT/app/src/main/cpp" \
+    -I"$HOST_BUILD_DIR/protobuf" \
+    -I"$HOST_BUILD_DIR/_deps/protobuf-src/src" \
+    -I"$HOST_BUILD_DIR/_deps/abseil-src" \
+    "$REPO_ROOT/app/src/test/native/gal_video_policy_test.cpp" \
+    -Wl,--start-group \
+    "$HOST_BUILD_DIR/lib/libaap_protobuf.a" \
+    "$HOST_BUILD_DIR/lib/libprotobuf.a" \
+    "$HOST_BUILD_DIR"/lib/libabsl_*.a \
+    "$HOST_BUILD_DIR"/lib/libutf8_*.a \
+    -Wl,--end-group -pthread \
+    -o "$GAL_TEST_DIR/gal_video_policy_test"
+"$GAL_TEST_DIR/gal_video_policy_test"
+echo "GAL protocol tests passed"
+
 # Step 2: Cross-compile aasdk for Android.
 echo ""
 echo "=== Configuring aasdk for Android $TARGET_ABI (cross-compile) ==="

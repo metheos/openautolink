@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.openautolink.app.transport.aasdk.GalProtocolPolicy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -33,6 +34,8 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         val VIDEO_AUTO_NEGOTIATE = booleanPreferencesKey("video_auto_negotiate")
         val VIDEO_CODEC = stringPreferencesKey("video_codec")
         val VIDEO_FPS = intPreferencesKey("video_fps")
+        val GAL_VERSION = stringPreferencesKey("gal_version")
+        /** Retained only to migrate installs that used the former Boolean toggle. */
         val EXPERIMENTAL_GAL6 = booleanPreferencesKey("experimental_gal6")
         val DISPLAY_MODE = stringPreferencesKey("display_mode")
         val MIC_SOURCE = stringPreferencesKey("mic_source")
@@ -249,7 +252,7 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_VIDEO_AUTO_NEGOTIATE = true
         const val DEFAULT_VIDEO_CODEC = "h264"
         const val DEFAULT_VIDEO_FPS = 60
-        const val DEFAULT_EXPERIMENTAL_GAL6 = false
+        const val DEFAULT_GAL_VERSION = "1.7"
         const val DEFAULT_DISPLAY_MODE = "fullscreen_immersive"
         const val DEFAULT_MIC_SOURCE = "car"
         const val DEFAULT_BT_MAC_OVERRIDE = ""
@@ -393,8 +396,11 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[VIDEO_FPS] ?: DEFAULT_VIDEO_FPS
     }
 
-    val experimentalGal6: Flow<Boolean> = dataStore.data.map { prefs ->
-        prefs[EXPERIMENTAL_GAL6] ?: DEFAULT_EXPERIMENTAL_GAL6
+    val galVersion: Flow<String> = dataStore.data.map { prefs ->
+        GalProtocolPolicy.resolvePersistedVersion(
+            configuredVersion = prefs[GAL_VERSION],
+            legacyEnabled = prefs[EXPERIMENTAL_GAL6],
+        )
     }
 
     val displayMode: Flow<String> = dataStore.data.map { prefs ->
@@ -728,8 +734,13 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         dataStore.edit { it[VIDEO_FPS] = fps }
     }
 
-    suspend fun setExperimentalGal6(enabled: Boolean) {
-        dataStore.edit { it[EXPERIMENTAL_GAL6] = enabled }
+    suspend fun setGalVersion(version: String) {
+        val safeVersion = version.takeIf { it in GalProtocolPolicy.supportedVersions }
+            ?: DEFAULT_GAL_VERSION
+        dataStore.edit {
+            it[GAL_VERSION] = safeVersion
+            it.remove(EXPERIMENTAL_GAL6)
+        }
     }
 
     suspend fun setDisplayMode(mode: String) {
