@@ -10,26 +10,29 @@ import org.junit.Test
 class Gal6PreferenceContractTest {
 
     @Test
-    fun `SDR config materializes tested GAL policy for JNI`() {
-        val legacy = AasdkSdrConfig(experimentalGal6 = false)
-        assertEquals(1, legacy.requestedGalMajor)
-        assertEquals(7, legacy.requestedGalMinor)
-        assertEquals(30, legacy.mediaSetupMaxUnacked)
-        assertTrue(legacy.sendAudioAcks)
-        assertEquals(60, legacy.hevcKeyframeIntervalSeconds)
+    fun `SDR config materializes every tested GAL policy for JNI`() {
+        GalProtocolPolicy.supportedVersions.forEach { version ->
+            val expected = GalProtocolPolicy.forVersion(version)
+            val actual = AasdkSdrConfig(galVersion = version)
 
-        val modern = AasdkSdrConfig(experimentalGal6 = true)
-        assertEquals(6, modern.requestedGalMajor)
-        assertEquals(0, modern.requestedGalMinor)
-        assertEquals(30, modern.mediaSetupMaxUnacked)
-        assertFalse(modern.sendAudioAcks)
-        assertEquals(2, modern.hevcKeyframeIntervalSeconds)
+            assertEquals(expected.requestedVersion.major, actual.requestedGalMajor)
+            assertEquals(expected.requestedVersion.minor, actual.requestedGalMinor)
+            assertEquals(30, actual.mediaSetupMaxUnacked)
+            assertEquals(expected.sendAudioAcks, actual.sendAudioAcks)
+            assertEquals(expected.requireMinimumCompatibleResponse, actual.requireMinimumCompatibleResponse)
+            assertEquals(expected.modernDisplayPolicy, actual.modernDisplayPolicy)
+            assertEquals(expected.singleVideoCodecFamily, actual.singleVideoCodecFamily)
+            assertEquals(expected.useActiveMediaSessionIds, actual.useActiveMediaSessionIds)
+            assertEquals(expected.hevcKeyframeIntervalSeconds, actual.hevcKeyframeIntervalSeconds)
+        }
     }
 
     @Test
-    fun `experimental GAL 6 mode is off by default through every user-facing layer`() {
-        assertFalse(AppPreferences.DEFAULT_EXPERIMENTAL_GAL6)
-        assertFalse(SettingsUiState().experimentalGal6)
-        assertFalse(AasdkSdrConfig().experimentalGal6)
+    fun `GAL defaults remain legacy until explicitly selected`() {
+        assertEquals("1.7", AppPreferences.DEFAULT_GAL_VERSION)
+        assertEquals("1.7", SettingsUiState().galVersion)
+        assertEquals("1.7", AasdkSdrConfig().galVersion)
+        assertTrue(AasdkSdrConfig().sendAudioAcks)
+        assertFalse(AasdkSdrConfig().modernDisplayPolicy)
     }
 }

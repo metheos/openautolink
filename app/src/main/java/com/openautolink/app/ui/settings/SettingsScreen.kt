@@ -73,6 +73,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 
 import com.openautolink.app.session.SessionState
 import com.openautolink.app.data.AppPreferences
+import com.openautolink.app.transport.aasdk.GalProtocolPolicy
 import com.openautolink.app.ui.components.LocalEchoTextField
 import androidx.compose.material3.FilterChip
 
@@ -1188,43 +1189,48 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .clickable { viewModel.updateExperimentalGal6(!uiState.experimentalGal6) }
-                .padding(vertical = 10.dp)
-                .testTag("experimentalGal6Toggle"),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Switch(
-                checked = uiState.experimentalGal6,
-                onCheckedChange = viewModel::updateExperimentalGal6,
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
-                Text(
-                    text = "Experimental GAL 6.0",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
+        Text(
+            text = "GAL / PDK protocol version",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "The requested version activates cumulative phone behavior. Use 1.7 as the " +
+                    "compatibility fallback; 6.0 enables modern video envelopes and the short HEVC keyframe policy.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        GalProtocolPolicy.supportedVersions.forEach { version ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .clickable { viewModel.updateGalVersion(version) }
+                    .padding(vertical = 6.dp)
+                    .testTag("galVersion_$version"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = uiState.galVersion == version,
+                    onClick = { viewModel.updateGalVersion(version) },
                 )
+                Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = if (uiState.experimentalGal6) {
-                        "Enabled — Save & Reconnect to request the modern media protocol"
-                    } else {
-                        "Off (recommended until tested in your vehicle)"
+                    text = when (version) {
+                        "1.7" -> "1.7 — legacy compatibility"
+                        "4.3" -> "4.3 — modern display metadata"
+                        "5.0" -> "5.0 — ackless audio, one codec family"
+                        "5.1" -> "5.1 — media options and EV forecast"
+                        else -> "6.0 — modern video and short HEVC keyframes"
                     },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyLarge,
                 )
             }
         }
-
         Text(
-            text = "Requests Gearhead GAL/PDK 6.0. This enables modern media envelopes, " +
-                    "ackless audio, and the short HEVC keyframe policy that may remove " +
-                    "H.265 startup green. It is compatibility-tested only at build level " +
-                    "and may affect audio, navigation, or video until road-tested.",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Save & Reconnect applies the selected raw HU-requested version. " +
+                    "GAL 6.0 remains an implementation attempt until an in-car log confirms the 6.x response and runtime paths.",
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.padding(bottom = 20.dp),
         )
@@ -1276,8 +1282,8 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
             text = "Video codec the phone uses to encode the AA stream. " +
                     "H.264 is the safe default — instant clean startup, capped at 1080p. " +
                     "H.265 supports up to 4K but legacy GAL can take roughly two minutes " +
-                    "to deliver a full content IDR at 60 FPS. The experimental GAL 6.0 " +
-                    "toggle requests Gearhead's short HEVC keyframe policy.",
+                    "to deliver a full content IDR at 60 FPS. GAL 6.0 requests " +
+                    "Gearhead's short HEVC keyframe policy.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp)

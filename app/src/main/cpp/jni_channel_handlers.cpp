@@ -173,7 +173,7 @@ void JniAudioSinkHandler::onMediaChannelStartIndication(
     logProtoRaw("AudioStart", indication);
     char channelName[32];
     snprintf(channelName, sizeof(channelName), "audio[%d]", static_cast<int>(type_));
-    session_.reportGal6StartEnvelope(channelName, indication);
+    session_.reportGalStartEnvelope(channelName, indication);
     channel_->receive(shared_from_this());
 }
 
@@ -195,7 +195,7 @@ void JniAudioSinkHandler::onMediaWithTimestampIndication(
     // compatibility fallback.
     if (session_.shouldSendAudioAcks()) {
         aap_protobuf::service::media::source::message::Ack ack;
-        ack.set_session_id(session_.mediaAckSessionId(activeSessionId_.load()));
+        ack.set_session_id(session_.audioAckSessionId(activeSessionId_.load()));
         ack.set_ack(1);
         auto promise = aasdk::channel::SendPromise::defer(strand_);
         promise->then([]() {}, [](const auto&) {});
@@ -220,7 +220,7 @@ void JniAudioSinkHandler::onMediaOptions(const aasdk::common::DataConstBuffer& b
 {
     char channelName[32];
     snprintf(channelName, sizeof(channelName), "audio[%d]", static_cast<int>(type_));
-    session_.reportGal6RawEnvelope(channelName, "GAL6 MediaOptions", buffer);
+    session_.reportMediaOptions(channelName, buffer);
 }
 
 void JniAudioSinkHandler::onChannelError(const aasdk::error::Error& e)
@@ -798,7 +798,7 @@ void JniNavStatusHandler::onCurrentPosition(
 void JniNavStatusHandler::onVehicleEnergyForecast(
     const aasdk::common::DataConstBuffer& buffer)
 {
-    session_.reportGal6RawEnvelope("navigation", "GAL6 VehicleEnergyForecast", buffer);
+    session_.reportVehicleEnergyForecast(buffer);
 }
 
 void JniNavStatusHandler::onChannelError(const aasdk::error::Error& e)
