@@ -35,7 +35,7 @@ object GalProtocolPolicy {
     ).toMap()
 
     fun forVersion(configuredVersion: String): GalProtocolConfig {
-        val requested = versionsByName[configuredVersion] ?: GAL_1_7
+        val requested = versionsByName[configuredVersion] ?: GAL_6_0
         return GalProtocolConfig(
             requestedVersion = requested,
             maxUnacked = 30,
@@ -48,13 +48,9 @@ object GalProtocolPolicy {
         )
     }
 
-    /** Resolve the new string setting with a one-way fallback to the former Boolean. */
-    fun resolvePersistedVersion(configuredVersion: String?, legacyEnabled: Boolean?): String =
-        when {
-            configuredVersion in supportedVersions -> configuredVersion!!
-            legacyEnabled == true -> "6.0"
-            else -> "1.7"
-        }
+    /** Resolve the rotated setting; absent/invalid values enter verified GAL 6.0. */
+    fun resolvePersistedVersion(configuredVersion: String?): String =
+        configuredVersion?.takeIf { it in supportedVersions } ?: "6.0"
 
     fun expectedHevcGopFrames(configuredVersion: String, advertisedFps: Int): Int =
         forVersion(configuredVersion).hevcKeyframeIntervalSeconds * advertisedFps.coerceAtLeast(0)

@@ -1221,7 +1221,7 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                         "4.3" -> "4.3 — modern display metadata"
                         "5.0" -> "5.0 — ackless audio, one codec family"
                         "5.1" -> "5.1 — media options and EV forecast"
-                        else -> "6.0 — modern video and short HEVC keyframes"
+                        else -> "6.0 — default; modern video and short HEVC keyframes"
                     },
                     style = MaterialTheme.typography.bodyLarge,
                 )

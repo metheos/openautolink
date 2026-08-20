@@ -115,7 +115,7 @@ class SettingsReceiver : BroadcastReceiver() {
                 "gal_version" -> {
                     val v = intent.getStringExtra("svalue") ?: return@runBlocking
                     val safeVersion = com.openautolink.app.transport.aasdk.GalProtocolPolicy
-                        .resolvePersistedVersion(v, null)
+                        .resolvePersistedVersion(v)
                     prefs.setGalVersion(safeVersion); log("gal_version=$safeVersion")
                 }
                 // Backward-compatible maintainer command for scripts that still

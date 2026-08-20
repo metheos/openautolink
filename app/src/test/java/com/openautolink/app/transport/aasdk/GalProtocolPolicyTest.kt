@@ -45,20 +45,18 @@ class GalProtocolPolicyTest {
     }
 
     @Test
-    fun `invalid or future configured versions safely fall back to legacy`() {
+    fun `invalid or future configured versions fall back to verified GAL6 default`() {
         listOf("", " 6.0", "6.0 ", "4.03", "6.1", "garbage").forEach { value ->
-            assertEquals(GalProtocolVersion(1, 7), GalProtocolPolicy.forVersion(value).requestedVersion)
+            assertEquals(GalProtocolVersion(6, 0), GalProtocolPolicy.forVersion(value).requestedVersion)
         }
     }
 
     @Test
-    fun `persisted version migration preserves legacy users and gives new value precedence`() {
-        assertEquals("1.7", GalProtocolPolicy.resolvePersistedVersion(null, null))
-        assertEquals("1.7", GalProtocolPolicy.resolvePersistedVersion(null, false))
-        assertEquals("6.0", GalProtocolPolicy.resolvePersistedVersion(null, true))
-        assertEquals("5.1", GalProtocolPolicy.resolvePersistedVersion("5.1", true))
-        assertEquals("1.7", GalProtocolPolicy.resolvePersistedVersion("invalid", false))
-        assertEquals("6.0", GalProtocolPolicy.resolvePersistedVersion("invalid", true))
+    fun `rotated preference defaults every upgrade to GAL6 and then preserves new selections`() {
+        assertEquals("6.0", GalProtocolPolicy.resolvePersistedVersion(null))
+        assertEquals("5.1", GalProtocolPolicy.resolvePersistedVersion("5.1"))
+        assertEquals("1.7", GalProtocolPolicy.resolvePersistedVersion("1.7"))
+        assertEquals("6.0", GalProtocolPolicy.resolvePersistedVersion("invalid"))
     }
 
     @Test

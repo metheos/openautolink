@@ -72,7 +72,7 @@ class AasdkSdrConfig(
     @JvmField val videoCodec: String = "h265",
 
     /** Raw GAL/PDK version requested from the phone. */
-    @JvmField val galVersion: String = "1.7",
+    @JvmField val galVersion: String = "6.0",
 
     /** Physical pixel density of the AAOS display (from DisplayMetrics.densityDpi). */
     @JvmField val realDensity: Int = 0,

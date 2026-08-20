@@ -2,7 +2,10 @@
 
 OpenAutoLink exposes a **GAL / PDK protocol version** selector in **Settings → Video**. The selected raw head-unit-requested version applies on the next Android Auto session; use **Save & Reconnect** after changing it.
 
-The safe default and fallback remain **1.7**. Existing installations that had the former Experimental GAL 6.0 Boolean enabled migrate to **6.0**; all other installations remain at 1.7.
+The default is **6.0**, verified in vehicle over USB and wireless. **1.7** remains
+available as the manual compatibility fallback. Version 0.1.456 rotates the
+preference key so every upgraded installation starts on 6.0. A selection made
+after that upgrade persists normally, including a later manual choice of 1.7.
 
 ## Cumulative version policy
 
@@ -13,7 +16,7 @@ The raw requested version—not a higher compatible tuple reported by the phone�
 | 1.7 | Legacy display policy and per-packet audio ACKs. |
 | 4.3 | Modern display ownership metadata and active media session IDs. |
 | 5.0 | Ackless phone-to-HU audio and one advertised codec family per display. |
-| 5.1 | Adds typed and raw handling for audio `MediaOptions` (`0x8014`) and exposes Maps' route-aware `VehicleEnergyForecast` (`0x8008`) to the cluster, projection badge, and diagnostics. |
+| 5.1 | Adds typed and raw handling for audio `MediaOptions` (`0x8014`) and exposes Maps' route-aware `VehicleEnergyForecast` (`0x8008`) to the cluster and diagnostics. |
 | 6.0 | Adds typed and raw modern video Start/MediaConfig and video `MediaOptions`, and activates Gearhead's short HEVC keyframe policy. |
 
 All versions retain OAL's proven `max_unacked=30`. Video remains ACKed at every version: legacy 1.7 preserves `session_id=0`, while GAL 4.3+ uses the active video `Start.session_id`. Modern audio is ackless.
@@ -49,10 +52,11 @@ Typed handling covers:
 Malformed optional modern messages are logged and retained; they do not invent replies or alter session policy.
 
 When Maps supplies `VehicleEnergyForecast`, OAL formats its returned arrival
-energy against the same VEM capacity snapshot sent to the phone. High-quality
-forecasts render as `Arrive 42%`; lower/unknown quality renders as
-`Arrive ~42%`. Forecast state is cleared with the route/session and expires after
-two minutes so stale route energy cannot survive a navigation change.
+energy against the same VEM capacity snapshot sent to the phone. The cluster
+shows `Arrive 42%` for high-quality forecasts or `Arrive ~42%` for lower/unknown
+quality; diagnostics retain the percentage and forecast details. Forecast state
+is cleared with the route/session and expires after two minutes so stale route
+energy cannot survive a navigation change.
 
 ## Expected H.265 effect
 

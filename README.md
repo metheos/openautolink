@@ -364,6 +364,7 @@ The result is the intended Android Auto call experience: Android Auto displays a
 | 4K (3840×2160) | H.265, VP9 | Requires AA Developer Mode |
 
 By default, the app uses auto-negotiation — the phone picks the best codec and resolution it supports.
+GAL 6.0 is the default protocol policy for new and upgraded installs; GAL 1.7 remains available as a manual compatibility fallback.
 
 **H.265 startup is verified clean over USB and wireless.** With GAL 6.0,
 Gearhead uses a 120-frame GOP (one IDR after 119 P-frames), replacing the legacy

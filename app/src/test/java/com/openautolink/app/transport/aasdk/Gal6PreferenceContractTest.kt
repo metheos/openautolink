@@ -28,11 +28,11 @@ class Gal6PreferenceContractTest {
     }
 
     @Test
-    fun `GAL defaults remain legacy until explicitly selected`() {
-        assertEquals("1.7", AppPreferences.DEFAULT_GAL_VERSION)
-        assertEquals("1.7", SettingsUiState().galVersion)
-        assertEquals("1.7", AasdkSdrConfig().galVersion)
-        assertTrue(AasdkSdrConfig().sendAudioAcks)
-        assertFalse(AasdkSdrConfig().modernDisplayPolicy)
+    fun `GAL 6 is the upgrade and fresh default while legacy remains selectable afterward`() {
+        assertEquals("6.0", AppPreferences.DEFAULT_GAL_VERSION)
+        assertEquals("6.0", SettingsUiState().galVersion)
+        assertEquals("6.0", AasdkSdrConfig().galVersion)
+        assertFalse(AasdkSdrConfig().sendAudioAcks)
+        assertTrue(AasdkSdrConfig().modernDisplayPolicy)
     }
 }
