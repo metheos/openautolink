@@ -1,9 +1,13 @@
 package com.openautolink.app.transport.aasdk
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.openautolink.app.audio.AudioFrame
 import com.openautolink.app.diagnostics.OalLog
+import com.openautolink.app.navigation.ChargingStationDetails
+import com.openautolink.app.navigation.EnergyAtDistance
+import com.openautolink.app.navigation.VehicleEnergyForecast
 import com.openautolink.app.transport.AudioPurpose
 import com.openautolink.app.transport.ConnectionState
 import com.openautolink.app.transport.ControlMessage
@@ -82,6 +86,10 @@ class AasdkSession(
 
     private val _controlMessages = MutableSharedFlow<ControlMessage>(extraBufferCapacity = 64)
     val controlMessages: Flow<ControlMessage> = _controlMessages.asSharedFlow()
+
+    private val _vehicleEnergyForecast = MutableStateFlow<VehicleEnergyForecast?>(null)
+    val vehicleEnergyForecast: StateFlow<VehicleEnergyForecast?> =
+        _vehicleEnergyForecast.asStateFlow()
 
     // -- Config (set before start()) --
 
@@ -671,6 +679,7 @@ class AasdkSession(
 
     override fun onSessionStopped(reason: String) {
         OalLog.i(TAG, "AA session stopped: $reason")
+        _vehicleEnergyForecast.value = null
         // Clean up dead transport
         transportPipe?.close()
         transportPipe = null
@@ -852,6 +861,7 @@ class AasdkSession(
         scope.launch {
             com.openautolink.app.diagnostics.DiagnosticLog.i("nav", "Status: $status (${if (status == 1) "ACTIVE" else "INACTIVE"})")
             if (status != 1) { // not ACTIVE
+                _vehicleEnergyForecast.value = null
                 _controlMessages.emit(ControlMessage.NavStateClear)
             }
         }
@@ -919,6 +929,51 @@ class AasdkSession(
                 destDistanceUnit = destDistUnit
             ))
         }
+    }
+
+    override fun onVehicleEnergyForecast(
+        nextStopDistanceMeters: Int,
+        nextStopArrivalEnergyWh: Int,
+        nextStopTimeSeconds: Int,
+        distanceToEmptyMeters: Int,
+        distanceToEmptyEnergyWh: Int,
+        distanceToEmptyTimeSeconds: Int,
+        forecastQuality: Int,
+        minimumDepartureEnergyWh: Int,
+        maximumRatedPowerWatts: Int,
+        estimatedChargingTimeSeconds: Int,
+    ) {
+        _vehicleEnergyForecast.value = VehicleEnergyForecast(
+            energyAtNextStop = if (nextStopArrivalEnergyWh >= 0) {
+                EnergyAtDistance(
+                    nextStopDistanceMeters,
+                    nextStopArrivalEnergyWh,
+                    nextStopTimeSeconds,
+                )
+            } else null,
+            distanceToEmpty = if (distanceToEmptyMeters >= 0) {
+                EnergyAtDistance(
+                    distanceToEmptyMeters,
+                    distanceToEmptyEnergyWh,
+                    distanceToEmptyTimeSeconds,
+                )
+            } else null,
+            forecastQuality = forecastQuality,
+            nextChargingStop = if (maximumRatedPowerWatts >= 0 || minimumDepartureEnergyWh >= 0) {
+                ChargingStationDetails(
+                    minimumDepartureEnergyWh,
+                    maximumRatedPowerWatts,
+                    estimatedChargingTimeSeconds,
+                )
+            } else null,
+            receivedAtElapsedMs = SystemClock.elapsedRealtime(),
+        )
+        com.openautolink.app.diagnostics.DiagnosticLog.i(
+            "vem",
+            "Maps forecast received: arrival=${nextStopArrivalEnergyWh}Wh " +
+                "distance=${nextStopDistanceMeters}m quality=$forecastQuality " +
+                "charge=${maximumRatedPowerWatts}W",
+        )
     }
 
     /**

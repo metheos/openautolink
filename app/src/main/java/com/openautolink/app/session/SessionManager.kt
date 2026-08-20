@@ -29,6 +29,8 @@ import com.openautolink.app.media.OalMediaSessionManager
 import com.openautolink.app.navigation.ManeuverState
 import com.openautolink.app.navigation.NavigationDisplay
 import com.openautolink.app.navigation.NavigationDisplayImpl
+import com.openautolink.app.navigation.VehicleEnergyForecast
+import com.openautolink.app.navigation.VehicleEnergyForecastPolicy
 import com.openautolink.app.transport.AudioPurpose
 import com.openautolink.app.transport.ConnectionState
 import com.openautolink.app.transport.ControlMessage
@@ -277,6 +279,7 @@ class SessionManager(
 
     /** Collectors bound to one AasdkSession, cancelled when it is replaced. */
     private var sessionCollectors: kotlinx.coroutines.Job? = null
+    private var forecastExpiryJob: kotlinx.coroutines.Job? = null
 
     /**
      * Subscribe to everything a session produces: frames, control messages,
@@ -315,6 +318,23 @@ class SessionManager(
                 session.controlMessages.collect { message ->
                     lastActiveTimestamp = SystemClock.elapsedRealtime()
                     handleControlMessage(message)
+                }
+            }
+            launch {
+                session.vehicleEnergyForecast.collect { forecast ->
+                    forecastExpiryJob?.cancel()
+                    _vehicleEnergyForecast.value = forecast
+                    ClusterNavigationState.vehicleEnergyForecast.value = forecast
+                    forecastExpiryJob = if (forecast != null) {
+                        scope.launch {
+                            delay(VehicleEnergyForecastPolicy.MAX_AGE_MS)
+                            if (_vehicleEnergyForecast.value === forecast) {
+                                DiagnosticLog.i("vem", "Maps forecast expired after 120s")
+                                _vehicleEnergyForecast.value = null
+                                ClusterNavigationState.vehicleEnergyForecast.value = null
+                            }
+                        }
+                    } else null
                 }
             }
             launch(videoDispatcher) {
@@ -548,6 +568,12 @@ class SessionManager(
     // Navigation display
     private val _navigationDisplay: NavigationDisplay = NavigationDisplayImpl()
     val navigationDisplay: NavigationDisplay get() = _navigationDisplay
+
+    private val _vehicleEnergyForecast = MutableStateFlow<VehicleEnergyForecast?>(null)
+    val vehicleEnergyForecast: StateFlow<VehicleEnergyForecast?> =
+        _vehicleEnergyForecast.asStateFlow()
+    private val _vehicleBatteryCapacityWh = MutableStateFlow(0)
+    val vehicleBatteryCapacityWh: StateFlow<Int> = _vehicleBatteryCapacityWh.asStateFlow()
 
     // Diagnostics
     private var _remoteDiagnostics: RemoteDiagnosticsImpl? = null
@@ -813,6 +839,10 @@ class SessionManager(
             val capacityWh = vd.evBatteryCapacityWh?.toInt() ?: 0
             val rangeM = ((vd.rangeKm ?: 0f) * 1000).toInt()
             val chargeW = vd.evChargeRateW?.toInt() ?: 0
+            if (capacityWh > 0) {
+                _vehicleBatteryCapacityWh.value = capacityWh
+                ClusterNavigationState.batteryCapacityWh = capacityWh
+            }
             val now = SystemClock.elapsedRealtime()
             evLearnedEstimator?.onVehicleTick(vd, now)
             refreshEvProfileLookup(vd)
@@ -1643,6 +1673,8 @@ class SessionManager(
         videoStallWatchJob = null
         callStateJob?.cancel()
         callStateJob = null
+        sessionCollectors?.cancel()
+        sessionCollectors = null
         aasdkSession?.stop()
         aasdkSession = null
         stopDirectLocationForwarding()
@@ -1660,6 +1692,9 @@ class SessionManager(
         _vehicleDataForwarder = null
         _imuForwarder?.stop()
         _imuForwarder = null
+        forecastExpiryJob?.cancel()
+        forecastExpiryJob = null
+        _vehicleEnergyForecast.value = null
         _navigationDisplay.clear()
         ClusterNavigationState.clear()
         // Do NOT release the MediaSession — it's the process-wide singleton and
@@ -2596,6 +2631,7 @@ class SessionManager(
             }
             is ControlMessage.NavStateClear -> {
                 _navigationDisplay.clear()
+                _vehicleEnergyForecast.value = null
                 ClusterNavigationState.clear()
             }
             is ControlMessage.MediaMetadata -> {

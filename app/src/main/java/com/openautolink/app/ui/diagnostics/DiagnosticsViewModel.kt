@@ -10,6 +10,8 @@ import android.view.WindowManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.openautolink.app.data.AppPreferences
+import com.openautolink.app.navigation.VehicleEnergyForecast
+import com.openautolink.app.navigation.VehicleEnergyForecastPolicy
 import com.openautolink.app.session.SessionManager
 import com.openautolink.app.session.SessionState
 import com.openautolink.app.transport.ControlMessage
@@ -97,6 +99,10 @@ data class CarInfo(
     val evChargeRateW: Float? = null,
     val evBatteryLevelWh: Float? = null,
     val evBatteryCapacityWh: Float? = null,
+    val mapsArrivalBatteryPct: Int? = null,
+    val mapsForecastQuality: Int? = null,
+    val mapsNextChargePowerW: Int? = null,
+    val mapsChargingTimeSec: Int? = null,
     // Extended EV properties
     val evChargeState: Int? = null,
     val evChargeTimeRemainingSec: Int? = null,
@@ -276,6 +282,24 @@ class DiagnosticsViewModel(application: Application) : AndroidViewModel(applicat
         DiagnosticsUiState(system = _system.value)
     )
 
+    private fun withMapsForecast(
+        car: CarInfo,
+        forecast: VehicleEnergyForecast?,
+    ): CarInfo {
+        val capacityWh = car.evBatteryCapacityWh?.toInt() ?: 0
+        return car.copy(
+            mapsArrivalBatteryPct = VehicleEnergyForecastPolicy.arrivalPercent(
+                forecast,
+                capacityWh,
+            ),
+            mapsForecastQuality = forecast?.forecastQuality,
+            mapsNextChargePowerW = forecast?.nextChargingStop?.maximumRatedPowerWatts
+                ?.takeIf { it >= 0 },
+            mapsChargingTimeSec = forecast?.nextChargingStop?.estimatedChargingTimeSeconds
+                ?.takeIf { it >= 0 },
+        )
+    }
+
     init {
         // Start local log capture while diagnostics is open
         com.openautolink.app.diagnostics.DiagnosticLog.startLocalCapture()
@@ -314,7 +338,7 @@ class DiagnosticsViewModel(application: Application) : AndroidViewModel(applicat
 
         viewModelScope.launch {
             forwarder.latestVehicleData.collect { vd ->
-                _car.value = CarInfo(
+                _car.value = withMapsForecast(CarInfo(
                     isActive = forwarder.isActive,
                     speedKmh = vd.speedKmh,
                     gear = vd.gear,
@@ -352,7 +376,13 @@ class DiagnosticsViewModel(application: Application) : AndroidViewModel(applicat
                     evMotorPowerW = vd.evMotorPowerW,
                     evMotorTorqueNm = vd.evMotorTorqueNm,
                     propertyStatus = forwarder.propertyStatus,
-                )
+                ), sessionManager.vehicleEnergyForecast.value)
+            }
+        }
+
+        viewModelScope.launch {
+            sessionManager.vehicleEnergyForecast.collect { forecast ->
+                _car.value = withMapsForecast(_car.value, forecast)
             }
         }
 

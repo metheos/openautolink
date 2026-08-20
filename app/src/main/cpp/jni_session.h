@@ -448,6 +448,7 @@ private:
         jmethodID onNavigationTurn = nullptr;
         jmethodID onNavigationDistance = nullptr;
         jmethodID onNavigationFullState = nullptr;
+        jmethodID onVehicleEnergyForecast = nullptr;
         jmethodID onMediaMetadata = nullptr;
         jmethodID onMediaPlayback = nullptr;
         jmethodID onPhoneStatus = nullptr;

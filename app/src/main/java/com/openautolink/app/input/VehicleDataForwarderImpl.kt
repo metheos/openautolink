@@ -670,7 +670,9 @@ class VehicleDataForwarderImpl(
         } else null
 
         val ambientTemp = tempId?.let { currentValues[it] as? Float }
-        val chargeRate = chargeRateId?.let { currentValues[it] as? Float }
+        val chargeRate = EvEnergyValuePolicy.instantaneousMilliwattsToWatts(
+            chargeRateId?.let { currentValues[it] as? Float },
+        )
         val rangeRemaining = rangeId?.let { (currentValues[it] as? Float)?.let { v -> v / 1000f } } // m → km
         val rpmRaw = rpmId?.let { currentValues[it] as? Float }
         val rpmE3 = rpmRaw?.let { (it * 1000).toInt() }

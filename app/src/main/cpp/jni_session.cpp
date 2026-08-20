@@ -221,6 +221,7 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
         "(Ljava/lang/String;Ljava/lang/String;[BIILjava/lang/String;Ljava/lang/String;"
         "Ljava/lang/String;Ljava/lang/String;I"
         "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JILjava/lang/String;Ljava/lang/String;)V");
+    cbMethods_.onVehicleEnergyForecast = env->GetMethodID(cbClass, "onVehicleEnergyForecast", "(IIIIIIIIII)V");
     cbMethods_.onMediaMetadata = env->GetMethodID(cbClass, "onMediaMetadata",
         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)V");
     cbMethods_.onMediaPlayback = env->GetMethodID(cbClass, "onMediaPlayback", "(IJ)V");
@@ -683,7 +684,67 @@ void JniSession::reportVehicleEnergyForecast(
         if (outer.has_vehicle_energy_forecast()) {
             aap_protobuf::service::navigationstatus::VehicleEnergyForecast inner;
             innerParsed = inner.ParseFromString(outer.vehicle_energy_forecast());
-            if (innerParsed) summary = inner.ShortDebugString();
+            if (innerParsed) {
+                summary = inner.ShortDebugString();
+
+                int nextDistance = -1;
+                int nextArrivalWh = -1;
+                int nextTime = -1;
+                if (inner.has_energy_at_next_stop()) {
+                    const auto& next = inner.energy_at_next_stop();
+                    nextDistance = next.has_distance_meters() ? next.distance_meters() : -1;
+                    nextArrivalWh = next.has_arrival_battery_energy_wh()
+                        ? next.arrival_battery_energy_wh() : -1;
+                    nextTime = next.has_time_to_arrival_seconds()
+                        ? next.time_to_arrival_seconds() : -1;
+                }
+
+                int emptyDistance = -1;
+                int emptyArrivalWh = -1;
+                int emptyTime = -1;
+                if (inner.has_distance_to_empty()) {
+                    const auto& empty = inner.distance_to_empty();
+                    emptyDistance = empty.has_distance_meters() ? empty.distance_meters() : -1;
+                    emptyArrivalWh = empty.has_arrival_battery_energy_wh()
+                        ? empty.arrival_battery_energy_wh() : -1;
+                    emptyTime = empty.has_time_to_arrival_seconds()
+                        ? empty.time_to_arrival_seconds() : -1;
+                }
+
+                int minimumDepartureWh = -1;
+                int maximumPowerW = -1;
+                int chargingTime = -1;
+                if (inner.has_next_charging_stop()) {
+                    const auto& charging = inner.next_charging_stop();
+                    minimumDepartureWh = charging.has_min_departure_energy_wh()
+                        ? charging.min_departure_energy_wh() : -1;
+                    maximumPowerW = charging.has_max_rated_power_watts()
+                        ? charging.max_rated_power_watts() : -1;
+                    chargingTime = charging.has_estimated_charging_time_seconds()
+                        ? charging.estimated_charging_time_seconds() : -1;
+                }
+
+                const int quality = inner.has_forecast_quality()
+                    ? static_cast<int>(inner.forecast_quality()) : 0;
+                if (cbMethods_.onVehicleEnergyForecast && callbackRef_) {
+                    bool attached;
+                    JNIEnv* env = getEnv(attached);
+                    if (env) {
+                        env->CallVoidMethod(callbackRef_, cbMethods_.onVehicleEnergyForecast,
+                            static_cast<jint>(nextDistance),
+                            static_cast<jint>(nextArrivalWh),
+                            static_cast<jint>(nextTime),
+                            static_cast<jint>(emptyDistance),
+                            static_cast<jint>(emptyArrivalWh),
+                            static_cast<jint>(emptyTime),
+                            static_cast<jint>(quality),
+                            static_cast<jint>(minimumDepartureWh),
+                            static_cast<jint>(maximumPowerW),
+                            static_cast<jint>(chargingTime));
+                    }
+                    releaseEnv(attached);
+                }
+            }
         }
         nativeDiag(1, "gal", "VehicleEnergyForecast typed inner_parsed=" +
             std::string(innerParsed ? "true" : "false") + " summary=" +
@@ -2208,12 +2269,10 @@ void JniSession::sendEnergyModelSensor(int batteryLevelWh, int batteryCapacityWh
         batt->set_regen_braking_capable(true);
 
         // Charge/discharge power — needed for server-side EV routing computation
-        int chargePower;
-        if (maxChargeWOverride > 0) {
-            chargePower = maxChargeWOverride;
-        } else {
-            chargePower = (chargeRateW > 0) ? chargeRateW : 150000;
-        }
+        // Instantaneous VHAL pack flow is not the vehicle's charging capability.
+        // Use a curated/profile override when available, otherwise the existing
+        // conservative generic capability.
+        int chargePower = maxChargeWOverride > 0 ? maxChargeWOverride : 150000;
         batt->set_max_charge_power_w(chargePower);
         batt->set_max_discharge_power_w(maxDischargeWOverride > 0 ? maxDischargeWOverride : 150000);
 
@@ -2223,8 +2282,11 @@ void JniSession::sendEnergyModelSensor(int batteryLevelWh, int batteryCapacityWh
                                 static_cast<float>(rangeM)) * 1000.0f;
         float whPerKm = (drivingWhPerKmOverride >= 0.0f) ? drivingWhPerKmOverride : derivedWhPerKm;
         cons->mutable_driving()->set_rate(whPerKm);
-        cons->mutable_auxiliary()->set_rate(auxWhPerKmOverride >= 0.0f ? auxWhPerKmOverride : 2.0f);
-        cons->mutable_aerodynamic()->set_rate(aeroCoefOverride >= 0.0f ? aeroCoefOverride : 0.36f);
+        // The range-derived driving rate already reflects the car's current
+        // climate/temperature/drag conditions. Do not add synthetic components
+        // on top unless the user selected an independent tuned/profile model.
+        cons->mutable_auxiliary()->set_rate(auxWhPerKmOverride >= 0.0f ? auxWhPerKmOverride : 0.0f);
+        cons->mutable_aerodynamic()->set_rate(aeroCoefOverride >= 0.0f ? aeroCoefOverride : 0.0f);
 
         // Charging prefs
         vem.mutable_charging_prefs()->set_mode(1);  // standard

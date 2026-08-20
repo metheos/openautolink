@@ -1275,6 +1275,28 @@ private fun CarTab(car: CarInfo) {
                 val capStr = car.evBatteryCapacityWh?.let { c -> " / ${"%.0f".format(c)}" } ?: ""
                 DiagRow("Battery Energy", "${"%.0f".format(it)}$capStr Wh")
             }
+            car.mapsArrivalBatteryPct?.let {
+                val quality = when (car.mapsForecastQuality) {
+                    2 -> "high"
+                    1 -> "low"
+                    else -> "unknown"
+                }
+                DiagRow(
+                    "Maps Arrival",
+                    "$it% ($quality confidence)",
+                    valueColor = when {
+                        it > 50 -> Color(0xFF4CAF50)
+                        it > 20 -> Color(0xFFFFC107)
+                        else -> Color(0xFFFF5722)
+                    },
+                )
+            }
+            car.mapsNextChargePowerW?.let {
+                val time = car.mapsChargingTimeSec?.let { seconds ->
+                    " • ${seconds / 60} min"
+                } ?: ""
+                DiagRow("Maps Next Charge", "${it / 1000} kW$time")
+            }
             car.evCurrentBatteryCapacityWh?.let {
                 DiagRow("Usable Capacity", "${"%.0f".format(it)} Wh")
             }
