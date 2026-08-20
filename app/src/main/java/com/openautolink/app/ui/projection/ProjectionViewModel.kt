@@ -23,6 +23,8 @@ import com.openautolink.app.input.SteeringWheelController
 import com.openautolink.app.input.TouchForwarder
 import com.openautolink.app.input.TouchForwarderImpl
 import com.openautolink.app.navigation.ManeuverState
+import com.openautolink.app.navigation.VehicleEnergyForecast
+import com.openautolink.app.navigation.VehicleEnergyForecastPolicy
 import com.openautolink.app.session.SessionManager
 import com.openautolink.app.session.SessionState
 import com.openautolink.app.video.VideoStats
@@ -52,6 +54,7 @@ data class ProjectionUiState(
     val audioStats: AudioStats = AudioStats(),
     val showStats: Boolean = false,
     val maneuver: ManeuverState? = null,
+    val arrivalBatteryText: String? = null,
     val phoneBatteryLevel: Int? = null,
     val phoneBatteryCritical: Boolean = false,
     val voiceSessionActive: Boolean = false,
@@ -257,6 +260,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         preferences.overlayStatsButton,
         preferences.overlayPhoneSwitchButton,
         preferences.overlayReconnectButton,
+        sessionManager.vehicleEnergyForecast,
+        sessionManager.vehicleBatteryCapacityWh,
     ) { values ->
         ProjectionUiState(
             sessionState = values[0] as SessionState,
@@ -293,6 +298,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             overlayStatsButton = values[31] as Boolean,
             overlayPhoneSwitchButton = values[32] as Boolean,
             overlayReconnectButton = values[33] as Boolean,
+            arrivalBatteryText = VehicleEnergyForecastPolicy.tripText(
+                values[34] as? VehicleEnergyForecast,
+                values[35] as Int,
+            ),
         )
     }.stateIn(
         viewModelScope,

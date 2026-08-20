@@ -74,6 +74,20 @@ interface AasdkSessionCallback {
         destDistDisplay: String?, destDistUnit: String?
     )
 
+    /** Google Maps route-energy result returned on navigation message 0x8008 (GAL 5.1+). */
+    fun onVehicleEnergyForecast(
+        nextStopDistanceMeters: Int,
+        nextStopArrivalEnergyWh: Int,
+        nextStopTimeSeconds: Int,
+        distanceToEmptyMeters: Int,
+        distanceToEmptyEnergyWh: Int,
+        distanceToEmptyTimeSeconds: Int,
+        forecastQuality: Int,
+        minimumDepartureEnergyWh: Int,
+        maximumRatedPowerWatts: Int,
+        estimatedChargingTimeSeconds: Int,
+    )
+
     /** Media metadata update (track info). */
     fun onMediaMetadata(title: String, artist: String, album: String, albumArt: ByteArray?)
 

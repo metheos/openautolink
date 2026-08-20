@@ -1,5 +1,6 @@
 package com.openautolink.app.cluster
 
+import android.os.SystemClock
 import android.content.Intent
 import android.util.Log
 import com.openautolink.app.diagnostics.DiagnosticLog
@@ -8,6 +9,7 @@ import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
+import androidx.car.app.model.CarText
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
@@ -20,11 +22,13 @@ import androidx.car.app.navigation.model.Trip
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.openautolink.app.navigation.ManeuverState
+import com.openautolink.app.navigation.VehicleEnergyForecastPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -170,7 +174,10 @@ class ClusterMainSession : Session() {
     private suspend fun collectNavigationState() {
         var debounceJob: Job? = null
 
-        ClusterNavigationState.state.collectLatest { maneuver ->
+        combine(
+            ClusterNavigationState.state,
+            ClusterNavigationState.vehicleEnergyForecast,
+        ) { maneuver, _ -> maneuver }.collectLatest { maneuver ->
             debounceJob?.cancel()
             debounceJob = scope?.launch {
                 delay(200)
@@ -284,7 +291,15 @@ class ClusterMainSession : Session() {
             } else {
                 eta
             }
-            val destEstimate = TravelEstimate.Builder(destDistance, destEta).build()
+            val destEstimateBuilder = TravelEstimate.Builder(destDistance, destEta)
+            val forecast = ClusterNavigationState.vehicleEnergyForecast.value
+            if (VehicleEnergyForecastPolicy.isFresh(forecast, SystemClock.elapsedRealtime())) {
+                VehicleEnergyForecastPolicy.tripText(
+                    forecast,
+                    ClusterNavigationState.batteryCapacityWh,
+                )?.let { destEstimateBuilder.setTripText(CarText.create(it)) }
+            }
+            val destEstimate = destEstimateBuilder.build()
             tripBuilder.addDestination(destBuilder.build(), destEstimate)
         }
 

@@ -726,6 +726,22 @@ fun ProjectionScreen(
             }
         }
 
+        uiState.arrivalBatteryText?.let { arrivalText ->
+            Text(
+                text = arrivalText,
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .testTag("mapsArrivalBatteryBadge"),
+            )
+        }
+
         // Stats overlay panel — bottom-left
         if (uiState.showStats) {
             VideoStatsOverlay(

@@ -333,7 +333,7 @@ Our app (`VehicleDataForwarderImpl.kt`) already subscribes to:
 | `EV_BATTERY_LEVEL` | 0x11600309 | CAR_ENERGY | Current battery Wh |
 | `INFO_EV_BATTERY_CAPACITY` | 0x11600106 | CAR_INFO | Max capacity Wh |
 | `RANGE_REMAINING` | 0x11600308 | CAR_ENERGY | Range in meters |
-| `EV_BATTERY_INSTANTANEOUS_CHARGE_RATE` | 0x1160030C | CAR_ENERGY | Charge rate W |
+| `EV_BATTERY_INSTANTANEOUS_CHARGE_RATE` | 0x1160030C | CAR_ENERGY | Instantaneous pack flow in mW (converted to W by OAL) |
 | `EV_BATTERY_AVERAGE_TEMPERATURE` | 0x1160030E | CAR_ENERGY | Pack temp ┬░C |
 | `INFO_FUEL_TYPE` | (runtime) | CAR_INFO | Fuel type list |
 | `INFO_EV_CONNECTOR_TYPE` | (runtime) | CAR_INFO | Connector type list |
@@ -426,11 +426,11 @@ battery.max_capacity.watt_hours = capacityWh          // EV_CURRENT_BATTERY_CAPA
 battery.min_usable_capacity.watt_hours = currentWh     // from EV_BATTERY_LEVEL — Maps reads this as current SOC!
 battery.reserve_energy.watt_hours = capacityWh * 0.05
 battery.regen_braking_capable = true
-battery.max_charge_power_w = EV_CHARGE_RATE or 150000  // needed for server-side routing
+battery.max_charge_power_w = curated vehicle profile or 150000 // instantaneous pack flow is not capability
 battery.max_discharge_power_w = 150000
 consumption.driving.rate = (currentWh / rangeM) * 1000  // Wh/km from car's own range estimate
-consumption.auxiliary.rate = 2.0                         // typical aux consumption
-consumption.aerodynamic.rate = 0.36                      // drag coefficient contribution
+consumption.auxiliary.rate = 0.0                         // range-derived driving rate already includes current auxiliaries
+consumption.aerodynamic.rate = 0.0                       // only nonzero in an independent tuned/profile model
 charging_prefs.mode = 1                                  // standard
 ```
 
