@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 data class ProjectionUiState(
@@ -155,6 +156,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     private val _phoneName = MutableStateFlow<String?>(null)
     private val _videoStats = MutableStateFlow(VideoStats())
     private val _audioStats = MutableStateFlow(AudioStats())
+    private var videoStatsJob: Job? = null
+    private var audioStatsJob: Job? = null
     private val _showStats = MutableStateFlow(false)
     private val _showPhoneChooser = MutableStateFlow(false)
     /**
@@ -321,7 +324,10 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         // Hop to the ViewModel scope: the decoder is created on whichever thread
         // starts the session, and surface attach must not run there.
         sessionManager.onDecoderCreated = {
-            viewModelScope.launch { attachPendingSurface() }
+            viewModelScope.launch {
+                attachPendingSurface()
+                bindCurrentStatsCollectors()
+            }
         }
 
         // Collect video and audio stats when streaming
@@ -333,23 +339,33 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     attachPendingSurface()
                 }
                 if (state == SessionState.STREAMING) {
-                    sessionManager.videoStats?.let { statsFlow ->
-                        launch {
-                            statsFlow.collect { stats ->
-                                _videoStats.value = stats
-                            }
-                        }
-                    }
-                    sessionManager.audioStats?.let { statsFlow ->
-                        launch {
-                            statsFlow.collect { stats ->
-                                _audioStats.value = stats
-                            }
-                        }
-                    }
+                    bindCurrentStatsCollectors()
                 }
             }
         }
+    }
+
+    /** Bind the overlay to the current decoder/player, never a retired one. */
+    private fun bindCurrentStatsCollectors() {
+        videoStatsJob?.cancel()
+        audioStatsJob?.cancel()
+        _videoStats.value = VideoStats()
+        _audioStats.value = AudioStats()
+        sessionManager.videoStats?.let { statsFlow ->
+            videoStatsJob = viewModelScope.launch {
+                statsFlow.collect { stats -> _videoStats.value = stats }
+            }
+        }
+        sessionManager.audioStats?.let { statsFlow ->
+            audioStatsJob = viewModelScope.launch {
+                statsFlow.collect { stats -> _audioStats.value = stats }
+            }
+        }
+        DiagnosticLog.i(
+            "video",
+            "Stats collectors rebound: video=${sessionManager.videoStats != null} " +
+                "audio=${sessionManager.audioStats != null}",
+        )
     }
 
     @Volatile private var hasConnected = false
@@ -2391,6 +2407,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             try { connectivityManager.unregisterNetworkCallback(it) } catch (_: Exception) {}
         }
         wifiAvailableCallback = null
+        sessionManager.onDecoderCreated = null
+        videoStatsJob?.cancel()
+        audioStatsJob?.cancel()
         // Stop file logging if active
         logcatCapture?.stop()
         fileLogWriter?.stop()

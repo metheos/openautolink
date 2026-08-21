@@ -45,6 +45,24 @@ class AutoNegotiationGeometryWiringContractTest {
     }
 
     @Test
+    fun `automatic touchscreen matches the first advertised video tier`() {
+        val nativeSession = projectFile("app/src/main/cpp/jni_session.cpp")
+
+        assertTrue(nativeSession.contains("int touchWidth = sdrConfig_.videoWidth"))
+        assertTrue(nativeSession.contains("touchWidth = kDims[tiers[0]].w"))
+        assertTrue(nativeSession.contains("touchHeight = kDims[tiers[0]].h"))
+        assertTrue(nativeSession.contains("ts->set_width(touchWidth)"))
+        assertTrue(nativeSession.contains("ts->set_height(touchHeight)"))
+        assertTrue(nativeSession.contains("Input touchscreen: %dx%d"))
+
+        val manager = projectFile("app/src/main/java/com/openautolink/app/session/SessionManager.kt")
+        assertTrue(manager.contains("AutoVideoTouchPolicy.resolve"))
+        assertTrue(manager.contains("_touchWidth.value = protocolTouchW"))
+        assertTrue(manager.contains("_touchHeight.value = protocolTouchH"))
+        assertTrue(manager.contains("Protocol touchscreen:"))
+    }
+
+    @Test
     fun `resolution baseline documents automatic per-tier density`() {
         val baseline = projectFile("docs/oal-resolution-negotiation-baseline.md")
 
@@ -52,6 +70,7 @@ class AutoNegotiationGeometryWiringContractTest {
         assertFalse(baseline.contains("One default density for all tiers"))
         assertTrue(baseline.contains("automatic per-tier density"))
         assertTrue(baseline.contains("4K tier uses density 263"))
+        assertTrue(baseline.contains("automatic touchscreen follows the first video tier"))
     }
 
     @Test

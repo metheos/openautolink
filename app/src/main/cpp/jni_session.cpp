@@ -1604,6 +1604,14 @@ void JniSession::buildServiceDiscoveryResponse(
         response.set_session_configuration(session_config);
     }
 
+    // InputSourceService exposes one touchscreen coordinate space for the
+    // display. In auto mode Gearhead consistently selects the first accepted
+    // video config, so advertise that same tier for touch. Keeping the saved
+    // manual size here while auto selected 4K caused the measured 0.1.461
+    // video=3840x2160 / touch=2560x1440 mismatch.
+    int touchWidth = sdrConfig_.videoWidth;
+    int touchHeight = sdrConfig_.videoHeight;
+
     // ---- Video channel (matches bridge exactly — NO audio_type) ----
     { auto* svc = response.add_channels();
       svc->set_id(2); // VIDEO — Java uses 2 (MEDIA_SINK), works with localhost proxy
@@ -1770,6 +1778,8 @@ void JniSession::buildServiceDiscoveryResponse(
                   tierCount = 3;
               }
           }
+          touchWidth = kDims[tiers[0]].w;
+          touchHeight = kDims[tiers[0]].h;
           LOGI("Auto SDR: codec=%s tiers=%d portrait=%d",
                useH265 ? "H.265" : "H.264 BP", tierCount, portrait ? 1 : 0);
           for (int i = 0; i < tierCount; ++i) {
@@ -1908,9 +1918,11 @@ void JniSession::buildServiceDiscoveryResponse(
           is->add_keycodes_supported(kc);
       }
       auto* ts = is->add_touchscreen();
-      ts->set_width(sdrConfig_.videoWidth);
-      ts->set_height(sdrConfig_.videoHeight);
+      ts->set_width(touchWidth);
+      ts->set_height(touchHeight);
       ts->set_type(aap_protobuf::service::inputsource::message::CAPACITIVE);
+      LOGI("Input touchscreen: %dx%d autoNeg=%d", touchWidth, touchHeight,
+           sdrConfig_.autoNegotiate ? 1 : 0);
     }
 
     // ---- Bluetooth channel ----
