@@ -1710,23 +1710,35 @@ void JniSession::buildServiceDiscoveryResponse(
 
       auto computeDensity = [&](int tier) -> int {
           if (sdrConfig_.targetLayoutWidthDp > 0) {
-              int dpi = (kDims[tier].w * 160) / sdrConfig_.targetLayoutWidthDp;
-              return std::max(dpi, 80);
+              // Density is based on the drawable AA content width, not the
+              // outer codec frame. This keeps physical UI size stable across
+              // display modes, panel aspect ratios, margins, and whichever
+              // resolution index Gearhead selects in auto negotiation.
+              int densityWidth = kDims[tier].w;
+              int wm = 0;
+              if (sdrConfig_.autoMargins) {
+                  wm = autoMargins(kDims[tier].w, kDims[tier].h).first;
+              } else {
+                  wm = sdrConfig_.marginWidth;
+              }
+              densityWidth = std::max(1, densityWidth - wm);
+              int dpi = (densityWidth * 160) / sdrConfig_.targetLayoutWidthDp;
+              dpi = std::max(dpi, 80);
+              LOGI("Auto density: tier=%d innerW=%d targetDp=%d dpi=%d",
+                   tier, densityWidth, sdrConfig_.targetLayoutWidthDp, dpi);
+              return dpi;
           }
           return sdrConfig_.videoDpi;
       };
 
       if (sdrConfig_.autoNegotiate) {
           // Auto mode: advertise multiple resolution tiers for the user's
-          // chosen codec only. We do NOT mix H.264 + H.265 in the same SDR:
-          // the phone picks the first acceptable config, which historically
-          // meant H.265 always won and triggered the ~30-60s "green startup"
-          // from tiny seed IDRs. By advertising only one codec, the phone is
-          // forced into that family.
+          // chosen codec only. We do NOT mix codec families in one modern GAL
+          // display; Gearhead selects the first supported tier in that family.
           //
           // Codec preference (videoCodec):
-          //   "h264" (default, recommended) → safe, instant clean startup, capped at 1080p
-          //   "h265"                        → up to 4K, but tolerates green-startup window
+          //   "h264" → up to 1080p
+          //   "h265" → up to 4K with the verified GAL 6 short-keyframe path
           //   else → fall back to h264
           //
           // Mirrors GM's GALDisplayManager.getVideoConfigList() which only

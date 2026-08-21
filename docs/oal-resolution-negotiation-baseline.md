@@ -17,8 +17,8 @@ values. OAL therefore:
    default H.264 Baseline: 1920×1080, 1280×720, 800×480);
 2. computes a per-tier `width_margin` or `height_margin` so the codec frame's
    inner content rectangle matches the live render rectangle's aspect ratio;
-3. reports density separately so Android Auto can choose an appropriate dp
-   layout; and
+3. derives automatic per-tier density from the measured drawable width, panel
+   density, and each tier's post-margin inner width; and
 4. makes the renderer use the same margin formula when scaling and clipping the
    decoded frame.
 
@@ -60,8 +60,8 @@ File and symbol:
 - `_p` variants → 720×1280, 1080×1920, 1440×2560, or 2160×3840
 
 `AppPreferences.DEFAULT_AA_RESOLUTION` is `1080p`. This selected size is the
-single tier in manual mode and is the base used by Kotlin's auto-DPI calculation.
-In auto-negotiate mode, C++ chooses the actual tier ladder.
+single tier in manual mode. In auto-negotiate mode, C++ chooses the actual tier
+ladder and computes density independently for every advertised tier.
 
 #### Live render rectangle
 
@@ -100,29 +100,34 @@ and uniform rendering rather than depending on this field for aspect correction.
 
 #### Auto-DPI
 
-With `aaAutoDpi = true`, Kotlin mirrors the width-based GM formula:
+With `aaAutoDpi = true`, Kotlin first converts the measured draw space into one
+logical-width target:
+
+```text
+targetLayoutWidthDp = floor(renderRectWidth * 160 / panelDensityDpi)
+```
+
+The render rectangle is mode-specific: fullscreen uses the full drawable panel,
+while `system_ui_visible` uses the smaller chrome-free content area. Kotlin passes
+that target to C++. For every advertised resolution, C++ then computes:
 
 ```text
 innerWidth = codecWidth - effectiveWidthMargin
-scale      = renderRectWidth / innerWidth
-density    = floor(panelDensityDpi / scale)
+density    = floor(innerWidth * 160 / targetLayoutWidthDp)
 ```
 
-The implementation clamps the result to at least 96 dpi. If the render rectangle
-is unavailable, it uses the saved `aaDpi` value instead and logs the fallback.
+This is equivalent to the width-based GM formula, but it is evaluated for every
+tier Gearhead may select rather than once for the hidden/manual base resolution.
+Native density is clamped to at least 80 dpi. If the render rectangle is
+unavailable, OAL uses the saved `aaDpi` value and logs the fallback.
 
-For a measured 2914-pixel-wide render rectangle, 1920-pixel inner width, and
-200-dpi panel:
+For a measured 2914-pixel-wide render rectangle and 200-dpi panel, the target is
+2331 dp. A 2560-wide 1440p tier uses density 175, while the 4K tier uses density
+263. Both therefore expose approximately the same logical AA width.
 
-```text
-scale   = 2914 / 1920 ≈ 1.518
- density = floor(200 / scale) = 131
-```
-
-`aaTargetLayoutWidthDp` is a separate override. In manual mode Kotlin computes
-DPI for the one selected tier. In auto-negotiate mode it passes the target to
-C++, which can compute a distinct density for each tier. Its repository default
-is zero, so this per-tier targeting is normally disabled.
+`aaTargetLayoutWidthDp` remains a separate explicit override. In manual mode
+Kotlin computes DPI for the selected tier; in auto-negotiate mode C++ applies the
+target independently to each advertised tier.
 
 #### Config object
 
@@ -221,9 +226,11 @@ Files and symbols:
 
 #### Density and other fields
 
-`computeDensity` uses `targetLayoutWidthDp` when it is positive; otherwise every
-tier receives the single `videoDpi` computed by Kotlin. With the repository
-default target of zero, fallback tiers do **not** receive proportional DPI values.
+`computeDensity` uses `targetLayoutWidthDp` when it is positive. Auto-DPI now
+derives that target from the live render rectangle and panel density, so each
+auto-negotiated tier receives a density based on its own post-margin inner width.
+If auto-DPI and the explicit target are both disabled, every tier receives the
+manual `videoDpi` value by design.
 
 `applyVideoConfig` conditionally emits:
 
@@ -263,8 +270,8 @@ With a measured full-panel render rectangle and repository defaults
 | idx | resolution | codec pixels | height margin | inner rectangle | density |
 |---:|---|---:|---:|---:|---:|
 | 0 | `VIDEO_1920x1080` | 1920×1080 | **333** | 1920×747 | **131** |
-| 1 | `VIDEO_1280x720` | 1280×720 | **222** | 1280×498 | **131** |
-| 2 | `VIDEO_800x480` | 800×480 | **169** | 800×311 | **131** |
+| 1 | `VIDEO_1280x720` | 1280×720 | **222** | 1280×498 | **87** |
+| 2 | `VIDEO_800x480` | 800×480 | **169** | 800×311 | **80** (minimum) |
 
 All three configurations also use H.264 Baseline, 60 fps,
 `pixel_aspect_ratio_e4 = 10000`, `viewing_distance = 700`, and
@@ -272,12 +279,13 @@ All three configurations also use H.264 Baseline, 60 fps,
 narrower than the 2.57:1 render rectangle and therefore needs top/bottom trimming.
 The SDR UI-margin splits are 166/167, 111/111, and 84/85 respectively.
 
-Because the default `targetLayoutWidthDp` is zero, density 131 is reused across
-tiers. Their approximate layout widths are therefore:
+Auto-DPI derives a 2331-dp target from the 2914-pixel draw width and 200-dpi panel.
+The 1920 and 1280 tiers preserve that logical width to rounding error. The 800
+tier reaches the protocol's 80-dpi floor and therefore exposes approximately
+1600 dp rather than shrinking below the allowed density.
 
-- 1920 tier: 2345 dp;
-- 1280 tier: 1563 dp;
-- 800 tier: 977 dp.
+For the user's H.265 auto-negotiation capture on the same draw rectangle, the 4K tier uses density 263 and the 1440p tier uses density 175. Gearhead selected
+configuration index 0 (4K) in that capture.
 
 The Settings UI labels widths below 880 dp as Canonical, 880–1240 dp as
 Semi-widescreen, and above 1240 dp as Full widescreen. Those strings are an OAL
@@ -304,12 +312,12 @@ rough historical estimate. The shared current formula yields 333 for exactly
    must remain synchronized.
 4. **One codec family per SDR.** H.264 is capped at 1080p; H.265 enables larger
    tiers but is not mixed with H.264.
-5. **Width-based auto-DPI.** Kotlin derives density from render width and inner
-   codec width. A phone version that changes its layout breakpoint or uses a
-   different physical-size interpretation may render differently.
-6. **One default density for all tiers.** Unless `targetLayoutWidthDp` is set,
-   Kotlin's density for the selected base resolution is reused by every fallback
-   tier.
+5. **Width-based auto-DPI.** Kotlin derives a logical-width target from the live
+   render rectangle and panel density; C++ derives density from each tier's
+   post-margin inner width. A phone version that changes its layout breakpoint or
+   uses a different physical-size interpretation may still render differently.
+6. **Manual-density exception.** When both auto-DPI and the explicit layout-width
+   target are disabled, all fallback tiers intentionally reuse the manual DPI.
 7. **Runtime measurement race.** Before `ProjectionScreen` reports the render
    rectangle, panel dimensions and density use fallback paths. A first session
    can therefore differ from a later session without any setting change.
