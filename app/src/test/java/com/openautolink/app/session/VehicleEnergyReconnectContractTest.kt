@@ -36,7 +36,7 @@ class VehicleEnergyReconnectContractTest {
     }
 
     @Test
-    fun `transport reconnect retains cached vehicle data without resurrecting its owner`() {
+    fun `every restart retains the stopped VHAL owner for type 23 replay`() {
         val source = sessionManagerSource()
         val start = source.indexOf("private fun prepareNativeSessionStart(session: AasdkSession)")
         val end = source.indexOf("private fun startLocationForwarding", startIndex = start)
@@ -44,7 +44,7 @@ class VehicleEnergyReconnectContractTest {
         assertTrue("Native dependency preparer must exist", start >= 0)
         assertTrue("Native dependency preparer must have a boundary", end > start)
         val hook = source.substring(start, end)
-        val adopt = hook.indexOf("aasdkSession = session")
+        val adopt = hook.indexOf("adoptSessionOwnership(session)")
         val collectors = hook.indexOf("bindSessionCollectors(session)")
         assertTrue("Native restart must re-adopt its session", adopt >= 0)
         assertTrue("Native restart must retain collector rebinding", collectors > adopt)
@@ -60,6 +60,107 @@ class VehicleEnergyReconnectContractTest {
         assertFalse(
             "Reconnect must retain the cached VHAL snapshot for type-23 replay",
             reconnect.contains("_vehicleDataForwarder = null"),
+        )
+
+        val fullStop = source.substringAfter("fun stop() {")
+            .substringBefore("fun reconnect(")
+        assertTrue(
+            "Ignition/full stop must pause the VHAL owner",
+            fullStop.contains("_vehicleDataForwarder?.stop()"),
+        )
+        assertFalse(
+            "Ignition/full stop must retain the VHAL owner and cached EV snapshot for wake",
+            fullStop.contains("_vehicleDataForwarder = null"),
+        )
+        val revokeSession = fullStop.indexOf("revokeSessionOwnershipLocked()")
+        val stopForwarder = fullStop.indexOf("_vehicleDataForwarder?.stop()")
+        assertTrue(
+            "Explicit stop must revoke session ownership before the retained VHAL owner can be stopped",
+            revokeSession >= 0 && revokeSession < stopForwarder,
+        )
+
+        val collectorStart = source.indexOf("private fun bindSessionCollectors(session: AasdkSession)")
+        val collectorEnd = source.indexOf("private fun createVideoDecoder", collectorStart)
+        assertTrue(collectorStart >= 0 && collectorEnd > collectorStart)
+        val collectorsBlock = source.substring(collectorStart, collectorEnd)
+        assertTrue(
+            "Control messages must carry the exact session that produced them",
+            collectorsBlock.contains("handleControlMessage(session, message)"),
+        )
+
+        val handlerStart = source.indexOf(
+            "private fun handleControlMessage(sourceSession: AasdkSession, message: ControlMessage)",
+        )
+        val handlerEnd = source.indexOf("// ── EV energy-model tuning", handlerStart)
+        assertTrue(handlerStart >= 0 && handlerEnd > handlerStart)
+        val handler = source.substring(handlerStart, handlerEnd)
+        assertTrue(
+            "PhoneConnected effects must reject a stale session owner",
+            handler.contains("aasdkSession !== sourceSession"),
+        )
+        assertTrue(
+            "PhoneConnected must use the lock-owned streaming-service chokepoint",
+            handler.contains("startStreamingServicesLocked(sourceSession)"),
+        )
+
+        val connectionObserverStart = source.indexOf("// Observe session state")
+        val connectionObserverEnd = source.indexOf("bindSessionCollectors(session)", connectionObserverStart)
+        assertTrue(connectionObserverStart >= 0 && connectionObserverEnd > connectionObserverStart)
+        val connectionObserver = source.substring(connectionObserverStart, connectionObserverEnd)
+        assertTrue(
+            "Connection-state starts must verify exact session ownership",
+            connectionObserver.contains("aasdkSession !== session"),
+        )
+        assertTrue(
+            "Connection-state starts must use the same lock-owned chokepoint",
+            connectionObserver.contains("startStreamingServicesLocked(session)"),
+        )
+        assertTrue(
+            "VHAL has exactly one producer-start chokepoint",
+            Regex(Regex.escape("_vehicleDataForwarder?.start()")).findAll(source).count() == 1,
+        )
+        assertTrue(
+            "Every control-message effect must remain inside the session ownership lock",
+            handler.indexOf("synchronized(sessionStateLock)") in
+                0 until handler.indexOf("when (message)"),
+        )
+        assertTrue(
+            "Session ownership must use centralized adopt/revoke helpers",
+            source.contains("private fun adoptSessionOwnership(session: AasdkSession)") &&
+                source.contains("private fun revokeSessionOwnershipLocked()"),
+        )
+        assertTrue(
+            "No lifecycle path may assign the session outside centralized ownership helpers",
+            Regex("aasdkSession = ").findAll(source).count() == 2,
+        )
+    }
+
+    @Test
+    fun `VHAL stop invalidates an in-flight asynchronous start`() {
+        val source = projectFile(
+            "app/src/main/java/com/openautolink/app/input/VehicleDataForwarderImpl.kt",
+        ).readText()
+        val stopStart = source.indexOf("override fun stop()")
+        val stopEnd = source.indexOf("private fun connectToCar", stopStart)
+        assertTrue(stopStart >= 0 && stopEnd > stopStart)
+        val stop = source.substring(stopStart, stopEnd)
+        assertFalse(
+            "stop must not return merely because async start has not set isActive yet",
+            stop.contains("if (!isActive) return"),
+        )
+        assertTrue(stop.contains("desiredActive = false"))
+        assertTrue(stop.contains("lifecycleGeneration++"))
+
+        val startStart = source.indexOf("override fun start()")
+        assertTrue(startStart >= 0 && stopStart > startStart)
+        val start = source.substring(startStart, stopStart)
+        assertTrue(
+            "Every asynchronous start stage must be fenced by its lifecycle generation",
+            start.contains("isStartCurrent(generation)"),
+        )
+        assertTrue(
+            "A stale in-flight attempt must clean up rather than activate after stop",
+            start.contains("cleanupAfterStartAttempt(generation)"),
         )
     }
 

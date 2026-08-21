@@ -130,6 +130,7 @@ class SessionManager(
 
     // aasdk JNI session -- native C++ handles AA protocol
     private var aasdkSession: AasdkSession? = null
+    private var retiringAasdkSession: AasdkSession? = null
     private val wirelessAdmissionLock = Any()
     private var wirelessSessionAdmission:
         com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token? = null
@@ -173,6 +174,33 @@ class SessionManager(
     }.asCoroutineDispatcher()
 
     private val sessionStateLock = Any()
+
+    private fun adoptSessionOwnership(session: AasdkSession) {
+        synchronized(sessionStateLock) { aasdkSession = session }
+    }
+
+    /** Caller must hold [sessionStateLock]. */
+    private fun revokeSessionOwnershipLocked(): AasdkSession? {
+        val current = aasdkSession
+        aasdkSession = null
+        if (current != null) retiringAasdkSession = current
+        return current
+    }
+
+    private fun completeSessionRetirement(session: AasdkSession?) {
+        synchronized(sessionStateLock) {
+            if (retiringAasdkSession === session) retiringAasdkSession = null
+        }
+    }
+
+    private fun stopRetiringSession(session: AasdkSession?) {
+        try {
+            session?.stop()
+        } finally {
+            completeSessionRetirement(session)
+        }
+    }
+
     private val _sessionState = MutableStateFlow(SessionState.IDLE)
     val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
 
@@ -339,7 +367,7 @@ class SessionManager(
             launch {
                 session.controlMessages.collect { message ->
                     lastActiveTimestamp = SystemClock.elapsedRealtime()
-                    handleControlMessage(message)
+                    handleControlMessage(session, message)
                 }
             }
             launch {
@@ -1481,7 +1509,7 @@ class SessionManager(
         _touchHeight.value = resH
         _effectiveDpi.value = effectiveDpi
 
-        aasdkSession = session
+        adoptSessionOwnership(session)
         // Same surface guarantee for transport restarts, which reuse the decoder
         // and so never trigger onDecoderCreated.
         // A transport restart can begin a native session without re-running the
@@ -1519,10 +1547,10 @@ class SessionManager(
             session.connectionState.collect { connState ->
                 val reportedState = connState.toSessionState()
                 val attempt = _reconnectAttempt.value
-                var startStreamingServices = false
                 synchronized(sessionStateLock) {
+                    if (aasdkSession !== session) return@synchronized
                     val currentState = _sessionState.value
-                    startStreamingServices = shouldStartStreamingServices(
+                    val startStreamingServices = shouldStartStreamingServices(
                         currentState,
                         reportedState,
                     )
@@ -1545,11 +1573,7 @@ class SessionManager(
                                 else "Error"
                         }
                     }
-                }
-                if (startStreamingServices) {
-                    startLocationForwarding(session)
-                    _vehicleDataForwarder?.start()
-                    _imuForwarder?.start()
+                    if (startStreamingServices) startStreamingServicesLocked(session)
                 }
             }
         }
@@ -1576,18 +1600,38 @@ class SessionManager(
         OalLog.i(TAG, "aasdk JNI session started ($directTransport transport)")
     }
 
-    private fun prepareNativeSessionStart(session: AasdkSession) {
+    private fun prepareNativeSessionStart(session: AasdkSession): Boolean {
+        val admitted = synchronized(sessionStateLock) {
+            if (retiringAasdkSession === session) {
+                false
+            } else {
+                if (aasdkSession !== session) {
+                    OalLog.i(TAG, "Re-adopting the session after a transport restart — " +
+                            "without this, touch input and sensor data are silently dropped")
+                }
+                adoptSessionOwnership(session)
+                true
+            }
+        }
+        if (!admitted) {
+            OalLog.i(TAG, "Rejecting native start while this session is retiring")
+            return false
+        }
+
         ensureVideoDecoder()
         ensureAudioPlayer()
-        if (aasdkSession !== session) {
-            OalLog.i(TAG, "Re-adopting the session after a transport restart — " +
-                    "without this, touch input and sensor data are silently dropped")
-        }
-        aasdkSession = session
         bindSessionCollectors(session)
         OalLog.i(TAG, "Native session dependencies ready: " +
                 "decoder=${_videoDecoder != null} surface=${lastKnownSurface != null} " +
                 "audio=${_audioPlayer != null} session=current collectors=bound")
+        return true
+    }
+
+    /** Must be called while holding [sessionStateLock] for the exact current session. */
+    private fun startStreamingServicesLocked(session: AasdkSession) {
+        startLocationForwarding(session)
+        _vehicleDataForwarder?.start()
+        _imuForwarder?.start()
     }
 
     @android.annotation.SuppressLint("MissingPermission")
@@ -1699,10 +1743,20 @@ class SessionManager(
         videoStallWatchJob = null
         callStateJob?.cancel()
         callStateJob = null
+        // Revoke ownership before cancelling collectors or stopping retained
+        // producers. A PhoneConnected callback already executing cannot be
+        // cancelled mid-body; the shared lock makes it either finish its starts
+        // before this teardown (which then stops them), or observe a stale owner
+        // and do nothing afterward.
+        val retiringSession = synchronized(sessionStateLock) {
+            val current = revokeSessionOwnershipLocked()
+            _sessionState.value = SessionState.IDLE
+            _statusMessage.value = "Disconnected"
+            current
+        }
         sessionCollectors?.cancel()
         sessionCollectors = null
-        aasdkSession?.stop()
-        aasdkSession = null
+        stopRetiringSession(retiringSession)
         stopDirectLocationForwarding()
         _videoDecoder?.release()
         _videoDecoder = null
@@ -1714,8 +1768,11 @@ class SessionManager(
         _hfpPresence = null
         _gnssForwarder?.stop()
         _gnssForwarder = null
+        // Preserve the stopped VHAL owner and its last complete EV snapshot across
+        // ignition sleep. The native wake path restarts this same owner before the
+        // phone's type-23 subscription, so Maps receives current battery data even
+        // when the AAOS process survives and full start() is bypassed.
         _vehicleDataForwarder?.stop()
-        _vehicleDataForwarder = null
         _imuForwarder?.stop()
         _imuForwarder = null
         forecastExpiryJob?.cancel()
@@ -1736,10 +1793,6 @@ class SessionManager(
         _telemetryCollector = null
         DiagnosticLog.instance = null
         _remoteDiagnostics = null
-        synchronized(sessionStateLock) {
-            _sessionState.value = SessionState.IDLE
-            _statusMessage.value = "Disconnected"
-        }
         _phoneBatteryLevel.value = null
         _phoneBatteryCritical.value = false
         _voiceSessionActive.value = false
@@ -1927,8 +1980,10 @@ class SessionManager(
         // 2. Stop old AA session + location forwarding. Revoke SDP first so
         // the phone cannot enter through callbacks owned by the retiring session.
         clearWirelessSessionAdmission()
-        aasdkSession?.stop()
-        aasdkSession = null
+        val retiringSession = synchronized(sessionStateLock) {
+            revokeSessionOwnershipLocked()
+        }
+        stopRetiringSession(retiringSession)
         stopDirectLocationForwarding()
 
         // 3. Flush video decoder (codec/scaling may have changed)
@@ -2154,8 +2209,10 @@ class SessionManager(
         // sets that), so the AA session's own retry loop doesn't fire during
         // the sleep window. The wake side will reconnect via the
         // ProjectionViewModel wake collector.
-        aasdkSession?.stop()
-        aasdkSession = null
+        val retiringSession = synchronized(sessionStateLock) {
+            revokeSessionOwnershipLocked()
+        }
+        stopRetiringSession(retiringSession)
         scope.launch {
             kotlinx.coroutines.delay(durationMs)
             OalLog.i(TAG, "DEBUG: simulating car wake (after ${formatGap(durationMs)})")
@@ -2576,30 +2633,41 @@ class SessionManager(
         }
     }
 
-    private fun handleControlMessage(message: ControlMessage) {
-        when (message) {
+    private fun handleControlMessage(sourceSession: AasdkSession, message: ControlMessage) {
+        synchronized(sessionStateLock) {
+            if (aasdkSession !== sourceSession) {
+                OalLog.i(TAG, "Ignoring control message from stale session: ${message::class.simpleName}")
+                return@synchronized
+            }
+            when (message) {
             is ControlMessage.PhoneConnected -> {
                 _remoteDiagnostics?.log(DiagnosticLevel.INFO, "session", "Phone connected: ${message.phoneName}")
                 resetLatchedVehicleSensorState("phone_connected")
                 seedCurrentUiNightMode("phone_connected")
-                val startStreamingServices = synchronized(sessionStateLock) {
-                    shouldStartStreamingServices(
-                        _sessionState.value,
-                        SessionState.STREAMING,
-                    ).also {
+                val accepted = synchronized(sessionStateLock) {
+                    if (aasdkSession === sourceSession) {
+                        val startStreamingServices = shouldStartStreamingServices(
+                            _sessionState.value,
+                            SessionState.STREAMING,
+                        )
                         _sessionState.value = SessionState.STREAMING
                         _statusMessage.value = "Streaming"
+                        if (startStreamingServices) {
+                            startStreamingServicesLocked(sourceSession)
+                        }
+                        true
+                    } else {
+                        false
                     }
+                }
+                if (!accepted) {
+                    OalLog.i(TAG, "Ignoring PhoneConnected effects from stale session")
+                    return
                 }
                 // Reset the stall watchdog baseline: give the fresh session a
                 // full warmup window before it can fire (avoids a stale
                 // timestamp from a prior session tripping it immediately).
                 lastVideoFrameArrivedMs = SystemClock.elapsedRealtime() + VIDEO_STALL_WARMUP_MS
-                if (startStreamingServices) {
-                    aasdkSession?.let { startLocationForwarding(it) }
-                    _vehicleDataForwarder?.start()
-                    _imuForwarder?.start()
-                }
             }
             is ControlMessage.PhoneDisconnected -> {
                 _remoteDiagnostics?.log(DiagnosticLevel.INFO, "session", "Phone disconnected: ${message.reason}")
@@ -2720,6 +2788,7 @@ class SessionManager(
                 _phoneSignalStrength.value = message.signalStrength
             }
             else -> {}
+            }
         }
     }
 

@@ -264,16 +264,25 @@ class AasdkSession(
 
         OalLog.i(TAG, "Starting aasdk session (WPP transport — phone connects to us)")
         _wppServer?.stop()
-        _wppServer = com.openautolink.app.transport.hotspot.WppTcpServer(
+        lateinit var server: com.openautolink.app.transport.hotspot.WppTcpServer
+        server = com.openautolink.app.transport.hotspot.WppTcpServer(
             scope = scope,
             onSocketReady = { wppSocket ->
                 scope.launch(Dispatchers.IO) {
-                    OalLog.i(TAG, "WPP socket accepted — starting aasdk native session")
-                    handleConnection(wppSocket)
+                    synchronized(connectionStartLock) {
+                        if (_wppServer !== server) {
+                            OalLog.i(TAG, "Retired WPP server delivered a late socket — closing it")
+                            runCatching { wppSocket.close() }
+                        } else {
+                            OalLog.i(TAG, "WPP socket accepted — starting aasdk native session")
+                            handleConnection(wppSocket)
+                        }
+                    }
                 }
             },
         )
-        _wppServer?.start()
+        _wppServer = server
+        server.start()
     }
 
     /**
@@ -288,7 +297,7 @@ class AasdkSession(
      * sure the decoder still has a surface.
      */
     @Volatile
-    var onNativeSessionStarting: (() -> Unit)? = null
+    var onNativeSessionStarting: (() -> Boolean)? = null
 
     /** Tracks the TCP target across every start path, including WPP restart. */
     private val companionDialState = CompanionDialState()
@@ -444,7 +453,12 @@ class AasdkSession(
             _connectionState.value = ConnectionState.CONNECTING
             OalLog.i(TAG, "Starting native aasdk session (USB): " +
                     "${sdrConfig.videoWidth}x${sdrConfig.videoHeight}")
-            onNativeSessionStarting?.invoke()
+            if (onNativeSessionStarting?.invoke() == false) {
+                OalLog.i(TAG, "USB native start rejected by session owner")
+                pipe.close()
+                _connectionState.value = ConnectionState.DISCONNECTED
+                return
+            }
             transportPipe = pipe
 
             try {
@@ -484,6 +498,7 @@ class AasdkSession(
         }
 
     private fun handleConnection(socket: Socket) {
+        synchronized(connectionStartLock) {
         _connectionState.value = ConnectionState.CONNECTING
 
         // Say goodbye to the phone before replacing a live native session.
@@ -525,7 +540,12 @@ class AasdkSession(
         // decoder-created hook never fires — and the reused decoder has no
         // surface after the old one was destroyed. Measured: video ran at 41fps
         // for 25s into a decoder with nothing to render to.
-        onNativeSessionStarting?.invoke()
+        if (onNativeSessionStarting?.invoke() == false) {
+            OalLog.i(TAG, "TCP native start rejected by session owner")
+            runCatching { socket.close() }
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
 
         transportPipe = AasdkTransportPipe(input, output)
 
@@ -537,6 +557,7 @@ class AasdkSession(
             transportPipe?.close()
             transportPipe = null
             _connectionState.value = ConnectionState.DISCONNECTED
+        }
         }
     }
 

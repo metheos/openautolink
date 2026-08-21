@@ -130,46 +130,119 @@ class VehicleDataForwarderImpl(
     private val _propertyStatus = mutableMapOf<String, String>()
     override val propertyStatus: Map<String, String> get() = _propertyStatus.toMap()
 
-    @Volatile private var startInFlight = false
+    private var startInFlight = false
+    private var desiredActive = false
+    private var lifecycleGeneration = 0L
 
     override fun start() {
-        if (isActive) return
-        // Idempotency guard: if start() is already running on a coroutine,
-        // a second concurrent call must NOT launch another connectToCar +
-        // registerProperties — they race against each other and the
-        // emulator silently fails property subscription.
-        synchronized(this) {
+        val generation = synchronized(this) {
+            desiredActive = true
             if (isActive || startInFlight) return
             startInFlight = true
+            ++lifecycleGeneration
         }
-        // Run on background thread — Car API calls can block (connect, waitForConnected)
+        launchStartAttempt(generation)
+    }
+
+    private fun launchStartAttempt(generation: Long) {
+        // Run on background thread — Car API calls can block (connect, waitForConnected).
+        // Every stage is fenced because stop() may run while this coroutine is blocked.
         scope.launch {
             try {
+                if (!isStartCurrent(generation)) return@launch
                 connectToCar()
+                if (!isStartCurrent(generation)) return@launch
                 readStaticVehicleInfo()
+                if (!isStartCurrent(generation)) return@launch
                 registerProperties()
-                isActive = true
+                if (!isStartCurrent(generation)) return@launch
+
+                val activated = synchronized(this@VehicleDataForwarderImpl) {
+                    if (lifecycleGeneration == generation && desiredActive) {
+                        isActive = true
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (!activated) return@launch
+
                 Log.i(TAG, "Vehicle data forwarding started")
                 DiagnosticLog.i("vhal", "Vehicle data forwarding started")
                 // Re-emit current data so collectors see isActive=true
                 _latestVehicleData.value = buildVehicleData()
                 startHistoryPoller()
             } catch (e: Exception) {
+                synchronized(this@VehicleDataForwarderImpl) {
+                    if (lifecycleGeneration == generation) desiredActive = false
+                }
                 val root = e.rootCause()
                 Log.w(TAG, "Failed to start vehicle data forwarding: ${root.message}")
                 DiagnosticLog.w("vhal", "Failed to start: ${root.javaClass.simpleName}: ${root.message}")
-                cleanup()
             } finally {
-                startInFlight = false
+                cleanupAfterStartAttempt(generation)
             }
         }
     }
 
+    private fun isStartCurrent(generation: Long): Boolean = synchronized(this) {
+        lifecycleGeneration == generation && desiredActive
+    }
+
+    private fun cleanupAfterStartAttempt(generation: Long) {
+        var nextGeneration: Long? = null
+        var cleanupOutcome: String? = null
+        synchronized(this) {
+            val stale = lifecycleGeneration != generation || !desiredActive
+            if (stale) {
+                isActive = false
+                cleanup()
+                cleanupOutcome = if (desiredActive) {
+                    "Stale VHAL start cleaned before queued restart"
+                } else {
+                    "In-flight VHAL start cleaned after stop"
+                }
+            }
+            startInFlight = false
+            // stop() followed quickly by start() while the old attempt was blocked
+            // leaves desiredActive=true but invalidates the old generation. Relaunch
+            // only after that attempt has cleaned up its partially-created Car state.
+            if (desiredActive && !isActive) {
+                startInFlight = true
+                nextGeneration = ++lifecycleGeneration
+            }
+        }
+        cleanupOutcome?.let {
+            Log.i(TAG, it)
+            DiagnosticLog.i("vhal", it)
+        }
+        nextGeneration?.let(::launchStartAttempt)
+    }
+
     override fun stop() {
-        if (!isActive) return
-        cleanup()
-        isActive = false
-        Log.i(TAG, "Vehicle data forwarding stopped")
+        val (hadWork, cleanupDeferred) = synchronized(this) {
+            val pendingOrActive = isActive || startInFlight || carObject != null
+            val deferred = startInFlight
+            desiredActive = false
+            lifecycleGeneration++
+            // An in-flight attempt owns its partially-created reflection objects;
+            // it observes the generation change in finally and cleans them there.
+            // Otherwise teardown is serialized here so a new start cannot overlap.
+            if (!startInFlight) {
+                isActive = false
+                if (pendingOrActive) cleanup()
+            }
+            pendingOrActive to deferred
+        }
+        if (hadWork) {
+            val outcome = if (cleanupDeferred) {
+                "VHAL stop requested; in-flight startup cleanup pending"
+            } else {
+                "Vehicle data forwarding stopped"
+            }
+            Log.i(TAG, outcome)
+            DiagnosticLog.i("vhal", outcome)
+        }
     }
 
     private fun connectToCar() {
