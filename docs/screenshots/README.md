@@ -56,7 +56,6 @@ Full manual video settings: codec, FPS, resolution, DPI, scaling, margins.
 | Screenshot | Description |
 |------------|-------------|
 | [14-settings-video-manual-top](14-settings-video-manual-top.png) | Manual mode selected — codec picker (H.264/H.265/VP9), frame rate (30/60 FPS). |
-| [14-settings-video-manual-scrolled1](14-settings-video-manual-scrolled1.png) | Scrolled: AA resolution tiers (480p through 4K with AA Developer Mode warnings for high-res). |
 | [14-settings-video-manual-scrolled2](14-settings-video-manual-scrolled2.png) | Scrolled: DPI slider, video scaling, AA video margins. |
 
 ## Settings — Audio Tab

@@ -125,7 +125,7 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 - **USB cable support** — AOA v2 direct connection for wired setups
 - **aasdk v1.6 native protocol** — battle-tested C++ AA library via JNI, not a reimplementation
 - **EV battery data in Android Auto** — battery %, range, fuel type, charge port forwarded from VHAL into AA. Google Maps shows battery level alongside navigation
-- **H.264, H.265, and VP9** video with auto-negotiation. Up to 4K with AA Developer Mode. H.265 startup is verified clean over USB and wireless with GAL 6.0
+- **H.264, H.265, and VP9** video with auto-negotiation and resolution tiers up to 4K. H.265 startup is verified clean over USB and wireless with GAL 6.0
 - **PCM and AAC-LC audio** — PCM for compatibility, AAC-LC for ~10× WiFi bandwidth reduction
 - **Display adaptation** *(work in progress)* — auto-computed AA scaling so wide and ultra-wide AAOS screens use the full panel without stretching the UI
 - **Per-purpose audio volume** — separate sliders for media, navigation, and assistant
@@ -360,8 +360,8 @@ The result is the intended Android Auto call experience: Android Auto displays a
 | 480p (800×480) | H.264 | Always available |
 | 720p (1280×720) | H.264 | Always available |
 | 1080p (1920×1080) | H.264, H.265, VP9 | Default tier |
-| 1440p (2560×1440) | H.265, VP9 | Requires AA Developer Mode |
-| 4K (3840×2160) | H.265, VP9 | Requires AA Developer Mode |
+| 1440p (2560×1440) | H.265, VP9 | Available |
+| 4K (3840×2160) | H.265, VP9 | Available |
 
 By default, the app uses auto-negotiation — the phone picks the best codec and resolution it supports.
 GAL 6.0 is the default protocol policy for new and upgraded installs; GAL 1.7 remains available as a manual compatibility fallback.

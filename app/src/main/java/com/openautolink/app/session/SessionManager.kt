@@ -38,6 +38,7 @@ import com.openautolink.app.transport.aasdk.AasdkSession
 import com.openautolink.app.transport.aasdk.AasdkSdrConfig
 import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.DecoderState
+import com.openautolink.app.video.AutoDpiPolicy
 import com.openautolink.app.video.MediaCodecDecoder
 import com.openautolink.app.video.VideoDecoder
 import com.openautolink.app.video.VideoStats
@@ -470,9 +471,9 @@ class SessionManager(
     val touchWidth: StateFlow<Int> = _touchWidth.asStateFlow()
     val touchHeight: StateFlow<Int> = _touchHeight.asStateFlow()
 
-    // Last density we sent in the SDR. Diagnostic-only — surfaced in the
-    // Stats-for-nerds overlay so the user can see what auto-DPI picked vs.
-    // their manual slider. 0 until the first session has built its SDR.
+    // Base density calculated from the saved resolution. In auto negotiation,
+    // native derives the actual value per advertised tier. Diagnostic-only;
+    // 0 until the first session has built its SDR.
     private val _effectiveDpi = MutableStateFlow(0)
     val effectiveDpi: StateFlow<Int> = _effectiveDpi.asStateFlow()
 
@@ -1383,6 +1384,16 @@ class SessionManager(
             val rrH = renderRectHPx
             val pDpi = if (panelDensityDpi > 0) panelDensityDpi else
                 ctx.resources.displayMetrics.densityDpi
+            // Auto negotiation advertises several codec widths. A single DPI
+            // for all of them changes AA's logical width when Gearhead picks a
+            // different tier (for example 1440p -> 4K). Preserve the measured
+            // panel layout width and let native service discovery derive one
+            // density per advertised tier.
+            val autoLayoutWidthDp = when {
+                aaTargetLayoutWidthDp > 0 -> aaTargetLayoutWidthDp
+                videoAutoNegotiate -> AutoDpiPolicy.layoutWidthDp(rrW, pDpi)
+                else -> 0
+            }
             // Use the inner rect at the picked codec tier so margins are
             // accounted for. Same formula as MarginAutoCalc / C++ side.
             val (autoWm, autoHm) = if (rrW > 0 && rrH > 0) {
@@ -1397,7 +1408,11 @@ class SessionManager(
                 if (fWidth > 0f) (pDpi / fWidth).toInt().coerceAtLeast(96) else aaDpi
             } else aaDpi
             effectiveDpi = auto
-            computedTargetLayoutWidthDp = aaTargetLayoutWidthDp
+            computedTargetLayoutWidthDp = if (videoAutoNegotiate && autoLayoutWidthDp > 0) {
+                autoLayoutWidthDp
+            } else {
+                aaTargetLayoutWidthDp
+            }
             if (rrW <= 0) {
                 // Say so, loudly. Auto-DPI is on but the renderer has not
                 // measured yet, so this silently shipped the MANUAL value to the
@@ -1410,7 +1425,9 @@ class SessionManager(
                         "re-apply once the renderer reports.")
             } else {
                 OalLog.i(TAG, "Auto-DPI: renderRect=${rrW}x${rrH} panelDpi=$pDpi " +
-                        "innerW=$innerW → DPI $effectiveDpi (user manual=$aaDpi ignored)")
+                        "innerW=$innerW → baseDpi=$effectiveDpi " +
+                        "perTierLayoutDp=$computedTargetLayoutWidthDp " +
+                        "(user manual=$aaDpi ignored)")
             }
         } else {
             // Manual: user picked the DPI; honour exactly.

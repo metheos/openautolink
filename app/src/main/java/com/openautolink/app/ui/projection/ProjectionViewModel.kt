@@ -22,6 +22,7 @@ import com.openautolink.app.data.KnownPhonesStore
 import com.openautolink.app.input.SteeringWheelController
 import com.openautolink.app.input.TouchForwarder
 import com.openautolink.app.input.TouchForwarderImpl
+import com.openautolink.app.input.TouchCoordinateSpace
 import com.openautolink.app.navigation.ManeuverState
 import com.openautolink.app.session.SessionManager
 import com.openautolink.app.session.SessionState
@@ -65,9 +66,9 @@ data class ProjectionUiState(
     val videoScalingMode: String = AppPreferences.DEFAULT_VIDEO_SCALING_MODE,
     val aaPixelAspect: Int = -1,
     val aaDpi: Int = 160,
-    /** Density that was actually sent to the phone in the SDR.
-     *  0 until first session built. Surfaced in Stats overlay so the user
-     *  can see what auto-DPI picked vs. their manual slider value. */
+    /** Base density calculated from the saved resolution.
+     *  Native auto negotiation derives the actual density independently for
+     *  every advertised tier. 0 until the first session is built. */
     val effectiveDpi: Int = 0,
     val aaWidthMargin: Int = 0,
     val aaHeightMargin: Int = 0,
@@ -193,6 +194,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     // Attached to decoder on session start or when decoder becomes available.
     /** Rate-limit for the "no codec dimensions, dropping touch" warning. */
     private var lastNoTouchSizeWarnAt = 0L
+    /** Rate-limit the positive touch-space mapping marker in uploaded logs. */
+    private var lastTouchMappingLogAt = 0L
 
     private var pendingSurface: Surface? = null
     private var pendingSurfaceWidth: Int = 0
@@ -2195,9 +2198,11 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         panelH: Int = 0,
     ) {
         val stats = _videoStats.value
-        val codecW = if (stats.width > 0) stats.width else sessionManager.touchWidth.value
-        val codecH = if (stats.height > 0) stats.height else sessionManager.touchHeight.value
-        if (codecW <= 0 || codecH <= 0) {
+        val protocolW = sessionManager.touchWidth.value
+        val protocolH = sessionManager.touchHeight.value
+        val videoW = if (stats.width > 0) stats.width else protocolW
+        val videoH = if (stats.height > 0) stats.height else protocolH
+        if (protocolW <= 0 || protocolH <= 0) {
             // The other way touch dies silently: video stats only start being
             // collected on SessionState.STREAMING, so a session that comes up via
             // a recovery path without publishing that state leaves these at zero
@@ -2207,7 +2212,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             if (now - lastNoTouchSizeWarnAt > 5_000L) {
                 lastNoTouchSizeWarnAt = now
                 com.openautolink.app.diagnostics.DiagnosticLog.w("input",
-                    "Dropping touch — no codec dimensions yet (${codecW}x${codecH})")
+                    "Dropping touch — no advertised touchscreen dimensions yet " +
+                        "(${protocolW}x${protocolH})")
             }
             return
         }
@@ -2222,20 +2228,40 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         if (innerW > 0 && innerH > 0 && panelW > 0 && panelH > 0) {
             effSurfW = panelW
             effSurfH = panelH
-            effCodecW = innerW
-            effCodecH = innerH
+            val protocolInner = TouchCoordinateSpace.innerForProtocol(
+                protocolWidth = protocolW,
+                protocolHeight = protocolH,
+                videoWidth = videoW,
+                videoHeight = videoH,
+                videoInnerWidth = innerW,
+                videoInnerHeight = innerH,
+            )
+            effCodecW = protocolInner.first
+            effCodecH = protocolInner.second
         } else {
             effSurfW = surfaceWidth
             effSurfH = surfaceHeight
-            effCodecW = codecW
-            effCodecH = codecH
+            effCodecW = protocolW
+            effCodecH = protocolH
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             val sx = event.x * effCodecW / effSurfW
             val sy = event.y * effCodecH / effSurfH
             Log.d("TouchDebug", "viewSurf=${surfaceWidth}x${surfaceHeight} " +
-                "effSurf=${effSurfW}x${effSurfH} effCodec=${effCodecW}x${effCodecH} " +
+                "video=${videoW}x${videoH} protocol=${protocolW}x${protocolH} " +
+                "effSurf=${effSurfW}x${effSurfH} effTouch=${effCodecW}x${effCodecH} " +
                 "raw=(${event.x.toInt()},${event.y.toInt()}) scaled=(${sx.toInt()},${sy.toInt()})")
+            val now = System.currentTimeMillis()
+            if (now - lastTouchMappingLogAt > 5_000L) {
+                lastTouchMappingLogAt = now
+                com.openautolink.app.diagnostics.DiagnosticLog.i(
+                    "input",
+                    "Touch mapping active: video=${videoW}x${videoH} " +
+                        "protocol=${protocolW}x${protocolH} " +
+                        "panel=${effSurfW}x${effSurfH} " +
+                        "innerTouch=${effCodecW}x${effCodecH}",
+                )
+            }
         }
         touchForwarder.onTouch(event, effSurfW, effSurfH, effCodecW, effCodecH)
     }

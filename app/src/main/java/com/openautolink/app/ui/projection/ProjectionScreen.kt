@@ -1375,9 +1375,9 @@ private fun VideoStatsOverlay(
                 if (stats.width > 0) {
                     StatLine("Resolution", "${stats.width}x${stats.height}")
                 }
-                StatLine("DPI", "$aaDpi (real)")
+                StatLine("DPI setting", "$aaDpi")
                 if (effectiveDpi > 0 && effectiveDpi != aaDpi) {
-                    StatLine("DPI sent", "$effectiveDpi (auto)",
+                    StatLine("Auto DPI base", "$effectiveDpi",
                         valueColor = Color(0xFF64B5F6))
                 }
                 if (aaPixelAspect > 0) {

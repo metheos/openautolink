@@ -1368,27 +1368,25 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Text(
             text = "Resolution tier the phone encodes at. Higher = better quality, more bandwidth. " +
-                    "H.265 or VP9 recommended for 1440p/4K. Phone AA developer settings may need " +
-                    "to be enabled for resolutions above 1080p.",
+                    "H.265 or VP9 recommended for 1440p/4K.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 12.dp)
         )
 
         listOf(
-            Triple("480p", "480p (800×480)", false),
-            Triple("720p", "720p (1280×720)", false),
-            Triple("1080p", "1080p (1920×1080)", false),
-            Triple("1440p", "1440p (2560×1440)", true),
-            Triple("4k", "4K (3840×2160)", true),
+            "480p" to "480p (800×480)",
+            "720p" to "720p (1280×720)",
+            "1080p" to "1080p (1920×1080)",
+            "1440p" to "1440p (2560×1440)",
+            "4k" to "4K (3840×2160)",
             // Portrait variants — AA enum has 9:16 mirrors of 720p+ for tall
             // panels. No 480p portrait in the spec.
-            Triple("720p_p", "720p portrait (720×1280)", false),
-            Triple("1080p_p", "1080p portrait (1080×1920)", false),
-            Triple("1440p_p", "1440p portrait (1440×2560)", true),
-            Triple("4k_p", "4K portrait (2160×3840)", true),
-        ).forEach { (key, label, isHighRes) ->
-            val warningColor = Color(0xFFFFB74D)
+            "720p_p" to "720p portrait (720×1280)",
+            "1080p_p" to "1080p portrait (1080×1920)",
+            "1440p_p" to "1440p portrait (1440×2560)",
+            "4k_p" to "4K portrait (2160×3840)",
+        ).forEach { (key, label) ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth(0.7f)
@@ -1402,21 +1400,11 @@ private fun VideoTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
                     onClick = { viewModel.updateAaResolution(key) }
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = if (uiState.aaResolution == key) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (isHighRes) warningColor else Color.Unspecified,
-                    )
-                    if (isHighRes) {
-                        Text(
-                            text = "AA Developer Mode required on phone",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = warningColor,
-                        )
-                    }
-                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (uiState.aaResolution == key) FontWeight.SemiBold else FontWeight.Normal,
+                )
             }
         }
 
