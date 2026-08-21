@@ -251,6 +251,13 @@ configuration index in auto mode. The phone communicates the selected index in
 The ordered list makes index 0 the highest advertised tier. Selection is still a
 phone decision; source order alone is not proof that every phone chooses index 0.
 
+`InputSourceService` exposes one touchscreen coordinate space rather than one per
+video configuration. The automatic touchscreen follows the first video tier,
+which matches Gearhead's selected index in every captured OAL auto-negotiation
+session. Manual mode continues to advertise the manually selected video size.
+OAL logs `Input touchscreen: WIDTHxHEIGHT autoNeg=...` so a future phone that
+selects a fallback index can be identified rather than silently mis-mapped.
+
 ---
 
 ## 2. Scoped 2914×1134 vehicle example

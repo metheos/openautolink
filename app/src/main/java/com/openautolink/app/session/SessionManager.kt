@@ -39,6 +39,7 @@ import com.openautolink.app.transport.aasdk.AasdkSdrConfig
 import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.DecoderState
 import com.openautolink.app.video.AutoDpiPolicy
+import com.openautolink.app.video.AutoVideoTouchPolicy
 import com.openautolink.app.video.MediaCodecDecoder
 import com.openautolink.app.video.VideoDecoder
 import com.openautolink.app.video.VideoStats
@@ -1466,6 +1467,19 @@ class SessionManager(
             0 to 0
         }
         OalLog.i(TAG, "Panel dims: ${panelW}x${panelH} (mode=$lastDisplayMode)")
+        val (protocolTouchW, protocolTouchH) = AutoVideoTouchPolicy.resolve(
+            autoNegotiate = videoAutoNegotiate,
+            codec = codec,
+            panelWidth = panelW,
+            panelHeight = panelH,
+            selectedWidth = resW,
+            selectedHeight = resH,
+        )
+        OalLog.i(
+            TAG,
+            "Protocol touchscreen: ${protocolTouchW}x${protocolTouchH} " +
+                "autoNeg=$videoAutoNegotiate selected=${resW}x${resH}",
+        )
 
         val session = AasdkSession(scope, ctx)
         session.transportMode = directTransport
@@ -1522,8 +1536,8 @@ class SessionManager(
             panelHeight = panelH,
             autoMargins = aaAutoMargins,
         )
-        _touchWidth.value = resW
-        _touchHeight.value = resH
+        _touchWidth.value = protocolTouchW
+        _touchHeight.value = protocolTouchH
         _effectiveDpi.value = effectiveDpi
 
         adoptSessionOwnership(session)
