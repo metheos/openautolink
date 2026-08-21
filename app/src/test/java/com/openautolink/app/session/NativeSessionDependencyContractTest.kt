@@ -20,7 +20,7 @@ class NativeSessionDependencyContractTest {
         val helper = source.substring(start, end)
         assertTrue(helper.contains("ensureVideoDecoder()"))
         assertTrue(helper.contains("ensureAudioPlayer()"))
-        assertTrue(helper.contains("aasdkSession = session"))
+        assertTrue(helper.contains("adoptSessionOwnership(session)"))
         assertTrue(helper.contains("bindSessionCollectors(session)"))
         assertTrue(helper.contains("Native session dependencies ready:"))
 
@@ -29,6 +29,44 @@ class NativeSessionDependencyContractTest {
             Regex("""session\.onNativeSessionStarting\s*=\s*\{\s*prepareNativeSessionStart\(session\)\s*}""")
                 .findAll(source)
                 .count(),
+        )
+
+        assertTrue(
+            "The dependency preparer must reject the exact session while stop is retiring it",
+            helper.contains("retiringAasdkSession === session") &&
+                helper.contains("return false"),
+        )
+        assertTrue(
+            "The dependency preparer must report successful admission",
+            helper.contains("return true"),
+        )
+
+        val aasdk = projectFile(
+            "app/src/main/java/com/openautolink/app/transport/aasdk/AasdkSession.kt",
+        ).readText()
+        assertTrue(aasdk.contains("var onNativeSessionStarting: (() -> Boolean)?"))
+        assertEquals(
+            "Both USB and TCP native starts must abort when their owner rejects admission",
+            2,
+            Regex(Regex.escape("onNativeSessionStarting?.invoke() == false"))
+                .findAll(aasdk)
+                .count(),
+        )
+        val tcpStart = aasdk.indexOf("private fun handleConnection(socket: Socket)")
+        val tcpEnd = aasdk.indexOf("fun shutdownGracefully", tcpStart)
+        assertTrue(tcpStart >= 0 && tcpEnd > tcpStart)
+        val tcpStartBlock = aasdk.substring(tcpStart, tcpEnd)
+        assertTrue(
+            "WPP and direct TCP starts must share the same stop/start ownership lock",
+            tcpStartBlock.indexOf("synchronized(connectionStartLock)") in
+                0 until tcpStartBlock.indexOf("onNativeSessionStarting?.invoke()"),
+        )
+        val wppStart = aasdk.substringAfter("private fun startWpp(recovery: Boolean = false)")
+            .substringBefore("var onNativeSessionStarting")
+        assertTrue(
+            "A socket queued by a stopped WPP server must not start after retirement clears",
+            wppStart.contains("_wppServer !== server") &&
+                wppStart.contains("wppSocket.close()"),
         )
     }
 
