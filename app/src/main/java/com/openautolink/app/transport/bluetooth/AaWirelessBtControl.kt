@@ -227,6 +227,11 @@ object AaWirelessBtControl {
     @Volatile
     var onStatus: ((String) -> Unit)? = null
 
+    fun isCurrentSessionOwner(token: WppSessionAdmission.Token): Boolean =
+        token.transportMode == "wpp" && sessionAdmission.isCurrent(token)
+
+    fun hasCurrentWppOwner(): Boolean = sessionAdmission.currentWppOwner() != null
+
     fun installSessionOwner(transportMode: String): WppSessionAdmission.Token {
         val token = synchronized(this) {
             sessionAdmission.installSession(transportMode)
@@ -973,6 +978,9 @@ object AaWirelessBtControl {
     var activePhoneCompanionIp: String? = null
         private set
 
+    private fun isDebuggableBuild(context: Context): Boolean =
+        context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+
     fun init(context: Context) {
         appContext = context.applicationContext
         restoreKnownIps(context)
@@ -981,7 +989,8 @@ object AaWirelessBtControl {
             if (started) return
             started = true
         }
-        val receiver = object : BroadcastReceiver() {
+        if (isDebuggableBuild(context)) {
+            val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
                 when (intent?.action) {
                     ACTION_START -> handleStart(context, intent)
@@ -1013,10 +1022,14 @@ object AaWirelessBtControl {
         // Exported so it can be driven from adb during bring-up. This is a debug
         // affordance; when the advertiser starts automatically it should stop being
         // externally triggerable.
-        androidx.core.content.ContextCompat.registerReceiver(
-            context, receiver, filter,
-            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
-        )
+            androidx.core.content.ContextCompat.registerReceiver(
+                context, receiver, filter,
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+            )
+            OalLog.i(TAG, "Debug AA wireless controls registered")
+        } else {
+            OalLog.i(TAG, "Debug AA wireless controls disabled in release build")
+        }
 
         // Start advertising automatically whenever WPP is the selected transport.
         //

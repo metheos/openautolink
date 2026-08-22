@@ -458,7 +458,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
     private val connectLock = Any()
 
     fun connect() {
-        connect(overrideIp = null)
+        connect(overrideIp = null, wppRearmSource = null)
     }
 
     /**
@@ -467,6 +467,20 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      * by-value here so a concurrent caller can't race on a shared field.
      */
     fun connect(overrideIp: String?) {
+        connect(overrideIp = overrideIp, wppRearmSource = null)
+    }
+
+    private fun connectForWppRearm(source: String) {
+        connect(overrideIp = null, wppRearmSource = source)
+    }
+
+    private fun connect(overrideIp: String?, wppRearmSource: String?) {
+        fun logWppRearmRejected(reason: String) {
+            wppRearmSource?.let { source ->
+                OalLog.i(TAG, "WPP rearm rejected: source=$source reason=$reason")
+            }
+        }
+
         // Open the chooser instead of auto-connecting when:
         //   - "Always ask" is on (Behavior 2), OR
         //   - No default phone is set yet (first-run or after Forget — the
@@ -494,6 +508,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     "Auto-connect suppressed — ignition state = ${com.openautolink.app.input.IgnitionMonitor.ignitionState.value} " +
                         "(off ${com.openautolink.app.input.IgnitionMonitor.msSinceIgnitionOff()}ms ago)",
                 )
+                logWppRearmRejected("ignition-off")
                 return
             }
             // Acquire the in-flight slot synchronously before suspending so
@@ -501,10 +516,12 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             synchronized(connectLock) {
                 if (hasConnected && sessionManager.sessionState.value != SessionState.IDLE) {
                     sessionManager.ensureClusterAlive()
+                    logWppRearmRejected("session-not-idle")
                     return
                 }
                 if (connectInFlight) {
                     OalLog.d(TAG, "connect() ignored — another connect coroutine is already in flight")
+                    logWppRearmRejected("connect-in-flight")
                     return
                 }
                 connectInFlight = true
@@ -521,6 +538,13 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     // needs the phone chooser, because there is no discovery step
                     // to disambiguate.
                     val transport = preferences.directTransport.first()
+                    if (wppRearmSource != null &&
+                        transport != AppPreferences.DIRECT_TRANSPORT_WPP
+                    ) {
+                        OalLog.i(TAG, "WPP rearm rejected: source=$wppRearmSource " +
+                            "reason=transport-changed current=$transport")
+                        return@launch
+                    }
                     val usbMode = transport == AppPreferences.DIRECT_TRANSPORT_USB ||
                         transport == AppPreferences.DIRECT_TRANSPORT_WPP
                     if (!usbMode && mode == AppPreferences.CONNECTION_MODE_CAR_HOTSPOT) {
@@ -539,9 +563,13 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                             return@launch
                         }
                     }
-                    doConnect(overrideIp = null)
+                    doConnect(overrideIp = null, wppRearmSource = wppRearmSource)
                     settle = true
                 } catch (e: Exception) {
+                    wppRearmSource?.let { source ->
+                        OalLog.e(TAG, "WPP rearm outcome: source=$source " +
+                            "ownerInstalled=false error=${e.message}")
+                    }
                     OalLog.e(TAG, "connect() failed: ${e.message}")
                 } finally {
                     // Hold the in-flight slot briefly so sessionState has
@@ -589,13 +617,28 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      * chooser-open gate has been cleared. Reads all remaining settings and
      * hands off to SessionManager.start.
      */
-    private suspend fun doConnect(overrideIp: String?) {
+    private suspend fun doConnect(
+        overrideIp: String?,
+        wppRearmSource: String? = null,
+    ) {
             val codec = preferences.videoCodec.first()
             val micSrc = preferences.micSource.first()
             val scalingMode = preferences.videoScalingMode.first()
             val hotspotSsid = preferences.hotspotSsid.first()
             val hotspotPassword = preferences.hotspotPassword.first()
             val directTransport = preferences.directTransport.first()
+            wppRearmSource?.let {
+                val rejection = WppWakeReconnectPolicy.preStartRejection(
+                    wppSelectedNow = directTransport == AppPreferences.DIRECT_TRANSPORT_WPP,
+                    ignitionOff = com.openautolink.app.input.IgnitionMonitor.isOffOrLocked(),
+                    sessionIdle = sessionManager.sessionState.value == SessionState.IDLE,
+                    currentWppOwnerPresent = sessionManager.hasCurrentWppOwner(),
+                )
+                if (rejection != null) {
+                    OalLog.i(TAG, "WPP rearm rejected: source=$wppRearmSource reason=$rejection")
+                    return
+                }
+            }
             val videoAutoNeg = preferences.videoAutoNegotiate.first()
             val aaRes = preferences.aaResolution.first()
             val aaDpi = preferences.aaDpi.first()
@@ -787,6 +830,27 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                         "manual DPI; scaling may be wrong until reconnect")
             }
 
+            // SessionManager invokes this once before destructive setup and again
+            // inside its serialized start coroutine immediately before creating
+            // the protocol owner. Keeping the check attached to the attempt closes
+            // the caller/callee suspension window without making SessionManager
+            // depend on UI-layer policy.
+            val wppRearmFinalAdmission: (suspend () -> String?)? =
+                wppRearmSource?.let {
+                    {
+                        val currentTransport = preferences.directTransport.first()
+                        WppWakeReconnectPolicy.preStartRejection(
+                            wppSelectedNow = currentTransport ==
+                                AppPreferences.DIRECT_TRANSPORT_WPP,
+                            ignitionOff = com.openautolink.app.input.IgnitionMonitor
+                                .isOffOrLocked(),
+                            sessionIdle = sessionManager.sessionState.value ==
+                                SessionState.IDLE,
+                            currentWppOwnerPresent = sessionManager.hasCurrentWppOwner(),
+                        )
+                    }
+                }
+
             sessionManager.start(
                 codecPreference = codec,
                 micSourcePreference = micSrc,
@@ -820,6 +884,8 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 safeAreaRight = saRight,
                 gpsForwarding = gpsForwarding,
                 galVersion = galVersion,
+                wppRearmSource = wppRearmSource,
+                wppRearmFinalAdmission = wppRearmFinalAdmission,
             )
     }
 
@@ -1111,28 +1177,43 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     )
                     _activePhoneId.value = null
                 }
-                // Force-kick auto-reconnect on wake. `phoneDiscovery.phones`
-                // edge-triggered collector only fires when isResolved flips
-                // false→true; after a short sleep the phone often stays
-                // resolved across the gap, so the edge never happens and we
-                // sit idle. The wake event is a level signal — use it to
-                // resync. Gate on the same conditions as the edge collector.
-                if (event.gapMs >= WAKE_AUTO_RECONNECT_MIN_GAP_MS &&
-                    wirelessDiscoveryEnabled &&
-                    !alwaysAskPhone.value &&
-                    defaultPhoneId.value.isNotBlank() &&
-                    !connectInFlight &&
-                    sessionManager.sessionState.value == SessionState.IDLE &&
-                    phoneDiscovery.phones.value.any { it.isResolved }) {
+                // Force-kick session ownership on wake. WPP is deliberately
+                // independent of the legacy phone picker and IP discovery: the
+                // Bluetooth dial-back cannot happen until this car first binds
+                // its listener and publishes SDP. Requiring a discovered default
+                // here produced a 78s owner-less wait in one wake and no owner at
+                // all in the next capture.
+                val wppSelected = preferences.directTransport.first() ==
+                    AppPreferences.DIRECT_TRANSPORT_WPP
+                val shouldKick = event.gapMs >= WAKE_AUTO_RECONNECT_MIN_GAP_MS &&
+                    WppWakeReconnectPolicy.shouldKickWake(
+                        wppSelected = wppSelected,
+                        wirelessDiscoveryEnabled = wirelessDiscoveryEnabled,
+                        alwaysAskPhone = alwaysAskPhone.value,
+                        defaultPhonePresent = defaultPhoneId.value.isNotBlank(),
+                        resolvedPhonePresent = phoneDiscovery.phones.value.any { it.isResolved },
+                        connectInFlight = connectInFlight,
+                        sessionIdle = sessionManager.sessionState.value == SessionState.IDLE,
+                        currentWppOwnerPresent = sessionManager.hasCurrentWppOwner(),
+                    )
+                if (shouldKick) {
                     val now = SystemClock.elapsedRealtime()
-                    if (now - lastAutoReconnectAttemptMs >= AUTO_RECONNECT_MIN_GAP_MS) {
+                    if (WppWakeReconnectPolicy.cooldownAllows(
+                            wppSelected = wppSelected,
+                            elapsedSinceAttemptMs = now - lastAutoReconnectAttemptMs,
+                            minimumGapMs = AUTO_RECONNECT_MIN_GAP_MS,
+                        )) {
                         lastAutoReconnectAttemptMs = now
-                        OalLog.i(
-                            TAG,
-                            "Wake event (gap=${event.gapMs}ms) — kicking auto-reconnect",
-                        )
-                        hasConnected = false
-                        connect()
+                        if (wppSelected) {
+                            connectForWppRearm(source = "wake")
+                        } else {
+                            OalLog.i(
+                                TAG,
+                                "Wake event (gap=${event.gapMs}ms) — kicking auto-reconnect",
+                            )
+                            hasConnected = false
+                            connect()
+                        }
                     }
                 }
             }
@@ -1148,17 +1229,31 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 .collect { state ->
                     val on = state == 4 || state == 5
                     if (!on) return@collect
-                    if (!wirelessDiscoveryEnabled) return@collect
-                    if (alwaysAskPhone.value) return@collect
-                    if (defaultPhoneId.value.isBlank()) return@collect
-                    if (connectInFlight) return@collect
-                    if (sessionManager.sessionState.value != SessionState.IDLE) return@collect
+                    val wppSelected = preferences.directTransport.first() ==
+                        AppPreferences.DIRECT_TRANSPORT_WPP
+                    if (!WppWakeReconnectPolicy.shouldKickIgnition(
+                            wppSelected = wppSelected,
+                            wirelessDiscoveryEnabled = wirelessDiscoveryEnabled,
+                            alwaysAskPhone = alwaysAskPhone.value,
+                            defaultPhonePresent = defaultPhoneId.value.isNotBlank(),
+                            connectInFlight = connectInFlight,
+                            sessionIdle = sessionManager.sessionState.value == SessionState.IDLE,
+                            currentWppOwnerPresent = sessionManager.hasCurrentWppOwner(),
+                        )) return@collect
                     val now = SystemClock.elapsedRealtime()
-                    if (now - lastAutoReconnectAttemptMs < AUTO_RECONNECT_MIN_GAP_MS) return@collect
+                    if (!WppWakeReconnectPolicy.cooldownAllows(
+                            wppSelected = wppSelected,
+                            elapsedSinceAttemptMs = now - lastAutoReconnectAttemptMs,
+                            minimumGapMs = AUTO_RECONNECT_MIN_GAP_MS,
+                        )) return@collect
                     lastAutoReconnectAttemptMs = now
-                    OalLog.i(TAG, "Ignition ON — kicking auto-reconnect")
-                    hasConnected = false
-                    connect()
+                    if (wppSelected) {
+                        connectForWppRearm(source = "ignition")
+                    } else {
+                        OalLog.i(TAG, "Ignition ON — kicking auto-reconnect")
+                        hasConnected = false
+                        connect()
+                    }
                 }
         }
         // Ignition OFF edge: tell the phone we're going away.
@@ -2418,7 +2513,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
         // onCleared() runs on the main thread. Hand the native teardown to a
         // plain thread — viewModelScope is already cancelled by this point, so a
         // coroutine here would never run.
-        Thread({ sessionManager.stop() }, "oal-session-stop").start()
+        Thread({
+            kotlinx.coroutines.runBlocking { sessionManager.stop() }
+        }, "oal-session-stop").start()
         super.onCleared()
     }
 }

@@ -53,7 +53,7 @@ class VehicleEnergyReconnectContractTest {
             hook.contains("ensureVehicleDataForwarder()?.start()"),
         )
 
-        val reconnect = source.substringAfter("private fun doReconnectAfterCancel(")
+        val reconnect = source.substringAfter("private suspend fun doReconnectAfterCancel(")
             .substringBefore("fun onSystemWake()")
         assertTrue("Reconnect must pause VHAL while replacing the protocol session",
             reconnect.contains("_vehicleDataForwarder?.stop()"))
