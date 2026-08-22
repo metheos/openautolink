@@ -146,10 +146,10 @@
             android:name="com.android.automotive.application.DISTRACTION_OPTIMIZED"
             android:value="true" />
 
-        <!-- Debug: change settings via ADB broadcast without rebuild -->
+        <!-- ADB control receiver is private in release; debug manifest overrides exported=true. -->
         <receiver
             android:name=".diagnostics.SettingsReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="com.openautolink.app.SET_PREF" />
                 <action android:name="com.openautolink.app.RECONNECT" />

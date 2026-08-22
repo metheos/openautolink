@@ -36,6 +36,7 @@ import com.openautolink.app.transport.ConnectionState
 import com.openautolink.app.transport.ControlMessage
 import com.openautolink.app.transport.aasdk.AasdkSession
 import com.openautolink.app.transport.aasdk.AasdkSdrConfig
+import com.openautolink.app.transport.bluetooth.AaWirelessBtControl
 import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.DecoderState
 import com.openautolink.app.video.AutoDpiPolicy
@@ -137,16 +138,17 @@ class SessionManager(
     private var wirelessSessionAdmission:
         com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token? = null
 
-    private fun installWirelessSessionAdmission(transportMode: String) {
+    private fun installWirelessSessionAdmission(
+        transportMode: String,
+    ): com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token =
         synchronized(wirelessAdmissionLock) {
             wirelessSessionAdmission?.let {
-                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.clearSessionOwner(it)
+                AaWirelessBtControl.clearSessionOwner(it)
             }
-            wirelessSessionAdmission =
-                com.openautolink.app.transport.bluetooth.AaWirelessBtControl
-                    .installSessionOwner(transportMode)
+            AaWirelessBtControl.installSessionOwner(transportMode).also { token ->
+                wirelessSessionAdmission = token
+            }
         }
-    }
 
     private fun clearWirelessSessionAdmission() {
         synchronized(wirelessAdmissionLock) {
@@ -678,6 +680,9 @@ class SessionManager(
     /** Get the current default phone name. */
     fun getDefaultPhoneName(): String = _defaultPhoneName
 
+    /** True while an exact WPP session token owns the process-scoped advertiser. */
+    fun hasCurrentWppOwner(): Boolean = AaWirelessBtControl.hasCurrentWppOwner()
+
     /** Clear the default phone — next connection will pick any phone. */
     fun clearDefaultPhone() {
         _defaultPhoneName = ""
@@ -689,7 +694,7 @@ class SessionManager(
 
     /** Switch phone: disconnect, restart discovery in chooser mode. */
     fun switchPhone() {
-        stop()
+        scope.launch { stop() }
     }
 
     // Media session. Holds a reference to the process-wide singleton (created
@@ -727,6 +732,24 @@ class SessionManager(
 
     // Cluster manager
     private var _clusterManager: com.openautolink.app.cluster.ClusterManager? = null
+
+    private val startMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var lifecycleGeneration = 0L
+
+    /** Caller must already hold [startMutex]. */
+    private suspend fun rollbackLifecycleFailure(
+        phase: String,
+        error: Throwable,
+        cancelObserveJob: Boolean = true,
+    ) {
+        OalLog.e(TAG, "$phase lifecycle failed: ${error.message} — rolling back")
+        try {
+            stopWhileLifecycleLocked(cancelObserveJob = cancelObserveJob)
+        } catch (cleanupError: Exception) {
+            error.addSuppressed(cleanupError)
+            OalLog.e(TAG, "$phase rollback failed: ${cleanupError.message}")
+        }
+    }
 
     private var observeJob: Job? = null
     private var decoderWatchJob: Job? = null
@@ -978,7 +1001,7 @@ class SessionManager(
         session.sendNightMode(night)
     }
 
-    fun start(
+    suspend fun start(
         codecPreference: String = "h264",
         micSourcePreference: String = "car",
         scalingMode: String = "letterbox",
@@ -1011,13 +1034,34 @@ class SessionManager(
         safeAreaRight: Int = 0,
         gpsForwarding: Boolean = true,
         galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
+        wppRearmSource: String? = null,
+        wppRearmFinalAdmission: (suspend () -> String?)? = null,
     ) {
+        val requestGeneration = lifecycleGeneration
+        startMutex.lock()
+        try {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        if (requestGeneration != lifecycleGeneration) {
+            OalLog.i(TAG, "Start request rejected — lifecycle stop completed while waiting")
+            return@withContext
+        }
+        val initialWppRejection = if (wppRearmSource != null) {
+            wppRearmFinalAdmission?.invoke() ?: "admission-check-missing"
+        } else null
+        if (initialWppRejection != null) {
+            OalLog.i(TAG, "WPP rearm rejected: source=$wppRearmSource " +
+                "reason=$initialWppRejection")
+            return@withContext
+        }
+        // Everything below mutates lifecycle-owned components. Any failure must
+        // roll the whole replacement back before releasing the lifecycle mutex.
+        try {
         // Cache for later reconnects that don't know the resolved IP (e.g.
         // Settings "Save & Reconnect" in Car Hotspot mode).
         if (!manualIpAddress.isNullOrBlank()) _lastManualIpAddress = manualIpAddress
         gpsForwardingEnabled = gpsForwarding
         micSource = micSourcePreference
-        observeJob?.cancel()
+        observeJob?.cancelAndJoin()
 
         // Create video decoder
         _videoDecoder?.release()
@@ -1190,7 +1234,8 @@ class SessionManager(
         _telemetryCollector?.audioPlayer = _audioPlayer
         _telemetryCollector?.start()
 
-        observeJob = scope.launch {
+        val startupOutcome = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val newObserveJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             // Watch for decoder errors
             decoderWatchJob?.cancel()
             decoderWatchJob = launch { watchDecoderState() }
@@ -1214,22 +1259,64 @@ class SessionManager(
             callStateJob?.cancel()
             callStateJob = launch { watchCallState() }
 
-            // Start direct mode session
-            startSession(directTransport, hotspotSsid, hotspotPassword,
-                videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
-                aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
-                aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
-                videoFps,
-                driveSide, hideClock, hideSignal, hideBattery, scalingMode,
-                manualIpAddress,
-                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                gpsForwarding, galVersion)
+            // Start direct mode session. Re-run WPP admission on this exact
+            // serialized coroutine immediately before the destructive owner
+            // transition; the caller may have suspended while reading settings
+            // or waiting for its render rectangle.
+            try {
+                // Register before final admission so the same rollback block
+                // owns both registration and unregistration.
+                registerScreenReceiver()
+                if (isDebuggableBuild()) registerDebugReceiver()
+                val finalWppRejection = if (wppRearmSource != null) {
+                wppRearmFinalAdmission?.invoke() ?: "admission-check-missing"
+            } else null
+            if (finalWppRejection != null) {
+                OalLog.i(TAG, "WPP rearm rejected: source=$wppRearmSource " +
+                    "reason=$finalWppRejection")
+                stopWhileLifecycleLocked(cancelObserveJob = false)
+                startupOutcome.complete(Unit)
+                return@launch
+            }
+                startSession(directTransport, hotspotSsid, hotspotPassword,
+                    videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
+                    aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
+                    aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
+                    videoFps,
+                    driveSide, hideClock, hideSignal, hideBattery, scalingMode,
+                    manualIpAddress,
+                    safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+                    gpsForwarding, galVersion, wppRearmSource)
+                startupOutcome.complete(Unit)
+            } catch (e: Exception) {
+                wppRearmSource?.let { source ->
+                    OalLog.e(TAG, "WPP rearm outcome: source=$source " +
+                        "ownerInstalled=false error=${e.message}")
+                }
+                startupOutcome.completeExceptionally(e)
+            }
         }
+        newObserveJob.invokeOnCompletion { cause ->
+            if (!startupOutcome.isCompleted) {
+                startupOutcome.completeExceptionally(
+                    cause ?: IllegalStateException("session start ended before reporting outcome"),
+                )
+            }
+        }
+        observeJob = newObserveJob
+        newObserveJob.start()
 
-        // Listen for system sleep so we can gracefully tear down before the
-        // socket goes stale. Wake is handled in MainActivity.onResume().
-        registerScreenReceiver()
-        registerDebugReceiver()
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            startupOutcome.await()
+        }
+        } catch (e: Exception) {
+            rollbackLifecycleFailure("start", e)
+            throw e
+        }
+        }
+        } finally {
+            startMutex.unlock()
+        }
     }
 
     private fun startSession(
@@ -1248,10 +1335,18 @@ class SessionManager(
         safeAreaTop: Int = 0, safeAreaBottom: Int = 0, safeAreaLeft: Int = 0, safeAreaRight: Int = 0,
         gpsForwarding: Boolean = true,
         galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
+        wppRearmSource: String? = null,
     ) {
         aasdkSession?.stop()
         _transportMode.value = directTransport
-        val ctx = context ?: return
+        val ctx = context
+        if (ctx == null) {
+            wppRearmSource?.let { source ->
+                OalLog.e(TAG, "WPP rearm outcome: source=$source " +
+                    "ownerInstalled=false error=context-missing")
+            }
+            return
+        }
 
         // Map resolution string to pixel dimensions. Strings are the AA
         // VideoCodecResolutionType enum values; portrait variants use the
@@ -1626,7 +1721,13 @@ class SessionManager(
         // Publish SDP only after this exact protocol owner has installed all
         // callbacks and bound its transport. This closes the cold-start and
         // USB→WPP preference races without delaying native negotiation itself.
-        installWirelessSessionAdmission(directTransport)
+        val ownerToken = installWirelessSessionAdmission(directTransport)
+        wppRearmSource?.let { source ->
+            val ownerInstalled = AaWirelessBtControl.isCurrentSessionOwner(ownerToken)
+            val message = "WPP rearm outcome: source=$source " +
+                "ownerInstalled=$ownerInstalled"
+            if (ownerInstalled) OalLog.i(TAG, message) else OalLog.e(TAG, message)
+        }
         com.openautolink.app.wake.PreWakeMonitor.reportSessionReady("admission-ready")
         OalLog.i(TAG, "aasdk JNI session started ($directTransport transport)")
     }
@@ -1728,7 +1829,10 @@ class SessionManager(
             OalLog.w(TAG, "ByeBye dispatch failed (${it.message}) — stopping immediately")
         }.isSuccess
 
-        if (!dispatched) { stop(); return }
+        if (!dispatched) {
+            scope.launch { stop() }
+            return
+        }
 
         scope.launch {
             // Give the ByeBye its bounded window to flush and be acknowledged.
@@ -1755,7 +1859,19 @@ class SessionManager(
         session.dialCompanion(ip)
     }
 
-    fun stop() {
+    suspend fun stop() {
+        startMutex.lock()
+        try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                lifecycleGeneration += 1L
+                stopWhileLifecycleLocked()
+            }
+        } finally {
+            startMutex.unlock()
+        }
+    }
+
+    private suspend fun stopWhileLifecycleLocked(cancelObserveJob: Boolean = true) {
         clearWirelessSessionAdmission()
         // Let another phone claim the session. Without this the first phone to
         // dial holds it until the app restarts, so a second phone in the car can
@@ -1764,15 +1880,15 @@ class SessionManager(
 
         unregisterScreenReceiver()
         unregisterDebugReceiver()
-        observeJob?.cancel()
+        if (cancelObserveJob) observeJob?.cancelAndJoin()
         observeJob = null
-        decoderWatchJob?.cancel()
+        decoderWatchJob?.cancelAndJoin()
         decoderWatchJob = null
-        keyframeWatchJob?.cancel()
+        keyframeWatchJob?.cancelAndJoin()
         keyframeWatchJob = null
-        videoStallWatchJob?.cancel()
+        videoStallWatchJob?.cancelAndJoin()
         videoStallWatchJob = null
-        callStateJob?.cancel()
+        callStateJob?.cancelAndJoin()
         callStateJob = null
         // Revoke ownership before cancelling collectors or stopping retained
         // producers. A PhoneConnected callback already executing cannot be
@@ -1840,7 +1956,7 @@ class SessionManager(
      *
      * Falls back to full [start] if component islands haven't been initialized yet.
      */
-    fun reconnect(
+    suspend fun reconnect(
         codecPreference: String = "h264",
         micSourcePreference: String = "car",
         scalingMode: String = "letterbox",
@@ -1930,6 +2046,16 @@ class SessionManager(
         }
         reconnectInProgress = true
         reconnectStartedAt = System.currentTimeMillis()
+        val requestGeneration = lifecycleGeneration
+        var lifecycleLockAcquired = false
+        try {
+            startMutex.lock()
+            lifecycleLockAcquired = true
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            if (requestGeneration != lifecycleGeneration) {
+                OalLog.i(TAG, "Reconnect request rejected — lifecycle stop completed while waiting")
+                return@withContext
+            }
         gpsForwardingEnabled = gpsForwarding
         OalLog.i(TAG, "Reconnecting AA session with new settings (minimal restart)")
         micSource = micSourcePreference
@@ -1939,7 +2065,7 @@ class SessionManager(
         // 20+ "Keyframe re-request #2" lines came from this exact race).
         // Run on IO so we don't block the Main thread (causes ANR — we wait on
         // cancelAndJoin and then aasdkSession.stop() which JNI-joins the io_thread).
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 // Say goodbye before tearing down, whenever a session exists.
                 //
@@ -1977,15 +2103,19 @@ class SessionManager(
                 )
             } catch (e: Exception) {
                 OalLog.e(TAG, "reconnect() failed: ${e.message}")
-            } finally {
-                // Always clear the guard so a future reconnect attempt can run.
-                reconnectInProgress = false
-                reconnectStartedAt = 0L
+                rollbackLifecycleFailure("reconnect", e)
             }
+        }
+        }
+        } finally {
+            // Always clear the guard so a future reconnect attempt can run.
+            reconnectInProgress = false
+            reconnectStartedAt = 0L
+            if (lifecycleLockAcquired) startMutex.unlock()
         }
     }
 
-    private fun doReconnectAfterCancel(
+    private suspend fun doReconnectAfterCancel(
         codecPreference: String, micSourcePreference: String, scalingMode: String,
         directTransport: String, hotspotSsid: String, hotspotPassword: String,
         videoAutoNegotiate: Boolean, aaResolution: String, aaDpi: Int,
@@ -2044,7 +2174,19 @@ class SessionManager(
         _voiceSessionActive.value = false
         _phoneSignalStrength.value = null
 
-        // 8. Start new AA session with new SDR config
+        // 8. Start the replacement protocol session synchronously while the
+        // lifecycle mutex is held. Only after its exact owner is installed do
+        // we publish the long-lived watcher job.
+        startSession(directTransport, hotspotSsid, hotspotPassword,
+            videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
+            aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
+            aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
+            videoFps,
+            driveSide, hideClock, hideSignal, hideBattery, scalingMode,
+            manualIpAddress,
+            safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
+            gpsForwarding, galVersion)
+
         observeJob = scope.launch {
             decoderWatchJob = launch { watchDecoderState() }
             keyframeWatchJob = launch { watchKeyframeNeeds() }
@@ -2057,16 +2199,6 @@ class SessionManager(
             // app restart. Nothing on the main thread should enter JNI.
             videoStallWatchJob = launch(kotlinx.coroutines.Dispatchers.IO) { watchVideoStall() }
             callStateJob = launch { watchCallState() }
-
-            startSession(directTransport, hotspotSsid, hotspotPassword,
-                videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
-                aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
-                aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
-                videoFps,
-                driveSide, hideClock, hideSignal, hideBattery, scalingMode,
-                manualIpAddress,
-                safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                gpsForwarding, galVersion)
         }
 
         // 9. Re-establish cluster binding — GM Templates Host may have killed
@@ -2398,13 +2530,17 @@ class SessionManager(
     //     --el duration_ms 60000 \
     //     com.openautolink.app
     //
-    // Exposed for integration tests. Action is namespaced under our package
-    // and the receiver is package-internal (RECEIVER_NOT_EXPORTED on T+); on
-    // older platforms it's still package-scoped at the dispatch layer because
-    // we pass the package in the broadcast intent.
+    // Debug-only integration controls. Release builds never register this
+    // receiver. Debug builds keep it exported so adb shell can drive the
+    // ignition and phone-injection scenarios.
     // ------------------------------------------------------------------
     private var debugSleepReceiver: android.content.BroadcastReceiver? = null
+    private fun isDebuggableBuild(): Boolean {
+        val flags = context?.applicationInfo?.flags ?: return false
+        return flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+    }
     private fun registerDebugReceiver() {
+        if (!isDebuggableBuild()) return
         if (debugSleepReceiver != null) return
         val ctx = context ?: return
         val r = object : android.content.BroadcastReceiver() {

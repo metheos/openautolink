@@ -127,7 +127,9 @@ class MainActivity : ComponentActivity() {
         // "JniTransport stopping".
         Thread({
             try {
-                com.openautolink.app.session.SessionManager.instanceOrNull()?.stop()
+                kotlinx.coroutines.runBlocking {
+                    com.openautolink.app.session.SessionManager.instanceOrNull()?.stop()
+                }
             } catch (e: Exception) {
                 Log.w("MainActivity", "SessionManager.stop() failed: ${e.message}")
             }
