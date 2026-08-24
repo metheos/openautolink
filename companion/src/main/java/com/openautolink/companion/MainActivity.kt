@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.openautolink.companion.diagnostics.UploadCredentialStore
 import com.openautolink.companion.service.CompanionService
 import com.openautolink.companion.ui.MainScreen
 import com.openautolink.companion.ui.theme.OalCompanionTheme
@@ -39,6 +40,8 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         val prefs = getSharedPreferences(CompanionPrefs.NAME, MODE_PRIVATE)
+        // Move any legacy token out of the backed-up settings file before use.
+        UploadCredentialStore.read(this, prefs)
         val autoStartMode = prefs.getInt(CompanionPrefs.AUTO_START_MODE, 0)
         if (autoStartMode == CompanionPrefs.AUTO_START_APP_OPEN && !CompanionService.isRunning.value) {
             startCompanionService()
