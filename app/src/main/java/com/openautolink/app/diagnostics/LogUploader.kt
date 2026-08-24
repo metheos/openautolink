@@ -6,6 +6,7 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -17,6 +18,18 @@ import java.util.zip.ZipOutputStream
 sealed class UploadResult {
     data class Success(val storedBytes: Int, val fileCount: Int) : UploadResult()
     data class Failure(val reason: String) : UploadResult()
+}
+
+/** Maintainer credentials must never be sent over cleartext or non-HTTP schemes. */
+object UploadEndpointPolicy {
+    fun isAllowed(raw: String): Boolean = try {
+        val uri = URI(raw.trim())
+        uri.scheme.equals("https", ignoreCase = true) &&
+            !uri.host.isNullOrBlank() &&
+            uri.userInfo == null
+    } catch (_: Exception) {
+        false
+    }
 }
 
 /**
@@ -102,6 +115,9 @@ class LogUploader(private val context: Context) {
         if (url.isBlank() || token.isBlank()) {
             return UploadResult.Failure("upload not configured")
         }
+        if (!UploadEndpointPolicy.isAllowed(url)) {
+            return UploadResult.Failure("HTTPS upload URL required")
+        }
         val files = recentFiles()
         if (files.isEmpty()) return UploadResult.Failure("no log files to upload")
 
@@ -117,6 +133,7 @@ class LogUploader(private val context: Context) {
         return try {
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
+                instanceFollowRedirects = false
                 doOutput = true
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS

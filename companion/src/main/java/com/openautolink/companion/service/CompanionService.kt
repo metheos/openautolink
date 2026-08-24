@@ -19,6 +19,7 @@ import com.openautolink.companion.diagnostics.CompanionLog
 import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
 import com.openautolink.companion.diagnostics.PhoneWppStage
 import com.openautolink.companion.diagnostics.ProcessExitSummary
+import com.openautolink.companion.diagnostics.UploadCredentialStore
 import com.openautolink.companion.diagnostics.WppAssociationOwner
 import com.openautolink.companion.diagnostics.WppIntegrationTrigger
 import com.openautolink.companion.diagnostics.WppNetworkObserver
@@ -492,7 +493,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
             return
         }
         val url = prefs.getString(CompanionPrefs.LOG_UPLOAD_URL, "") ?: ""
-        val token = prefs.getString(CompanionPrefs.LOG_UPLOAD_TOKEN, "") ?: ""
+        val token = UploadCredentialStore.read(this, prefs)
         val label = prefs.getString(CompanionPrefs.LOG_UPLOAD_DEVICE_LABEL, "") ?: ""
         if (url.isBlank() || token.isBlank()) {
             CompanionLog.w(TAG, "Upload requested but URL/token not configured")

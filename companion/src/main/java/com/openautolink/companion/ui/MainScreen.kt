@@ -76,6 +76,7 @@ import androidx.core.content.ContextCompat
 import com.openautolink.companion.R
 import com.openautolink.companion.CompanionPrefs
 import com.openautolink.companion.autostart.WifiJobService
+import com.openautolink.companion.diagnostics.UploadCredentialStore
 import com.openautolink.companion.service.CompanionService
 import com.openautolink.companion.ui.theme.OalGreen
 import com.openautolink.companion.ui.theme.OalOrange
@@ -1585,7 +1586,7 @@ private fun FileLoggingSection() {
         mutableStateOf(prefs.getBoolean(CompanionPrefs.LOG_UPLOAD_ENABLED, CompanionPrefs.DEFAULT_LOG_UPLOAD_ENABLED))
     }
     var uploadUrl by remember { mutableStateOf(prefs.getString(CompanionPrefs.LOG_UPLOAD_URL, "") ?: "") }
-    var uploadToken by remember { mutableStateOf(prefs.getString(CompanionPrefs.LOG_UPLOAD_TOKEN, "") ?: "") }
+    var uploadToken by remember { mutableStateOf(UploadCredentialStore.read(context, prefs)) }
     var deviceLabel by remember { mutableStateOf(prefs.getString(CompanionPrefs.LOG_UPLOAD_DEVICE_LABEL, "") ?: "") }
     val uploadState by CompanionService.uploadState.collectAsState()
 
@@ -1639,10 +1640,11 @@ private fun FileLoggingSection() {
                 OutlinedTextField(
                     value = uploadToken,
                     onValueChange = {
-                        uploadToken = it
-                        prefs.edit().putString(CompanionPrefs.LOG_UPLOAD_TOKEN, it.trim()).apply()
+                        if (UploadCredentialStore.write(context, prefs, it)) {
+                            uploadToken = it
+                        }
                     },
-                    label = { Text("Upload token") },
+                    label = { Text("Invitation token") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
