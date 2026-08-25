@@ -5,20 +5,19 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
 import android.util.Log
+import com.openautolink.app.diagnostics.DiagnosticLog
 import com.openautolink.app.transport.AudioPurpose
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * One AudioTrack + AudioRingBuffer per audio purpose.
- * Based on app_v1's production-proven approach:
- * - Ring buffer absorbs TCP/network jitter (500ms capacity)
- * - Dedicated URGENT_AUDIO thread drains at steady rate
- * - Pre-fill 80ms before calling AudioTrack.play()
- * - Non-blocking writes with residual tracking (no data loss)
- * - Steady 10ms write pacing from dedicated thread
+ * One AudioTrack plus a generation-owned bounded writer per audio purpose.
+ *
+ * - Pending PCM is capped at 250 ms; overflow discards oldest queued chunks.
+ * - AudioTrack.write() runs on a dedicated URGENT_AUDIO thread per purpose.
+ * - Stop/focus loss retire the exact writer generation before flushing.
+ * - Phone-ingress time, sink write time, and stale-drop totals are tracked
+ *   separately so uploaded logs reveal latency instead of merely throughput.
  */
 class AudioPurposeSlot(
     val purpose: AudioPurpose,
@@ -28,14 +27,16 @@ class AudioPurposeSlot(
 ) {
     companion object {
         private const val TAG = "AudioPurposeSlot"
+        private const val MAX_PENDING_AUDIO_MS = 250
+        private const val DROP_LOG_INTERVAL_NS = 2_000_000_000L
     }
 
     private var audioTrack: AudioTrack? = null
     private var aacDecoder: AacDecoder? = null
+    private val lifecycleLock = Any()
 
-    /** Per-purpose write thread — isolates blocking AudioTrack.write() calls
-     *  so one purpose stalling doesn't block others. */
-    private var writeExecutor: ExecutorService? = null
+    /** One bounded, generation-owned writer per active interval. */
+    @Volatile private var drain: BoundedAudioDrain? = null
 
     private val active = AtomicBoolean(false)
     private val released = AtomicBoolean(false)
@@ -43,6 +44,7 @@ class AudioPurposeSlot(
 
     val framesWritten = AtomicLong(0)
     val underrunCount = AtomicLong(0)
+    private val staleBytesDropped = AtomicLong(0)
 
     // Diagnostic counters
     @Volatile var startedAtNs: Long = 0L
@@ -52,6 +54,10 @@ class AudioPurposeSlot(
     @Volatile var totalWriteCalls: Long = 0L
     @Volatile var slowWriteCount: Long = 0L  // writes > 60ms
     @Volatile var hwUnderrunCount: Long = 0L
+    private val dropStatsLock = Any()
+    @Volatile private var lastDropLogNs: Long = 0L
+    @Volatile private var droppedChunksSinceLog: Long = 0L
+    @Volatile private var droppedBytesSinceLog: Long = 0L
 
     fun initialize() {
         if (released.get()) return
@@ -80,96 +86,184 @@ class AudioPurposeSlot(
     }
 
     fun start() {
-        if (released.get() || active.get()) return
-        val track = audioTrack ?: return
-        active.set(true)
-        startedAtNs = System.nanoTime()
-
-        // Create per-purpose write thread with URGENT_AUDIO priority
-        writeExecutor = Executors.newSingleThreadExecutor { r ->
-            Thread(r, "AudioWrite-$purpose").apply {
-                isDaemon = true
-            }
+        synchronized(lifecycleLock) {
+            if (released.get() || active.get()) return@synchronized
+            val track = audioTrack ?: return@synchronized
+            startedAtNs = System.nanoTime()
+            track.play()
+            startDrain(track)
+            active.set(true)
+            Log.d(TAG, "$purpose started (bounded per-purpose writer)")
         }
-
-        track.play()
-        Log.d(TAG, "$purpose started (per-purpose write thread)")
     }
 
     fun stop() {
-        pausedByFocusLoss.set(false)
-        if (!active.getAndSet(false)) return
-        startedAtNs = 0L
-        lastFeedTimeNs = 0L
-        writeExecutor?.shutdown()
-        writeExecutor = null
-        audioTrack?.pause()
-        audioTrack?.flush()
-        Log.d(TAG, "$purpose stopped")
+        synchronized(lifecycleLock) {
+            pausedByFocusLoss.set(false)
+            if (!active.getAndSet(false)) return@synchronized
+            startedAtNs = 0L
+            lastFeedTimeNs = 0L
+            retireDrain(reason = "stop")
+            Log.d(TAG, "$purpose stopped")
+        }
     }
 
     fun pause() {
-        if (!active.getAndSet(false)) return
-        pausedByFocusLoss.set(true)
-        audioTrack?.pause()
-        Log.d(TAG, "$purpose paused")
+        synchronized(lifecycleLock) {
+            if (!active.getAndSet(false)) return@synchronized
+            pausedByFocusLoss.set(true)
+            retireDrain(reason = "focus-loss")
+            Log.d(TAG, "$purpose paused")
+        }
     }
 
     fun resume() {
-        if (released.get() || active.get()) return
-        if (!pausedByFocusLoss.getAndSet(false)) return
-        val track = audioTrack ?: return
-        active.set(true)
-        track.play()
-        Log.d(TAG, "$purpose resumed")
+        synchronized(lifecycleLock) {
+            if (released.get() || active.get()) return@synchronized
+            if (!pausedByFocusLoss.getAndSet(false)) return@synchronized
+            val track = audioTrack ?: return@synchronized
+            startedAtNs = System.nanoTime()
+            lastFeedTimeNs = 0L
+            track.play()
+            startDrain(track)
+            active.set(true)
+            Log.d(TAG, "$purpose resumed")
+        }
     }
 
     val isPausedByFocus: Boolean get() = pausedByFocusLoss.get()
 
-    /**
-     * Submit PCM to per-purpose write thread. Non-blocking for the caller —
-     * the blocking AudioTrack.write() runs on this slot's own thread,
-     * so one purpose stalling doesn't block others.
-     */
+    /** Submit PCM without allowing stale pending audio to grow unbounded. */
     fun feedPcm(data: ByteArray) {
         if (!active.get()) return
-        val executor = writeExecutor ?: return
+        // This is the phone-ingress clock. Updating it inside the delayed writer
+        // made the idle timer wait for stale queued audio to finish first.
+        val nowNs = System.nanoTime()
+        val prevNs = lastFeedTimeNs
+        lastFeedTimeNs = nowNs
+        if (prevNs > 0) {
+            val gapMs = (nowNs - prevNs) / 1_000_000
+            if (gapMs > maxGapMs) maxGapMs = gapMs
+        }
 
-        executor.execute {
-            val track = audioTrack ?: return@execute
-            if (!active.get()) return@execute
+        val result = drain?.offer(data) ?: return
+        if (result.droppedChunks > 0) {
+            recordStaleDrop(
+                chunks = result.droppedChunks,
+                bytes = result.droppedBytes,
+                pendingBytes = result.queuedBytes,
+                source = "queue",
+                nowNs = nowNs,
+            )
+        }
+    }
 
-            // Set thread priority on first call (executor reuses one thread)
-            if (totalWriteCalls == 0L) {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            }
+    private fun startDrain(track: AudioTrack) {
+        val bytesPerSecond = sampleRate.toLong() * channelCount * 2L
+        val maxQueuedBytes = (bytesPerSecond * MAX_PENDING_AUDIO_MS / 1000L)
+            .coerceAtLeast(1L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        val newDrain = BoundedAudioDrain(
+            maxQueuedBytes = maxQueuedBytes,
+            threadName = "AudioWrite-$purpose",
+            onWorkerStart = { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) },
+            onWrite = { pcm -> writePcm(track, pcm) },
+            onPause = { track.pause() },
+            onFlush = { track.flush() },
+        )
+        drain = newDrain
+        val generation = newDrain.start()
+        DiagnosticLog.i(
+            "audio",
+            "Audio drain started: purpose=$purpose generation=$generation latencyCapMs=$MAX_PENDING_AUDIO_MS",
+        )
+    }
 
-            // Measure inter-frame gap
-            val nowNs = System.nanoTime()
-            val prevNs = lastFeedTimeNs
-            lastFeedTimeNs = nowNs
-            if (prevNs > 0) {
-                val gapMs = (nowNs - prevNs) / 1_000_000
-                if (gapMs > maxGapMs) maxGapMs = gapMs
-            }
+    private fun writePcm(track: AudioTrack, data: ByteArray) {
+        val writeStartNs = System.nanoTime()
+        val writtenBytes = track.write(
+            data,
+            0,
+            data.size,
+            AudioTrack.WRITE_NON_BLOCKING,
+        )
+        val writeMs = (System.nanoTime() - writeStartNs) / 1_000_000
 
-            // Measure AudioTrack.write() blocking duration
-            val writeStartNs = System.nanoTime()
-            track.write(data, 0, data.size) // blocking — only blocks THIS purpose's thread
-            val writeMs = (System.nanoTime() - writeStartNs) / 1_000_000
+        totalWriteCalls++
+        if (writtenBytes > 0) {
+            framesWritten.addAndGet(writtenBytes.toLong() / (channelCount * 2))
+        }
+        if (writtenBytes < data.size) {
+            val staleBytes = if (writtenBytes > 0) data.size - writtenBytes else data.size
+            recordStaleDrop(
+                chunks = 1,
+                bytes = staleBytes,
+                pendingBytes = drain?.pendingBytes ?: 0,
+                source = "sink",
+                nowNs = System.nanoTime(),
+            )
+        }
+        if (writtenBytes < 0) {
+            DiagnosticLog.w("audio", "AudioTrack write failed: purpose=$purpose result=$writtenBytes")
+        }
+        if (writeMs > maxWriteMs) maxWriteMs = writeMs
+        if (writeMs > 60) slowWriteCount++
+        if (totalWriteCalls % 50 == 0L) {
+            try {
+                hwUnderrunCount = track.underrunCount.toLong()
+            } catch (_: Exception) {}
+        }
+    }
 
-            totalWriteCalls++
-            framesWritten.addAndGet(data.size.toLong() / (channelCount * 2))
-            if (writeMs > maxWriteMs) maxWriteMs = writeMs
-            if (writeMs > 60) slowWriteCount++
-
-            // Sample HW underrun count periodically
-            if (totalWriteCalls % 50 == 0L) {
-                try {
-                    hwUnderrunCount = track.underrunCount.toLong()
-                } catch (_: Exception) {}
+    private fun recordStaleDrop(
+        chunks: Int,
+        bytes: Int,
+        pendingBytes: Int,
+        source: String,
+        nowNs: Long,
+    ) {
+        if (bytes <= 0) return
+        staleBytesDropped.addAndGet(bytes.toLong())
+        synchronized(dropStatsLock) {
+            droppedChunksSinceLog += chunks
+            droppedBytesSinceLog += bytes
+            if (lastDropLogNs == 0L || nowNs - lastDropLogNs >= DROP_LOG_INTERVAL_NS) {
+                val message = "Dropped stale PCM: purpose=$purpose source=$source " +
+                    "chunks=$droppedChunksSinceLog bytes=$droppedBytesSinceLog " +
+                    "pending=$pendingBytes latencyCapMs=$MAX_PENDING_AUDIO_MS"
+                Log.w(TAG, message)
+                DiagnosticLog.w("audio", message)
+                droppedChunksSinceLog = 0
+                droppedBytesSinceLog = 0
+                lastDropLogNs = nowNs
             }
         }
+    }
+
+    private fun retireDrain(reason: String) {
+        val retiredDecoder = aacDecoder
+        aacDecoder = null
+        retiredDecoder?.stop()
+        val retired = drain
+        drain = null
+        val result = if (retired != null) {
+            retired.stopAndFlush()
+        } else {
+            audioTrack?.pause()
+            audioTrack?.flush()
+            null
+        }
+        if (result != null && result.droppedBytes > 0) {
+            staleBytesDropped.addAndGet(result.droppedBytes.toLong())
+        }
+        val message = "Audio stop applied: purpose=$purpose reason=$reason " +
+            "generation=${result?.generation ?: -1} " +
+            "droppedQueuedChunks=${result?.droppedChunks ?: 0} " +
+            "droppedQueuedBytes=${result?.droppedBytes ?: 0} " +
+            "aacRetired=${retiredDecoder != null} flushed=true"
+        Log.i(TAG, message)
+        DiagnosticLog.i("audio", message)
     }
 
     fun setVolume(volume: Float) {
@@ -182,29 +276,38 @@ class AudioPurposeSlot(
      */
     fun feedAac(data: ByteArray) {
         if (!active.get()) return
-        var decoder = aacDecoder
-        if (decoder == null) {
-            decoder = AacDecoder(sampleRate, channelCount) { pcm -> feedPcm(pcm) }
+        val existing = aacDecoder
+        val decoder = if (existing != null) {
+            existing
+        } else {
+            lateinit var decoder: AacDecoder
+            decoder = AacDecoder(sampleRate, channelCount) { pcm ->
+                if (aacDecoder === decoder && active.get()) feedPcm(pcm)
+            }
             aacDecoder = decoder
             decoder.start()
             Log.i(TAG, "$purpose: AAC decoder started (${sampleRate}Hz ${channelCount}ch)")
+            decoder
         }
         decoder.queueAacFrame(data)
     }
 
     fun release() {
-        if (released.getAndSet(true)) return
-        stop()
-        aacDecoder?.stop()
-        aacDecoder = null
-        writeExecutor?.shutdownNow()
-        writeExecutor = null
-        audioTrack?.release()
-        audioTrack = null
-        Log.d(TAG, "$purpose released")
+        synchronized(lifecycleLock) {
+            if (released.getAndSet(true)) return@synchronized
+            stop()
+            aacDecoder?.stop()
+            aacDecoder = null
+            drain = null
+            audioTrack?.release()
+            audioTrack = null
+            Log.d(TAG, "$purpose released")
+        }
     }
 
     val isActive: Boolean get() = active.get()
+    val pendingAudioBytes: Int get() = drain?.pendingBytes ?: 0
+    val staleAudioBytesDropped: Long get() = staleBytesDropped.get()
     val ringBufferAvailable: Int get() = 0
     val ringBufferCapacity: Int get() = 0
 

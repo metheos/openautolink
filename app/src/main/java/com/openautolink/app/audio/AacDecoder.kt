@@ -66,8 +66,23 @@ class AacDecoder(
     fun stop() {
         running = false
         inputQueue.clear()
-        decodeThread?.interrupt()
+        val thread = decodeThread
         decodeThread = null
+        thread?.interrupt()
+
+        // MediaCodec is owned by the decoder thread until that thread exits.
+        // Join through transient caller interruption so stop() never releases a
+        // codec that the old generation can still touch.
+        var restoreInterrupt = false
+        while (thread?.isAlive == true) {
+            try {
+                thread.join()
+            } catch (_: InterruptedException) {
+                restoreInterrupt = true
+            }
+        }
+        if (restoreInterrupt) Thread.currentThread().interrupt()
+
         try {
             codec?.stop()
             codec?.release()

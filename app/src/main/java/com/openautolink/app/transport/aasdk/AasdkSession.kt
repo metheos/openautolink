@@ -16,6 +16,8 @@ import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.VideoFrame
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * AA session backed by native aasdk via JNI.
@@ -86,6 +89,48 @@ class AasdkSession(
 
     private val _controlMessages = MutableSharedFlow<ControlMessage>(extraBufferCapacity = 64)
     val controlMessages: Flow<ControlMessage> = _controlMessages.asSharedFlow()
+
+    /**
+     * Native audio callbacks arrive on one io_service strand. The mailbox keeps
+     * only the latest lifecycle state for each of the five purposes, while a
+     * conflated wake signal preserves nonblocking delivery without an unbounded
+     * peer-driven queue.
+     */
+    private val pendingAudioLifecycle = AudioLifecycleMailbox()
+    private val audioLifecycleSignals = Channel<Unit>(Channel.CONFLATED)
+    private val audioLifecycleLock = Any()
+    private val audioLifecycleClosed = AtomicBoolean(false)
+    private val audioLifecycleJob: Job = scope.launch {
+        for (signal in audioLifecycleSignals) {
+            while (true) {
+                var rejected: ControlMessage? = null
+                val hadMessage = synchronized(audioLifecycleLock) {
+                    if (audioLifecycleClosed.get()) {
+                        false
+                    } else {
+                        val message = pendingAudioLifecycle.poll()
+                            ?: return@synchronized false
+                        if (!_controlMessages.tryEmit(message)) rejected = message
+                        true
+                    }
+                }
+                if (!hadMessage) break
+                rejected?.let { message ->
+                    val requeued = synchronized(audioLifecycleLock) {
+                        !audioLifecycleClosed.get() && pendingAudioLifecycle.offerFirst(message)
+                    }
+                    if (requeued) {
+                        delay(1)
+                    } else {
+                        com.openautolink.app.diagnostics.DiagnosticLog.e(
+                            "audio",
+                            "Audio lifecycle publication rejected: ${message::class.simpleName}",
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     private val _vehicleEnergyForecast = MutableStateFlow<VehicleEnergyForecast?>(null)
     val vehicleEnergyForecast: StateFlow<VehicleEnergyForecast?> =
@@ -577,6 +622,7 @@ class AasdkSession(
     }
 
     fun stop() {
+        closeAudioLifecycle()
         explicitStop = true
         OalLog.i(TAG, "Stopping aasdk session")
         cancelPendingReconnect("explicit stop")
@@ -887,14 +933,7 @@ class AasdkSession(
     }
 
     override fun onAudioFrame(data: ByteArray, purpose: Int, sampleRate: Int, channels: Int) {
-        val audioPurpose = when (purpose) {
-            0 -> AudioPurpose.MEDIA
-            1 -> AudioPurpose.NAVIGATION
-            2 -> AudioPurpose.ALERT
-            3 -> AudioPurpose.ASSISTANT
-            4 -> AudioPurpose.PHONE_CALL
-            else -> AudioPurpose.MEDIA
-        }
+        val audioPurpose = audioPurposeFromWire(purpose)
         val frame = AudioFrame(
             direction = AudioFrame.DIRECTION_PLAYBACK,
             data = data,
@@ -904,6 +943,70 @@ class AasdkSession(
         )
         _audioFrames.tryEmit(frame)
     }
+
+    override fun onAudioStart(purpose: Int, sampleRate: Int, channels: Int) {
+        queueAudioLifecycle(
+            ControlMessage.AudioStart(
+                purpose = audioPurposeFromWire(purpose),
+                sampleRate = sampleRate,
+                channels = channels,
+            ),
+        )
+    }
+
+    override fun onAudioStop(purpose: Int) {
+        queueAudioLifecycle(ControlMessage.AudioStop(audioPurposeFromWire(purpose)))
+    }
+
+    private fun queueAudioLifecycle(message: ControlMessage) {
+        val purpose = when (message) {
+            is ControlMessage.AudioStart -> message.purpose
+            is ControlMessage.AudioStop -> message.purpose
+            else -> return
+        }
+        val accepted = synchronized(audioLifecycleLock) {
+            if (audioLifecycleClosed.get()) {
+                false
+            } else {
+                pendingAudioLifecycle.offer(message)
+                if (audioLifecycleSignals.trySend(Unit).isFailure) {
+                    pendingAudioLifecycle.remove(message)
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+        if (!accepted) {
+            com.openautolink.app.diagnostics.DiagnosticLog.e(
+                "audio",
+                "Audio lifecycle control rejected: ${message::class.simpleName} purpose=$purpose",
+            )
+        }
+    }
+
+    private fun closeAudioLifecycle() {
+        synchronized(audioLifecycleLock) {
+            if (!audioLifecycleClosed.compareAndSet(false, true)) return
+            pendingAudioLifecycle.clear()
+            audioLifecycleSignals.close()
+        }
+        audioLifecycleJob.cancel()
+        com.openautolink.app.diagnostics.DiagnosticLog.i(
+            "audio",
+            "Audio lifecycle delivery retired: pending=0 consumerCancelled=true",
+        )
+    }
+
+    private fun audioPurposeFromWire(purpose: Int): AudioPurpose =
+        when (purpose) {
+            0 -> AudioPurpose.MEDIA
+            1 -> AudioPurpose.NAVIGATION
+            2 -> AudioPurpose.ALERT
+            3 -> AudioPurpose.ASSISTANT
+            4 -> AudioPurpose.PHONE_CALL
+            else -> AudioPurpose.MEDIA
+        }
 
     override fun onMicRequest(open: Boolean) {
         scope.launch {

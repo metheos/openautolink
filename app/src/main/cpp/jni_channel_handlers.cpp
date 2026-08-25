@@ -174,6 +174,9 @@ void JniAudioSinkHandler::onMediaChannelStartIndication(
     char channelName[32];
     snprintf(channelName, sizeof(channelName), "audio[%d]", static_cast<int>(type_));
     session_.reportGalStartEnvelope(channelName, indication);
+    const int sampleRate = (type_ == AudioType::Media) ? 48000 : 16000;
+    const int channels = (type_ == AudioType::Media) ? 2 : 1;
+    session_.dispatchAudioStart(purposeFromType(), sampleRate, channels);
     channel_->receive(shared_from_this());
 }
 
@@ -183,6 +186,7 @@ void JniAudioSinkHandler::onMediaChannelStopIndication(
     activeSessionId_.store(0);
     LOGI("Audio stop (type=%d)", static_cast<int>(type_));
     logProtoRaw("AudioStop", indication);
+    session_.dispatchAudioStop(purposeFromType());
     channel_->receive(shared_from_this());
 }
 

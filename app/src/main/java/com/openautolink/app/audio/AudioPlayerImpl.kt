@@ -60,6 +60,7 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
 
     private val slots = mutableMapOf<AudioPurpose, AudioPurposeSlot>()
     private val slotFormats = mutableMapOf<AudioPurpose, AudioFormat>()
+    private val slotLifecycleLock = Any()
     private val focusManager = AudioFocusManager(audioManager)
     val coordinator = AudioPurposeCoordinator()
     private var idleCheckTimer: Timer? = null
@@ -78,46 +79,50 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
     private var initialized = false
 
     override fun initialize() {
-        if (initialized) return
+        synchronized(slotLifecycleLock) {
+            if (initialized) return@synchronized
 
-        // Pre-allocate all 5 AudioTrack slots with default formats
-        for (purpose in AudioPurpose.entries) {
-            val fmt = DEFAULT_FORMATS[purpose] ?: AudioFormat(48000, 2)
-            val slot = AudioPurposeSlot(purpose, fmt.sampleRate, fmt.channels)
-            slot.initialize()
-            slots[purpose] = slot
-            slotFormats[purpose] = fmt
+            // Pre-allocate all 5 AudioTrack slots with default formats
+            for (purpose in AudioPurpose.entries) {
+                val fmt = DEFAULT_FORMATS[purpose] ?: AudioFormat(48000, 2)
+                val slot = AudioPurposeSlot(purpose, fmt.sampleRate, fmt.channels)
+                slot.initialize()
+                slots[purpose] = slot
+                slotFormats[purpose] = fmt
+            }
+
+            // Request session-level audio focus once
+            focusManager.requestSessionFocus(
+                onLost = { pauseAllActive() },
+                onRegained = { resumeAllPaused() }
+            )
+
+            initialized = true
+            Log.i(TAG, "Audio player initialized with ${slots.size} purpose slots")
+            DiagnosticLog.i("audio", "AudioPlayer initialized with ${slots.size} purpose slots")
+            startIdleChecker()
+            updateStats()
         }
-
-        // Request session-level audio focus once
-        focusManager.requestSessionFocus(
-            onLost = { pauseAllActive() },
-            onRegained = { resumeAllPaused() }
-        )
-
-        initialized = true
-        Log.i(TAG, "Audio player initialized with ${slots.size} purpose slots")
-        DiagnosticLog.i("audio", "AudioPlayer initialized with ${slots.size} purpose slots")
-        startIdleChecker()
-        updateStats()
     }
 
     override fun release() {
-        if (!initialized) return
+        synchronized(slotLifecycleLock) {
+            if (!initialized) return@synchronized
 
-        stopIdleChecker()
-        for ((_, slot) in slots) {
-            slot.release()
+            stopIdleChecker()
+            for ((_, slot) in slots) {
+                slot.release()
+            }
+            slots.clear()
+            slotFormats.clear()
+            explicitStopTimes.clear()
+            focusManager.releaseFocus()
+            coordinator.reset()
+            initialized = false
+
+            Log.i(TAG, "Audio player released")
+            _stats.value = AudioStats()
         }
-        slots.clear()
-        slotFormats.clear()
-        explicitStopTimes.clear()
-        focusManager.releaseFocus()
-        coordinator.reset()
-        initialized = false
-
-        Log.i(TAG, "Audio player released")
-        _stats.value = AudioStats()
     }
 
     private var audioFrameCount = 0L
@@ -127,101 +132,118 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
     override fun onAudioFrame(frame: AudioFrame) {
         if (!frame.isPlayback) return
 
-        val slot = slots[frame.purpose]
-        if (slot == null) {
-            Log.w(TAG, "No slot for purpose ${frame.purpose}")
-            DiagnosticLog.w("audio", "No slot for purpose ${frame.purpose}")
-            return
-        }
+        synchronized(slotLifecycleLock) {
+            val slot = resolvePlaybackSlot(frame) ?: return@synchronized
 
-        // Auto-start: if audio frames arrive before audio_start control message
-        // (happens when phone was already streaming before app connected),
-        // start the slot with the frame's sample rate and channel count.
-        // BUT: suppress auto-start briefly after an explicit stop to prevent
-        // straggler frames from reactivating a purpose that was just stopped.
-        if (!slot.isActive) {
-            val suppressUntil = explicitStopTimes[frame.purpose] ?: 0L
-            if (System.currentTimeMillis() - suppressUntil < AUTO_START_SUPPRESS_MS) {
-                return // straggler frame after explicit stop — discard
+            audioFrameCount++
+            audioBytesReceived += frame.data.size
+            val now = System.currentTimeMillis()
+            if (now - lastAudioLogTime >= 2000) {
+                val ringBuf = slot.ringBufferAvailable
+                val ringCap = slot.ringBufferCapacity
+                val fillPct = if (ringCap > 0) (ringBuf * 100 / ringCap) else 0
+                Log.i(TAG, "audio: frames=$audioFrameCount bytes=$audioBytesReceived " +
+                        "thisFrame=${frame.data.size}B ring=$ringBuf/$ringCap (${fillPct}%) " +
+                        "written=${slot.framesWritten.get()} pending=${slot.pendingAudioBytes} " +
+                        "staleDropped=${slot.staleAudioBytesDropped} underruns=${slot.underrunCount.get()}")
+                // Detailed per-slot diagnostics for remote viewing
+                val slotSnapshot = slots.toMap()
+                for ((p, s) in slotSnapshot) {
+                    if (!s.isActive && s.totalWriteCalls == 0L) continue
+                    DiagnosticLog.d("audio", "slot=$p active=${s.isActive} " +
+                            "writes=${s.totalWriteCalls} written=${s.framesWritten.get()} " +
+                            "maxWriteMs=${s.maxWriteMs} slowWrites=${s.slowWriteCount} " +
+                            "maxGapMs=${s.maxGapMs} hwUnderruns=${s.hwUnderrunCount}")
+                }
+                lastAudioLogTime = now
             }
-            Log.i(TAG, "Auto-starting ${frame.purpose} from audio frame: ${frame.sampleRate}Hz ${frame.channels}ch")
-            startPurpose(frame.purpose, frame.sampleRate, frame.channels)
-        }
 
-        audioFrameCount++
-        audioBytesReceived += frame.data.size
-        val now = System.currentTimeMillis()
-        if (now - lastAudioLogTime >= 2000) {
-            val ringBuf = slot.ringBufferAvailable
-            val ringCap = slot.ringBufferCapacity
-            val fillPct = if (ringCap > 0) (ringBuf * 100 / ringCap) else 0
-            Log.i(TAG, "audio: frames=$audioFrameCount bytes=$audioBytesReceived " +
-                    "thisFrame=${frame.data.size}B ring=$ringBuf/$ringCap (${fillPct}%) " +
-                    "written=${slot.framesWritten.get()} underruns=${slot.underrunCount.get()}")
-            // Detailed per-slot diagnostics for remote viewing
-            for ((p, s) in slots) {
-                if (!s.isActive && s.totalWriteCalls == 0L) continue
-                DiagnosticLog.d("audio", "slot=$p active=${s.isActive} " +
-                        "writes=${s.totalWriteCalls} written=${s.framesWritten.get()} " +
-                        "maxWriteMs=${s.maxWriteMs} slowWrites=${s.slowWriteCount} " +
-                        "maxGapMs=${s.maxGapMs} hwUnderruns=${s.hwUnderrunCount}")
+            if (frame.isAac) {
+                slot.feedAac(frame.data)
+            } else {
+                slot.feedPcm(frame.data)
             }
-            lastAudioLogTime = now
-        }
-
-        if (frame.isAac) {
-            slot.feedAac(frame.data)
-        } else {
-            slot.feedPcm(frame.data)
         }
     }
 
-    override fun startPurpose(purpose: AudioPurpose, sampleRate: Int, channels: Int) {
-        val existingSlot = slots[purpose]
-        val requestedFmt = AudioFormat(sampleRate, channels)
-        explicitStopTimes.remove(purpose)  // clear suppression on explicit start
-
-        // Check if format changed from what the slot was created with — recreate if so
-        if (existingSlot != null) {
-            val currentFmt = slotFormats[purpose]
-            if (currentFmt != requestedFmt && !existingSlot.isActive) {
-                Log.i(TAG, "Recreating $purpose slot: ${sampleRate}Hz ${channels}ch")
-                existingSlot.release()
-                val newSlot = AudioPurposeSlot(purpose, sampleRate, channels)
-                newSlot.initialize()
-                slots[purpose] = newSlot
-                slotFormats[purpose] = requestedFmt
+    private fun resolvePlaybackSlot(frame: AudioFrame): AudioPurposeSlot? =
+        synchronized(slotLifecycleLock) {
+            var slot = slots[frame.purpose]
+            if (slot == null) {
+                Log.w(TAG, "No slot for purpose ${frame.purpose}")
+                DiagnosticLog.w("audio", "No slot for purpose ${frame.purpose}")
+                return@synchronized null
             }
+
+            // Auto-start can race the lifecycle flow. Keep the post-Stop
+            // suppression check and the start/replacement in this same owner
+            // critical section so a stale frame cannot undo a newer Stop.
+            if (!slot.isActive) {
+                val suppressUntil = explicitStopTimes[frame.purpose] ?: 0L
+                if (System.currentTimeMillis() - suppressUntil < AUTO_START_SUPPRESS_MS) {
+                    return@synchronized null
+                }
+                Log.i(
+                    TAG,
+                    "Auto-starting ${frame.purpose} from audio frame: " +
+                        "${frame.sampleRate}Hz ${frame.channels}ch",
+                )
+                startPurpose(frame.purpose, frame.sampleRate, frame.channels)
+                slot = slots[frame.purpose] ?: return@synchronized null
+            }
+            slot
         }
 
-        val slot = slots[purpose] ?: return
-        slot.start()
+    override fun startPurpose(purpose: AudioPurpose, sampleRate: Int, channels: Int) {
+        synchronized(slotLifecycleLock) {
+            val existingSlot = slots[purpose]
+            val requestedFmt = AudioFormat(sampleRate, channels)
+            explicitStopTimes.remove(purpose)  // clear suppression on explicit start
 
-        // Notify coordinator and apply volume ducking
-        val actions = coordinator.onPurposeStarted(purpose)
-        applyVolumeActions(actions)
+            // Check if format changed from what the slot was created with — recreate if so
+            if (existingSlot != null) {
+                val currentFmt = slotFormats[purpose]
+                if (currentFmt != requestedFmt && !existingSlot.isActive) {
+                    Log.i(TAG, "Recreating $purpose slot: ${sampleRate}Hz ${channels}ch")
+                    existingSlot.release()
+                    val newSlot = AudioPurposeSlot(purpose, sampleRate, channels)
+                    newSlot.initialize()
+                    slots[purpose] = newSlot
+                    slotFormats[purpose] = requestedFmt
+                }
+            }
 
-        Log.i(TAG, "Started $purpose: ${sampleRate}Hz ${channels}ch (call=${coordinator.callState.value})")
-        DiagnosticLog.i("audio", "AudioTrack started: purpose=$purpose, rate=${sampleRate}, ch=$channels")
-        updateStats()
+            val slot = slots[purpose] ?: return@synchronized
+            slot.start()
+
+            // Notify coordinator and apply volume ducking
+            val actions = coordinator.onPurposeStarted(purpose)
+            applyVolumeActions(actions)
+
+            Log.i(TAG, "Started $purpose: ${sampleRate}Hz ${channels}ch (call=${coordinator.callState.value})")
+            DiagnosticLog.i("audio", "AudioTrack started: purpose=$purpose, rate=${sampleRate}, ch=$channels")
+            updateStats()
+        }
     }
 
     override fun stopPurpose(purpose: AudioPurpose) {
-        val slot = slots[purpose] ?: return
-        slot.stop()
-        explicitStopTimes[purpose] = System.currentTimeMillis()
+        synchronized(slotLifecycleLock) {
+            val slot = slots[purpose] ?: return@synchronized
+            slot.stop()
+            explicitStopTimes[purpose] = System.currentTimeMillis()
 
-        // Notify coordinator and restore volumes
-        val actions = coordinator.onPurposeStopped(purpose)
-        applyVolumeActions(actions)
+            // Notify coordinator and restore volumes
+            val actions = coordinator.onPurposeStopped(purpose)
+            applyVolumeActions(actions)
 
-        Log.i(TAG, "Stopped $purpose (call=${coordinator.callState.value})")
-        DiagnosticLog.i("audio", "AudioTrack stopped: purpose=$purpose")
-        updateStats()
+            Log.i(TAG, "Stopped $purpose (call=${coordinator.callState.value})")
+            DiagnosticLog.i("audio", "AudioTrack stopped: purpose=$purpose")
+            updateStats()
+        }
     }
 
     override fun setVolume(purpose: AudioPurpose, volume: Float) {
-        slots[purpose]?.setVolume(volume)
+        synchronized(slotLifecycleLock) { slots[purpose] }?.setVolume(volume)
     }
 
     /**
@@ -230,7 +252,7 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
      */
     private fun applyVolumeActions(actions: List<VolumeAction>) {
         for (action in actions) {
-            val slot = slots[action.purpose] ?: continue
+            val slot = synchronized(slotLifecycleLock) { slots[action.purpose] } ?: continue
             slot.setVolume(action.volume)
             if (action.volume < AudioPurposeCoordinator.NORMAL_VOLUME) {
                 Log.d(TAG, "Ducked ${action.purpose} to ${action.volume}")
@@ -239,17 +261,19 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
     }
 
     /**
-     * Pause all active slots on external audio focus loss.
-     * Does NOT clear ring buffers — overflow drops oldest naturally.
+     * Pause all active slots on external audio focus loss and retire any
+     * pending PCM so old speech/music cannot resume after focus returns.
      */
     private fun pauseAllActive() {
-        for ((purpose, slot) in slots) {
-            if (slot.isActive) {
-                slot.pause()
-                Log.d(TAG, "Paused $purpose (focus loss)")
+        synchronized(slotLifecycleLock) {
+            for ((purpose, slot) in slots) {
+                if (slot.isActive) {
+                    slot.pause()
+                    Log.d(TAG, "Paused $purpose (focus loss)")
+                }
             }
+            updateStats()
         }
-        updateStats()
     }
 
     /**
@@ -257,61 +281,61 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
      * Slots that were explicitly stopped (not paused) won't resume.
      */
     private fun resumeAllPaused() {
-        for ((purpose, slot) in slots) {
-            if (!slot.isActive && slot.isPausedByFocus) {
-                slot.resume()
-                if (slot.isActive) {
-                    Log.d(TAG, "Resumed $purpose (focus regain)")
+        synchronized(slotLifecycleLock) {
+            for ((purpose, slot) in slots) {
+                if (!slot.isActive && slot.isPausedByFocus) {
+                    slot.resume()
+                    if (slot.isActive) {
+                        Log.d(TAG, "Resumed $purpose (focus regain)")
+                    }
                 }
             }
+            // Re-apply coordinator volumes after resuming
+            val actions = AudioPurpose.entries
+                .filter { slots[it]?.isActive == true }
+                .flatMap { purpose -> coordinator.onPurposeStarted(purpose) }
+            applyVolumeActions(actions)
+            updateStats()
         }
-        // Re-apply coordinator volumes after resuming
-        val actions = AudioPurpose.entries
-            .filter { slots[it]?.isActive == true }
-            .let { activePurposes ->
-                activePurposes.map { purpose ->
-                    coordinator.onPurposeStarted(purpose)
-                }.flatten()
-            }
-        applyVolumeActions(actions)
-        updateStats()
     }
 
     private fun updateStats() {
-        val active = slots.filter { it.value.isActive }.keys
-        val underruns = slots.mapValues { it.value.underrunCount.get() }
-            .filter { it.value > 0 }
+        synchronized(slotLifecycleLock) {
+            val active = slots.filter { it.value.isActive }.keys
+            val underruns = slots.mapValues { it.value.underrunCount.get() }
+                .filter { it.value > 0 }
 
-        // Log new underruns since last stats update
-        val prevUnderruns = _stats.value.underruns
-        for ((purpose, count) in underruns) {
-            val prev = prevUnderruns[purpose] ?: 0L
-            if (count > prev) {
-                DiagnosticLog.w("audio", "Underrun on $purpose: $count total (+${count - prev})")
+            // Log new underruns since last stats update
+            val prevUnderruns = _stats.value.underruns
+            for ((purpose, count) in underruns) {
+                val prev = prevUnderruns[purpose] ?: 0L
+                if (count > prev) {
+                    DiagnosticLog.w("audio", "Underrun on $purpose: $count total (+${count - prev})")
+                }
             }
+
+            val written = slots.mapValues { it.value.framesWritten.get() }
+                .filter { it.value > 0 }
+
+            val maxWrite = slots.filter { it.value.totalWriteCalls > 0 }
+                .mapValues { it.value.maxWriteMs }
+            val slowW = slots.filter { it.value.slowWriteCount > 0 }
+                .mapValues { it.value.slowWriteCount }
+            val maxGap = slots.filter { it.value.totalWriteCalls > 0 }
+                .mapValues { it.value.maxGapMs }
+            val hwUr = slots.filter { it.value.hwUnderrunCount > 0 }
+                .mapValues { it.value.hwUnderrunCount }
+
+            _stats.value = AudioStats(
+                activePurposes = active,
+                underruns = underruns,
+                framesWritten = written,
+                maxWriteMs = maxWrite,
+                slowWrites = slowW,
+                maxGapMs = maxGap,
+                hwUnderruns = hwUr,
+            )
         }
-
-        val written = slots.mapValues { it.value.framesWritten.get() }
-            .filter { it.value > 0 }
-
-        val maxWrite = slots.filter { it.value.totalWriteCalls > 0 }
-            .mapValues { it.value.maxWriteMs }
-        val slowW = slots.filter { it.value.slowWriteCount > 0 }
-            .mapValues { it.value.slowWriteCount }
-        val maxGap = slots.filter { it.value.totalWriteCalls > 0 }
-            .mapValues { it.value.maxGapMs }
-        val hwUr = slots.filter { it.value.hwUnderrunCount > 0 }
-            .mapValues { it.value.hwUnderrunCount }
-
-        _stats.value = AudioStats(
-            activePurposes = active,
-            underruns = underruns,
-            framesWritten = written,
-            maxWriteMs = maxWrite,
-            slowWrites = slowW,
-            maxGapMs = maxGap,
-            hwUnderruns = hwUr,
-        )
     }
 
     private fun startIdleChecker() {
@@ -330,21 +354,23 @@ class AudioPlayerImpl(private val audioManager: AudioManager) : AudioPlayer {
     }
 
     private fun checkIdlePurposes() {
-        var changed = false
-        for ((purpose, slot) in slots) {
-            if (!slot.isActive) continue
-            val idle = slot.idleMs()
-            val timeout = if (purpose == AudioPurpose.MEDIA) IDLE_TIMEOUT_MEDIA_MS else IDLE_TIMEOUT_OTHER_MS
-            if (idle >= timeout) {
-                slot.stop()
-                coordinator.onPurposeStopped(purpose)
-                Log.i(TAG, "Auto-stopped idle $purpose (idle ${idle}ms)")
-                DiagnosticLog.i("audio", "Auto-stopped idle $purpose (${idle}ms)")
-                changed = true
+        synchronized(slotLifecycleLock) {
+            var changed = false
+            for ((purpose, slot) in slots) {
+                if (!slot.isActive) continue
+                val idle = slot.idleMs()
+                val timeout = if (purpose == AudioPurpose.MEDIA) IDLE_TIMEOUT_MEDIA_MS else IDLE_TIMEOUT_OTHER_MS
+                if (idle >= timeout) {
+                    slot.stop()
+                    coordinator.onPurposeStopped(purpose)
+                    Log.i(TAG, "Auto-stopped idle $purpose (idle ${idle}ms)")
+                    DiagnosticLog.i("audio", "Auto-stopped idle $purpose (${idle}ms)")
+                    changed = true
+                }
             }
-        }
-        if (changed) {
-            updateStats()
+            if (changed) {
+                updateStats()
+            }
         }
     }
 }

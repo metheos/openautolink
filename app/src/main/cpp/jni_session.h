@@ -207,6 +207,8 @@ public:
         const aap_protobuf::service::media::video::message::VideoFocusRequestNotification& request) override;
 
     // ---- Dispatch methods (called by handler classes → JNI) ----
+    void dispatchAudioStart(int purpose, int sampleRate, int channels);
+    void dispatchAudioStop(int purpose);
     void dispatchAudioFrame(const uint8_t* data, size_t size, int purpose, int sampleRate, int channels);
     void dispatchMicRequest(bool open);
     void dispatchNavStatus(int status);
@@ -443,6 +445,8 @@ private:
         jmethodID onVideoFrame = nullptr;
         jmethodID onVideoCodecConfigured = nullptr;
         jmethodID onAudioFrame = nullptr;
+        jmethodID onAudioStart = nullptr;
+        jmethodID onAudioStop = nullptr;
         jmethodID onMicRequest = nullptr;
         jmethodID onNavigationStatus = nullptr;
         jmethodID onNavigationTurn = nullptr;
