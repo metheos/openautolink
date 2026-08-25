@@ -41,6 +41,12 @@ interface AasdkSessionCallback {
      */
     fun onAudioFrame(data: ByteArray, purpose: Int, sampleRate: Int, channels: Int)
 
+    /** Phone activated an audio sink purpose. */
+    fun onAudioStart(purpose: Int, sampleRate: Int, channels: Int)
+
+    /** Phone stopped an audio sink purpose; queued playback must be flushed. */
+    fun onAudioStop(purpose: Int)
+
     /**
      * Phone requests mic open/close.
      * @param open true = start capturing mic, false = stop

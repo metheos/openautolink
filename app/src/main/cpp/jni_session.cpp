@@ -211,6 +211,8 @@ void JniSession::start(JNIEnv* env, jobject transportPipe, jobject callback, job
     cbMethods_.onVideoFrame = env->GetMethodID(cbClass, "onVideoFrame", "([BJIII)V");
     cbMethods_.onVideoCodecConfigured = env->GetMethodID(cbClass, "onVideoCodecConfigured", "(I)V");
     cbMethods_.onAudioFrame = env->GetMethodID(cbClass, "onAudioFrame", "([BIII)V");
+    cbMethods_.onAudioStart = env->GetMethodID(cbClass, "onAudioStart", "(III)V");
+    cbMethods_.onAudioStop = env->GetMethodID(cbClass, "onAudioStop", "(I)V");
     cbMethods_.onMicRequest = env->GetMethodID(cbClass, "onMicRequest", "(Z)V");
     cbMethods_.onNavigationStatus = env->GetMethodID(cbClass, "onNavigationStatus", "(I)V");
     cbMethods_.onNavigationTurn = env->GetMethodID(cbClass, "onNavigationTurn",
@@ -2391,6 +2393,32 @@ void JniSession::sendRpmSensor(int rpmE3)
 // ============================================================================
 // Dispatch methods Ã¢â‚¬â€ called by handler classes to fire JNI callbacks
 // ============================================================================
+
+void JniSession::dispatchAudioStart(int purpose, int sampleRate, int channels)
+{
+    if (!cbMethods_.onAudioStart || !callbackRef_) return;
+    bool attached;
+    JNIEnv* env = getEnv(attached);
+    if (env) {
+        env->CallVoidMethod(callbackRef_, cbMethods_.onAudioStart,
+                            static_cast<jint>(purpose),
+                            static_cast<jint>(sampleRate),
+                            static_cast<jint>(channels));
+    }
+    releaseEnv(attached);
+}
+
+void JniSession::dispatchAudioStop(int purpose)
+{
+    if (!cbMethods_.onAudioStop || !callbackRef_) return;
+    bool attached;
+    JNIEnv* env = getEnv(attached);
+    if (env) {
+        env->CallVoidMethod(callbackRef_, cbMethods_.onAudioStop,
+                            static_cast<jint>(purpose));
+    }
+    releaseEnv(attached);
+}
 
 void JniSession::dispatchAudioFrame(const uint8_t* data, size_t size,
                                      int purpose, int sampleRate, int channels)
