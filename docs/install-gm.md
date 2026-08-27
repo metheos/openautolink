@@ -5,7 +5,7 @@ GM production AAOS head units do not expose ADB and do not permit APK sideloadin
 There are two installation routes:
 
 1. **Join the maintainer's Google Play test group — recommended.** About 45 of 100 places are currently filled, leaving roughly 55 places available. This route does not require building the car app or operating a Play Console release.
-2. **Self-publish the car app.** This advanced route gives you an independent app identity and update track, but requires building, signing, and maintaining your own Play Console app.
+2. **Self-publish the car app.** The one-command Docker builder handles the build, signing identity, source updates, and versioning. You still operate your own Play Console app and testing track.
 
 Availability in the maintainer group can change.
 
@@ -23,7 +23,19 @@ If the app does not appear, confirm the vehicle uses the invited Google account 
 
 ## Independent route: self-publish
 
-The remainder of this guide is for people who want to build and maintain their own Play app. After the one-time setup, updates use the same application ID, signing key, and Play testing track.
+The supported build path is the [one-command personal AAB builder](build-aab.md). On Linux or Windows WSL with Docker available, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mossyhub/openautolink/main/build-aab.sh | bash
+```
+
+The first run collects the package and signing identity, creates the key, clones the source, and produces a verified AAB. Later runs reuse those details, fetch current source, and build the next version. Back up `~/.openautolink-builder/secrets/` before uploading the first AAB.
+
+Continue at [Create the Play Console app](#5-create-the-play-console-app) after the builder succeeds. The manual build steps below remain available for contributors who do not want to use the container.
+
+## Manual build path
+
+The remainder of this section describes the underlying manual process. After the one-time setup, updates use the same application ID, signing key, and Play testing track.
 
 ## Before you begin
 

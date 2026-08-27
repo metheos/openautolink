@@ -1,0 +1,68 @@
+name: Publish AAB Builder Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/build.gradle.kts'
+      - 'build-aab.sh'
+      - 'builder/**'
+      - 'gradle/verification-metadata.xml'
+      - 'gradle/wrapper/gradle-wrapper.properties'
+      - 'tests/builder/**'
+      - '.github/workflows/build-builder-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run source contract tests
+        run: bash tests/builder/test_builder.sh
+
+      - name: Build the exact image that will be published
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/openautolink-builder"
+          SHA_TAG="sha-${GITHUB_SHA::12}"
+          docker build --pull \
+            --file builder/Dockerfile \
+            --tag "$IMAGE:$SHA_TAG" \
+            --tag "$IMAGE:latest" \
+            .
+          echo "name=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test tools and reject invalid signatures
+        run: bash tests/builder/test_image.sh "${{ steps.image.outputs.name }}:${{ steps.image.outputs.sha_tag }}"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          SHA_TAG="${{ steps.image.outputs.sha_tag }}"
+          docker push "$IMAGE:$SHA_TAG"
+          docker push "$IMAGE:latest"
+          SHA_ID="$(docker image inspect "$IMAGE:$SHA_TAG" --format '{{.Id}}')"
+          LATEST_ID="$(docker image inspect "$IMAGE:latest" --format '{{.Id}}')"
+          test "$SHA_ID" = "$LATEST_ID"
+          echo "Published tested image $IMAGE:$SHA_TAG as $IMAGE:latest"

@@ -132,7 +132,7 @@ Release APKs use the project's signing key. A locally built debug APK uses a dif
 
 **Recommended:** ask to join the maintainer's Google Play test group. It supports up to 100 people and currently has roughly 55 open places. Privately send the Google-account email used by the vehicle through the [XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) or [Reddit](https://www.reddit.com/user/IPickedThisUserID/). Do not put your email in a public comment.
 
-**Independent route:** build a signed AAB under your own unique application ID and publish it through your own Google Play internal or closed testing track. Preserve the signing key: future updates must use the same application ID and key.
+**Independent route:** the [one-command personal AAB builder](docs/build-aab.md) asks for your package identity once, then handles source updates, signing, native dependencies, versioning, and verified AAB output in Docker. Run the same command for every later update. Preserve its state directory: future Play updates must use the same application ID and key.
 
 Follow [Installing OpenAutoLink on a locked GM vehicle](docs/install-gm.md) for both routes. Do not download the car APK expecting to sideload it onto a production GM head unit.
 
@@ -184,6 +184,7 @@ For release-specific defects, see [open issues](https://github.com/mossyhub/open
 
 | Guide | Purpose |
 |---|---|
+| [One-command AAB builder](docs/build-aab.md) | Docker-based first build, signing identity, updates, output, and backup |
 | [GM installation](docs/install-gm.md) | Play Console, application ID, signing, AAB, and update path |
 | [Wireless WPP](docs/wireless-wpp.md) | Android Auto 17.4+ setup, migration, and network behavior |
 | [Compatibility](docs/compatibility.md) | Vehicle-by-vehicle evidence and support language |

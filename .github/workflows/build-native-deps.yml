@@ -93,7 +93,7 @@ jobs:
       - name: Get metadata
         id: meta
         run: |
-          AASDK_SHA=$(git submodule status external/opencardev-aasdk | awk '{print substr($1,1,8)}')
+          AASDK_SHA=$(git ls-tree HEAD external/opencardev-aasdk | awk '{print $3}')
           DATE=$(date -u +%Y-%m-%d)
           echo "tag=native-deps" >> $GITHUB_OUTPUT
           echo "aasdk_sha=$AASDK_SHA" >> $GITHUB_OUTPUT

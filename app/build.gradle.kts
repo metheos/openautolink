@@ -6,6 +6,8 @@ plugins {
     alias(libs.plugins.protobuf)
 }
 
+val oalBuilderUnsigned = providers.gradleProperty("oalBuilderUnsigned").orNull == "true"
+
 android {
     namespace = "com.openautolink.app"
     compileSdk = 36
@@ -49,7 +51,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            if (!oalBuilderUnsigned) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
