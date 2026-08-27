@@ -1,5 +1,9 @@
 <p align="center">
   <img src="assets/play_store_512.png" alt="OpenAutoLink" width="128">
+  <br><br>
+  <a href="https://buymeacoffee.com/mossyhub">
+    <img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support%20OpenAutoLink-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Buy Me a Coffee" width="280">
+  </a>
 </p>
 
 # OpenAutoLink
@@ -28,7 +32,6 @@ OpenAutoLink runs the Android Auto protocol directly on the vehicle's Android Au
 
 [![CI](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml/badge.svg)](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml)
 [![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg)](https://github.com/mossyhub/openautolink/releases/latest)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?logo=buymeacoffee&logoColor=white)](https://buymeacoffee.com/mossyhub)
 
 <p align="center">
   <img src="docs/screenshots/AA-Streaming-Screenshot.jpg" alt="Android Auto streaming wirelessly on a 2024 Chevrolet Blazer EV" width="720">
