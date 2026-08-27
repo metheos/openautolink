@@ -6,6 +6,9 @@ on:
     paths:
       - 'app/**'
       - 'companion/**'
+      - 'README.md'
+      - 'docs/experimental-gal6.md'
+      - 'docs/screenshots/README.md'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
       - 'gradle/**'

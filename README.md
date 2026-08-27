@@ -57,7 +57,8 @@ OpenAutoLink runs the Android Auto protocol directly on the vehicle's Android Au
 - **Automatic reconnect** — projection resumes across ignition and head-unit sleep/wake cycles
 - **Multi-phone support** — behavior depends on Android Auto version and transport
 - **Wide-display adaptation** — configurable DPI, safe areas, margins, and scaling
-- **Modern video support** — H.264, H.265, and VP9 with resolution tiers through 4K
+- **Modern video support** — H.264, H.265, and VP9; manual tiers include 1440p (2560×1440) and 4K (3840×2160), plus portrait equivalents
+- **Verified H.265 startup** — H.265 startup is verified clean over USB and wireless with GAL 6's 120-frame GOP
 - **Built-in diagnostics** — transport status, network tools, VHAL browser, and optional log export
 
 OpenAutoLink forwards the vehicle's real battery and range data into Android Auto. Google Maps uses the standard vehicle energy model for battery-aware navigation and destination estimates. See [EV range estimates](docs/ev-range.md).
