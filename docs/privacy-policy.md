@@ -1,65 +1,115 @@
 # Privacy Policy — OpenAutoLink
 
-**Last updated:** April 2, 2026
+**Last updated:** August 26, 2026
 
 ## Overview
 
-OpenAutoLink is an Android Automotive OS (AAOS) app that wirelessly projects Android Auto from your phone onto your car's infotainment screen via a bridge device on your local network. This privacy policy explains what data the app accesses, how it is used, and how it is protected.
+OpenAutoLink consists of an Android Automotive OS car app and an Android phone companion. The apps carry an Android Auto projection session across the local connection between the phone and vehicle. OpenAutoLink has no advertising or analytics SDK and does not sell user data.
 
-## Data Collection
+Most operation is local. Two optional features can contact an external server: manual EV-profile refresh and invited diagnostic-log upload. Both are described below.
 
-**OpenAutoLink does not collect, store, transmit, or share any personal data with the developer, any third party, or any remote server.** The app operates entirely on your local network between your car's head unit and your bridge device. No data leaves your vehicle's local network.
+## Local projection data
 
-## Permissions and Their Purpose
+While a projection session is active, OpenAutoLink can process:
 
-### Microphone (`RECORD_AUDIO`)
-The app captures audio from the car's built-in microphone to enable hands-free voice commands (e.g., "Hey Google") and phone calls through Android Auto. Microphone audio is sent only to the bridge device on your local network, which forwards it to your phone's session. **Audio is never recorded, stored, or transmitted outside your local network.**
+- Android Auto video, audio, and control messages;
+- microphone audio used for voice commands;
+- touch and steering-wheel input;
+- navigation and media metadata;
+- Bluetooth and Wi-Fi connection information;
+- vehicle properties made available by AAOS, such as speed, gear, energy, range, charge state, tire data, and exterior conditions;
+- head-unit location and motion sensors used by Android Auto.
 
-### Location (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`)
-The app reads GPS location and NMEA satellite data from the car's built-in GNSS receiver. This data is forwarded to your phone via the bridge device to improve navigation accuracy (e.g., in tunnels or urban canyons where the phone's GPS signal is weak). **Location data is never stored or transmitted outside your local network.**
+This data is used to operate the projection session and related vehicle integrations. It travels between the phone companion and car app over the local vehicle/phone network. OpenAutoLink does not send live projection media or vehicle telemetry to the developer.
 
-### Network (`INTERNET`, `ACCESS_NETWORK_STATE`)
-The app connects to the bridge device over your car's local Ethernet or Wi-Fi network using TCP. These permissions are required for the three TCP connections that carry video, audio, and control data between the app and the bridge. **No internet connections are made to external servers.**
+## Permissions and their purpose
 
-### Vehicle Data (`CAR_SPEED`, `CAR_ENERGY`, `CAR_POWERTRAIN`, `CAR_EXTERIOR_ENVIRONMENT`, `CAR_INFO`)
-The app reads vehicle sensor data (speed, gear, battery level, temperature, etc.) from the car's Vehicle HAL to forward to your phone's Android Auto session. This enables the phone to display accurate vehicle information. **Vehicle data is sent only to the bridge device on your local network and is never stored or transmitted externally.**
+### Microphone
 
-### Foreground Service (`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`)
-Required to keep audio playback and the projection session active while the app is in use. The app does not run in the background when not actively projecting.
+The car app uses `RECORD_AUDIO` to supply the vehicle microphone to Android Auto voice features. On the validated GM call topology, native Bluetooth hands-free service carries phone-call voice audio.
 
-### Car App Permissions (`NAVIGATION_TEMPLATES`, `ACCESS_SURFACE`)
-Required by the Android Automotive Car App Library to render navigation information on the instrument cluster and access the display surface for video rendering.
+### Location and Wi-Fi
 
-## Sensor Data
+The apps use location and Wi-Fi permissions for network discovery, SSID visibility, Wi-Fi scanning, connection management, and available vehicle/head-unit location data. Android requires location permission for several Wi-Fi APIs even when the app is finding a nearby local network.
 
-The app reads accelerometer, gyroscope, and magnetic field sensors from the car's head unit hardware to provide inertial measurement data to Android Auto. This improves navigation accuracy during GPS signal loss (tunnels, parking garages). This sensor data is sent only to the bridge device on your local network.
+### Bluetooth
 
-## Data Storage
+Bluetooth connect, scan, and advertise permissions support companion auto-start, phone/vehicle identity, and the factory-style Wireless WPP bootstrap used by current Android Auto releases.
 
-The app stores only user preferences locally on the device using Android DataStore:
-- Bridge connection settings (IP address, port)
-- Video/audio configuration (codec, resolution, FPS)
-- Display preferences
+### Vehicle data
 
-No personal data, location history, audio recordings, or vehicle data is stored.
+AAOS car permissions expose only properties allowed by the vehicle platform. OpenAutoLink uses available values for Android Auto sensors, energy estimates, cluster integration, diagnostics, and settings. Restricted vehicle properties remain inaccessible to an ordinary Play-installed app.
 
-## Third-Party Services
+### Foreground service, notifications, wake lock, and boot
 
-OpenAutoLink does not integrate with any third-party analytics, advertising, crash reporting, or tracking services.
+These permissions keep an active projection/connection service alive, show its state, and allow the companion's configured auto-start behavior.
 
-## Data Security
+### Storage and logging
 
-All communication between the app and the bridge device occurs over your car's local network. The app does not expose any network services or accept incoming connections from external networks.
+When file logging is enabled, the apps write diagnostic logs under their app-controlled external storage area or removable media selected by the car app. Logs can contain connection state, device/platform information, app settings relevant to diagnosis, protocol events, and vehicle values used by the session. They are not uploaded unless the optional upload feature is enabled, configured, and invoked.
 
-## Children's Privacy
+## Data stored locally
 
-OpenAutoLink does not collect any data from any users, including children.
+The apps store configuration needed for operation, including:
 
-## Changes to This Policy
+- transport and display preferences;
+- known-phone identity and friendly labels;
+- selected Bluetooth auto-start devices;
+- optional legacy Wi-Fi entries and their passwords;
+- WPP access-point details entered in the car app;
+- EV-model settings and learned-rate state;
+- logging preferences and locally generated log files;
+- optional invited-upload configuration.
 
-If this privacy policy is updated, the new version will be published in the app's GitHub repository and the "Last updated" date will be revised.
+Wi-Fi passwords and invitation credentials are stored in app-private storage. Do not include them in public bug reports.
+
+## Optional external network features
+
+### EV profile refresh
+
+EV profiles are bundled with the car APK and work offline. If the user enables and manually invokes profile refresh, the car app downloads an updated profile JSON from the configured HTTPS source, validates it, and caches it locally.
+
+No background profile download is required for projection.
+
+### Diagnostic-log upload
+
+Diagnostic upload is off by default and requires a configured HTTPS endpoint and invitation token. When the user invokes it, the selected app packages recent diagnostic log files and uploads that archive to the configured maintainer endpoint.
+
+The upload can contain whatever appears in those diagnostic files. Review logs before sharing when possible. The upload implementation rejects non-HTTPS endpoints and does not follow redirects with the invitation token.
+
+Invited-user logs are stored under an owner-specific namespace and are kept outside the public automated issue-triage path. Retention and access are controlled by the maintainer of the configured endpoint.
+
+## Third-party services
+
+OpenAutoLink does not include third-party advertising, analytics, or crash-reporting SDKs.
+
+The user may independently interact with:
+
+- Google Play for installation and updates;
+- Android Auto and phone applications selected by the user;
+- GitHub when downloading an official phone APK or source code;
+- the configured EV-profile source when refreshing profiles;
+- the configured diagnostic endpoint when uploading logs.
+
+Those services operate under their own privacy policies.
+
+## Data security
+
+- Live projection communication is intended for the local phone/vehicle network.
+- External profile refresh and log upload require HTTPS.
+- Diagnostic upload credentials are independently revocable and are not meant for public sharing.
+- The car app disables Android backup; companion backup rules exclude sensitive upload credentials and operational preferences where required by the current migration policy.
+
+No system can guarantee absolute security. Keep the phone, vehicle account, Play Console account, signing key, access-point credentials, and invitation token protected.
+
+## Children's privacy
+
+OpenAutoLink is not directed at children and does not knowingly collect children's personal information.
+
+## Changes
+
+Material changes to this policy will be published in this repository with an updated date.
 
 ## Contact
 
-For questions about this privacy policy, open an issue on the project's GitHub repository:
-https://github.com/mossyhub/openautolink
+For privacy questions, [open a GitHub issue](https://github.com/mossyhub/openautolink/issues).
