@@ -206,6 +206,32 @@ class PhoneDiscovery private constructor(private val context: Context) {
     private val sweepScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var sweepJob: Job? = null
 
+    /** Global WPP constraint applied even to diagnostics/manual discovery callers. */
+    @Volatile private var interfaceConstraint: String? = null
+
+    fun setInterfaceConstraint(interfaceName: String?) {
+        val normalized = interfaceName?.trim()?.takeIf { it.isNotEmpty() }
+        if (interfaceConstraint == normalized) return
+        stopSweep()
+        interfaceConstraint = normalized
+        if (normalized != null) {
+            synchronized(lock) {
+                byKey.entries.removeAll { (_, entry) ->
+                    entry.host?.let { !isHostAllowed(it) } == true
+                }
+            }
+            publish()
+        }
+        OalLog.i(TAG, "Discovery interface constraint: ${normalized ?: "none"}")
+    }
+
+    private fun isHostAllowed(host: String): Boolean {
+        val selected = interfaceConstraint ?: return true
+        val localIpv4 = currentIpv4Addresses().firstOrNull { it.iface == selected }?.ip
+            ?: return false
+        return WppInterfacePolicy.isPeerOnSelectedSubnet(localIpv4, host)
+    }
+
     /** Last wall-clock ms at which the \"no IPv4 interface\" warning was emitted. */
     @Volatile private var lastNoIfaceWarnMs: Long = 0L
 
@@ -481,7 +507,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
 
         // Manual override path: scan only the user-specified interface, no
         // fallback. If the named interface isn't present, log + abort.
-        val forced = forcedInterfaceName?.takeIf { it.isNotBlank() }
+        val forced = interfaceConstraint ?: forcedInterfaceName?.takeIf { it.isNotBlank() }
         if (forced != null) {
             val match = all.filter { it.iface == forced }
             if (match.isEmpty()) {
@@ -536,6 +562,13 @@ class PhoneDiscovery private constructor(private val context: Context) {
      * Run the sweep over [candidates], probing every host on each /24.
      * Returns the count of phones added to the discovery state.
      */
+    private data class SweepPlan(
+        val iface: String,
+        val prefix: String,
+        val localIpv4: String,
+        val selfLastOctet: Int,
+    )
+
     private suspend fun runSweepPhase(
         label: String,
         candidates: List<IfaceAddress>,
@@ -545,21 +578,21 @@ class PhoneDiscovery private constructor(private val context: Context) {
             if (parts.size != 4) return@mapNotNull null
             val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
             val selfLastOctet = parts[3].toIntOrNull() ?: -1
-            Triple(c.iface, prefix, selfLastOctet)
-        }.distinctBy { it.second }
+            SweepPlan(c.iface, prefix, c.ip, selfLastOctet)
+        }.distinctBy { it.prefix }
         if (plans.isEmpty()) return@coroutineScope 0
         var totalDone = 0
         var totalFound = 0
         val totalTargets = plans.size * 254
-        plans.forEach { triple ->
-            val iface = triple.first
-            val prefix = triple.second
-            val selfLastOctet = triple.third
+        plans.forEach { plan ->
+            val iface = plan.iface
+            val prefix = plan.prefix
+            val selfLastOctet = plan.selfLastOctet
             val targets: List<String> = (1..254).filter { it != selfLastOctet }.map { "$prefix.$it" }
             targets.chunked(SWEEP_PARALLELISM).forEach { chunk ->
                 val deferreds = chunk.map { ip ->
                     async(Dispatchers.IO) {
-                        val ident = probeHost(ip)
+                        val ident = probeHost(ip, sourceIpv4 = plan.localIpv4)
                         if (ident != null) {
                             // Remember where the companion lives so the Bluetooth
                             // advertiser can ask it for its AA proxy port.
@@ -587,7 +620,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
                 _sweepProgress.value = "$label sweep $iface… $totalDone/$totalTargets ($totalFound found)"
             }
         }
-        _sweepProgress.value = "$label sweep complete: $totalFound phone(s) on ${plans.map { it.second + ".0/24" }}"
+        _sweepProgress.value = "$label sweep complete: $totalFound phone(s) on ${plans.map { it.prefix + ".0/24" }}"
         OalLog.i(TAG, "$label sweep complete: $totalFound phone(s)")
         totalFound
     }
@@ -626,10 +659,14 @@ class PhoneDiscovery private constructor(private val context: Context) {
             ?.takeIf { it in 1..65535 }
             ?: 0
 
-    private suspend fun probeHost(host: String): IdentityResult? = withContext(Dispatchers.IO) {
+    private suspend fun probeHost(
+        host: String,
+        sourceIpv4: String,
+    ): IdentityResult? = withContext(Dispatchers.IO) {
         withTimeoutOrNull((SWEEP_CONNECT_TIMEOUT_MS + SWEEP_READ_TIMEOUT_MS + 200).toLong()) {
             val socket = Socket()
             try {
+                socket.bind(InetSocketAddress(sourceIpv4, 0))
                 socket.connect(InetSocketAddress(host, IDENTITY_PORT), SWEEP_CONNECT_TIMEOUT_MS)
                 socket.soTimeout = SWEEP_READ_TIMEOUT_MS
                 val out = socket.getOutputStream()
@@ -702,6 +739,7 @@ class PhoneDiscovery private constructor(private val context: Context) {
     suspend fun udpBroadcast(
         broadcastAddress: String? = null,
         listenWindowMs: Long = 600L,
+        sourceIpv4: String? = null,
     ): Int = withContext(Dispatchers.IO) {
         val target = try {
             if (broadcastAddress != null) InetAddress.getByName(broadcastAddress)
@@ -712,10 +750,16 @@ class PhoneDiscovery private constructor(private val context: Context) {
         }
         var socket: DatagramSocket? = null
         try {
-            socket = DatagramSocket().apply {
+            val datagramSocket = DatagramSocket(null).apply {
+                reuseAddress = true
+                bind(
+                    if (sourceIpv4 != null) InetSocketAddress(sourceIpv4, 0)
+                    else InetSocketAddress(0),
+                )
                 broadcast = true
                 soTimeout = 200 // per-receive timeout; loop until window elapses
             }
+            socket = datagramSocket
             val payload = OalProtocol.IDENTITY_PROBE_REQUEST.toByteArray(Charsets.UTF_8)
             val outPacket = DatagramPacket(payload, payload.size, target, OalProtocol.UDP_DISCOVERY_PORT)
             socket.send(outPacket)
@@ -732,6 +776,12 @@ class PhoneDiscovery private constructor(private val context: Context) {
                     continue
                 }
                 val replyHost = recvPacket.address?.hostAddress ?: continue
+                if (sourceIpv4 != null &&
+                    !WppInterfacePolicy.isPeerOnSelectedSubnet(sourceIpv4, replyHost)
+                ) {
+                    OalLog.i(TAG, "UDP discovery rejected $replyHost — outside selected source $sourceIpv4")
+                    continue
+                }
                 val replyText = String(
                     recvPacket.data, recvPacket.offset, recvPacket.length, Charsets.UTF_8,
                 ).trimEnd('\n', '\r')
@@ -779,6 +829,24 @@ class PhoneDiscovery private constructor(private val context: Context) {
         return "${parts[0]}.${parts[1]}.${parts[2]}.255"
     }
 
+    /** Broadcast only on the explicitly selected interface. */
+    suspend fun udpBroadcastOnInterface(
+        forcedInterfaceName: String,
+        listenWindowMs: Long = 600L,
+    ): Int {
+        val entry = currentIpv4Addresses().firstOrNull { it.iface == forcedInterfaceName }
+        if (entry == null) {
+            OalLog.w(TAG, "UDP discovery skipped — selected interface '$forcedInterfaceName' is unavailable")
+            return 0
+        }
+        val bcast = broadcastFor24(entry.ip) ?: return 0
+        return udpBroadcast(
+            broadcastAddress = bcast,
+            listenWindowMs = listenWindowMs,
+            sourceIpv4 = entry.ip,
+        )
+    }
+
     /**
      * Run a UDP broadcast on every usable /24 we have a local address on.
      * Mirrors the sweep's interface-enumeration logic but completes in a
@@ -786,6 +854,10 @@ class PhoneDiscovery private constructor(private val context: Context) {
      * all interfaces.
      */
     suspend fun udpBroadcastAllInterfaces(listenWindowMs: Long = 600L): Int {
+        val constrained = interfaceConstraint
+        if (constrained != null) {
+            return udpBroadcastOnInterface(constrained, listenWindowMs)
+        }
         val ifaces = currentIpv4Addresses()
         if (ifaces.isEmpty()) return 0
         // Prefer AP-bridge interfaces first (GM `ap_br_swlan0` etc.) — same
@@ -876,6 +948,11 @@ class PhoneDiscovery private constructor(private val context: Context) {
         mdnsServiceName: String?,
         viaSource: SourceBit,
     ) {
+        if (host != null && !isHostAllowed(host)) {
+            OalLog.i(TAG, "Discovery rejected $host — outside selected interface constraint " +
+                    "${interfaceConstraint ?: "none"}")
+            return
+        }
         // Every discovery source funnels through here, so this is the one place
         // that always has the freshest address for the Bluetooth advertiser.
         host?.takeIf { it.isNotBlank() }?.let {

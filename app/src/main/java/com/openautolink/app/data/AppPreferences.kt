@@ -71,15 +71,6 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         val WPP_BSSID = stringPreferencesKey("wpp_bssid")
 
         /**
-         * Optional manual override for the address advertised to the phone.
-         *
-         * A connected car has several interfaces up at once and auto-detection
-         * can pick one the phone cannot route to (seen in-vehicle: advertised
-         * 172.16.101.100 while the phone was on 10.2.110.109). Blank = auto.
-         */
-        val WPP_LOCAL_IP = stringPreferencesKey("wpp_local_ip")
-
-        /**
          * Network interface whose address is advertised to the phone.
          *
          * Defaults to [DEFAULT_WPP_AP_INTERFACE], the bridged SoftAP on AAOS.
@@ -460,14 +451,12 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         prefs[WPP_CHANNEL_MHZ] ?: 0
     }
 
-    /** Manual head-unit IP for WPP, or blank to auto-detect. */
-    val wppLocalIp: Flow<String> = dataStore.data.map { prefs ->
-        prefs[WPP_LOCAL_IP] ?: ""
-    }
-
     /** Interface whose IPv4 is advertised to the phone. */
     val wppApInterface: Flow<String> = dataStore.data.map { prefs ->
-        prefs[WPP_AP_INTERFACE] ?: DEFAULT_WPP_AP_INTERFACE
+        prefs[WPP_AP_INTERFACE]
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: DEFAULT_WPP_AP_INTERFACE
     }
 
     val directTransport: Flow<String> = dataStore.data.map { prefs ->
@@ -629,16 +618,14 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         dataStore.edit { it[WPP_BSSID] = bssid.trim() }
     }
 
-    suspend fun setWppLocalIp(ip: String) {
-        dataStore.edit { it[WPP_LOCAL_IP] = ip.trim() }
-    }
-
     suspend fun setWppChannelMhz(mhz: Int) {
         dataStore.edit { it[WPP_CHANNEL_MHZ] = mhz }
     }
 
     suspend fun setWppApInterface(name: String) {
-        dataStore.edit { it[WPP_AP_INTERFACE] = name.trim() }
+        dataStore.edit {
+            it[WPP_AP_INTERFACE] = name.trim().ifEmpty { DEFAULT_WPP_AP_INTERFACE }
+        }
     }
 
     suspend fun setHotspotPassword(password: String) {

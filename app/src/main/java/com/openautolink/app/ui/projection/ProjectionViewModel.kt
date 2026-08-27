@@ -644,6 +644,12 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
             val hotspotSsid = preferences.hotspotSsid.first()
             val hotspotPassword = preferences.hotspotPassword.first()
             val directTransport = preferences.directTransport.first()
+            val wppInterfaceName = preferences.wppApInterface.first()
+            if (directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                phoneDiscovery.setInterfaceConstraint(wppInterfaceName)
+            } else {
+                phoneDiscovery.setInterfaceConstraint(null)
+            }
             wppRearmSource?.let {
                 val rejection = WppWakeReconnectPolicy.preStartRejection(
                     wppSelectedNow = directTransport == AppPreferences.DIRECT_TRANSPORT_WPP,
@@ -833,6 +839,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                 micSourcePreference = micSrc,
                 scalingMode = scalingMode,
                 directTransport = directTransport,
+                wppInterfaceName = wppInterfaceName,
                 hotspotSsid = hotspotSsid,
                 hotspotPassword = hotspotPassword,
                 videoAutoNegotiate = videoAutoNeg,
@@ -1049,6 +1056,7 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     ?: known.firstOrNull { it.phoneId == activeId }?.friendlyName
             }.collect { name -> _phoneName.value = name }
         }
+
         // Continuously run mDNS discovery while in Car Hotspot mode. This
         // keeps `knownPhones` "online" status fresh and lets the floating
         // switcher button surface phones the moment they appear on the AP.
@@ -1389,9 +1397,9 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                         state == SessionState.IDLE
                     // USB has nothing to sweep for. WPP does: the sweep is how we
                     // learn the companion's address, which the Bluetooth advertiser
-                    // needs to ask for its AA proxy port. It never dials the phone
-                    // in WPP mode — the phone connects to us — so running it is
-                    // discovery only.
+                    // needs to ask for its AA proxy port. The sweep itself never
+                    // dials; a later admitted Bluetooth handshake may choose the
+                    // companion proxy and source-bind the car's outbound dial.
                     val transportNow = preferences.directTransport.first()
                     if (transportNow == AppPreferences.DIRECT_TRANSPORT_USB) continue
                     if (!idleAndCarHotspot) continue
@@ -1403,7 +1411,14 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
                     // Cheap-first: a single UDP broadcast costs ~1 packet
                     // and ~600ms wall time. Only escalate to the full /24
                     // sweep if broadcast comes back empty.
-                    val hits = try { phoneDiscovery.udpBroadcastAllInterfaces(listenWindowMs = 600L) } catch (_: Exception) { 0 }
+                    val hits = try {
+                        if (transportNow == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                            val wppInterface = preferences.wppApInterface.first()
+                            phoneDiscovery.udpBroadcastOnInterface(wppInterface, listenWindowMs = 600L)
+                        } else {
+                            phoneDiscovery.udpBroadcastAllInterfaces(listenWindowMs = 600L)
+                        }
+                    } catch (_: Exception) { 0 }
                     if (hits == 0) {
                         kickSweep()
                     }
@@ -1620,6 +1635,16 @@ class ProjectionViewModel(application: Application) : AndroidViewModel(applicati
      */
     private fun kickSweep() {
         viewModelScope.launch {
+            val transport = try { preferences.directTransport.first() } catch (_: Exception) { "" }
+            if (transport == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                val wppInterface = try {
+                    preferences.wppApInterface.first()
+                } catch (_: Exception) {
+                    AppPreferences.DEFAULT_WPP_AP_INTERFACE
+                }
+                phoneDiscovery.startSweep(forcedInterfaceName = wppInterface)
+                return@launch
+            }
             val auto = try { preferences.carHotspotAutoInterface.first() } catch (_: Exception) { true }
             if (auto) {
                 phoneDiscovery.startSweep()

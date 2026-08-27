@@ -138,15 +138,40 @@ class SessionManager(
     private val wirelessAdmissionLock = Any()
     private var wirelessSessionAdmission:
         com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token? = null
+    /** Serializes lifecycle interruption with the final WPP admission decision. */
+    private val transportStartInterruptLock = Any()
+    private var transportStartInterruptGeneration = 0L
+
+    private fun currentTransportStartGeneration(): Long =
+        synchronized(transportStartInterruptLock) { transportStartInterruptGeneration }
+
+    private fun interruptPendingTransportStart(reason: String) {
+        synchronized(transportStartInterruptLock) { transportStartInterruptGeneration += 1L }
+        aasdkSession?.cancelPendingWppTransportStart(reason)
+    }
+
+    private fun installWirelessSessionAdmissionIfCurrent(
+        transportMode: String,
+        wppInterfaceName: String,
+        expectedGeneration: Long,
+    ): com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token? =
+        synchronized(transportStartInterruptLock) {
+            if (transportStartInterruptGeneration != expectedGeneration) null
+            else installWirelessSessionAdmission(transportMode, wppInterfaceName)
+        }
 
     private fun installWirelessSessionAdmission(
         transportMode: String,
+        wppInterfaceName: String,
     ): com.openautolink.app.transport.bluetooth.WppSessionAdmission.Token =
         synchronized(wirelessAdmissionLock) {
             wirelessSessionAdmission?.let {
                 AaWirelessBtControl.clearSessionOwner(it)
             }
-            AaWirelessBtControl.installSessionOwner(transportMode).also { token ->
+            AaWirelessBtControl.installSessionOwner(
+                transportMode,
+                wppInterfaceName.takeIf { transportMode == AppPreferences.DIRECT_TRANSPORT_WPP },
+            ).also { token ->
                 wirelessSessionAdmission = token
             }
         }
@@ -1038,6 +1063,7 @@ class SessionManager(
         micSourcePreference: String = "car",
         scalingMode: String = "letterbox",
         directTransport: String = "hotspot",
+        wppInterfaceName: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
         hotspotSsid: String = "",
         hotspotPassword: String = "",
         videoAutoNegotiate: Boolean = true,
@@ -1069,6 +1095,7 @@ class SessionManager(
         wppRearmSource: String? = null,
     ) {
         val requestGeneration = lifecycleGeneration
+        val transportStartGeneration = currentTransportStartGeneration()
         startMutex.lock()
         try {
         kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
@@ -1305,7 +1332,7 @@ class SessionManager(
                 startupOutcome.complete(Unit)
                 return@launch
             }
-                startSession(directTransport, hotspotSsid, hotspotPassword,
+                startSession(directTransport, wppInterfaceName, hotspotSsid, hotspotPassword,
                     videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
                     aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
                     aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
@@ -1313,7 +1340,7 @@ class SessionManager(
                     driveSide, hideClock, hideSignal, hideBattery, scalingMode,
                     manualIpAddress,
                     safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                    gpsForwarding, galVersion, wppRearmSource)
+                    gpsForwarding, galVersion, wppRearmSource, transportStartGeneration)
                 startupOutcome.complete(Unit)
             } catch (e: Exception) {
                 wppRearmSource?.let { source ->
@@ -1346,8 +1373,9 @@ class SessionManager(
         }
     }
 
-    private fun startSession(
-        directTransport: String, hotspotSsid: String, hotspotPassword: String,
+    private suspend fun startSession(
+        directTransport: String, wppInterfaceName: String,
+        hotspotSsid: String, hotspotPassword: String,
         videoAutoNegotiate: Boolean = true, codec: String = "h264",
         aaResolution: String = "1080p", aaDpi: Int = 160, aaAutoDpi: Boolean = true,
         aaWidthMargin: Int = 0, aaHeightMargin: Int = 0, aaPixelAspect: Int = -1,
@@ -1363,6 +1391,7 @@ class SessionManager(
         gpsForwarding: Boolean = true,
         galVersion: String = AppPreferences.DEFAULT_GAL_VERSION,
         wppRearmSource: String? = null,
+        transportStartGeneration: Long,
     ) {
         aasdkSession?.stop()
         _transportMode.value = directTransport
@@ -1374,6 +1403,12 @@ class SessionManager(
             }
             return
         }
+        // Discovery policy belongs to this immutable session settings snapshot,
+        // not to live DataStore edits made while an older session is still active.
+        com.openautolink.app.transport.PhoneDiscovery.getInstance(ctx)
+            .setInterfaceConstraint(
+                wppInterfaceName.takeIf { directTransport == AppPreferences.DIRECT_TRANSPORT_WPP },
+            )
 
         // Map resolution string to pixel dimensions. Strings are the AA
         // VideoCodecResolutionType enum values; portrait variants use the
@@ -1605,6 +1640,7 @@ class SessionManager(
 
         val session = AasdkSession(scope, ctx)
         session.transportMode = directTransport
+        session.wppInterfaceName = wppInterfaceName
         // Effective AA content_insets:
         //  - In `system_ui_visible` mode, the SurfaceView is already inside
         //    the chrome-free area (Compose padding handles it), so AA's
@@ -1744,11 +1780,29 @@ class SessionManager(
             }
         }
 
+        if (currentTransportStartGeneration() != transportStartGeneration) {
+            throw IllegalStateException("Session start interrupted before transport creation")
+        }
         session.start()
+        if (currentTransportStartGeneration() != transportStartGeneration) {
+            session.cancelPendingWppTransportStart("lifecycle interrupt")
+            throw IllegalStateException("Session start interrupted during transport creation")
+        }
+        if (directTransport == AppPreferences.DIRECT_TRANSPORT_WPP &&
+            !session.awaitWppTransportReady()
+        ) {
+            throw IllegalStateException(
+                "Selected WPP interface '$wppInterfaceName' did not bind; admission withheld",
+            )
+        }
         // Publish SDP only after this exact protocol owner has installed all
         // callbacks and bound its transport. This closes the cold-start and
         // USB→WPP preference races without delaying native negotiation itself.
-        val ownerToken = installWirelessSessionAdmission(directTransport)
+        val ownerToken = installWirelessSessionAdmissionIfCurrent(
+            directTransport,
+            wppInterfaceName,
+            transportStartGeneration,
+        ) ?: throw IllegalStateException("Session start interrupted before admission")
         wppRearmSource?.let { source ->
             val ownerInstalled = AaWirelessBtControl.isCurrentSessionOwner(ownerToken)
             val message = "WPP rearm outcome: source=$source " +
@@ -1887,6 +1941,7 @@ class SessionManager(
     }
 
     suspend fun stop() {
+        interruptPendingTransportStart("stop")
         startMutex.lock()
         try {
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
@@ -1988,6 +2043,7 @@ class SessionManager(
         micSourcePreference: String = "car",
         scalingMode: String = "letterbox",
         directTransport: String = "hotspot",
+        wppInterfaceName: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
         hotspotSsid: String = "",
         hotspotPassword: String = "",
         videoAutoNegotiate: Boolean = true,
@@ -2026,9 +2082,10 @@ class SessionManager(
 
         // If islands were never initialized, do a full start
         if (_audioPlayer == null) {
+            interruptPendingTransportStart("reconnect")
             start(
                 codecPreference, micSourcePreference, scalingMode, directTransport,
-                hotspotSsid, hotspotPassword, videoAutoNegotiate, aaResolution,
+                wppInterfaceName, hotspotSsid, hotspotPassword, videoAutoNegotiate, aaResolution,
                 aaDpi, aaAutoDpi, aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
                 aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins, videoFps,
                 driveSide, hideClock, hideSignal, hideBattery,
@@ -2071,6 +2128,8 @@ class SessionManager(
                     "restarting now would destroy the socket the phone is about to use")
             return
         }
+        interruptPendingTransportStart("reconnect")
+        val transportStartGeneration = currentTransportStartGeneration()
         reconnectInProgress = true
         reconnectStartedAt = System.currentTimeMillis()
         val requestGeneration = lifecycleGeneration
@@ -2120,13 +2179,13 @@ class SessionManager(
                 } catch (_: Exception) {}
                 doReconnectAfterCancel(
                     codecPreference, micSourcePreference, scalingMode, directTransport,
-                    hotspotSsid, hotspotPassword, videoAutoNegotiate, aaResolution,
+                    wppInterfaceName, hotspotSsid, hotspotPassword, videoAutoNegotiate, aaResolution,
                     aaDpi, aaAutoDpi, aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
                     aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
                     videoFps, driveSide, hideClock, hideSignal, hideBattery,
                     volumeOffsetMedia, volumeOffsetNavigation, volumeOffsetAssistant,
                     effectiveManualIp, safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-                    gpsForwarding, galVersion,
+                    gpsForwarding, galVersion, transportStartGeneration,
                 )
             } catch (e: Exception) {
                 OalLog.e(TAG, "reconnect() failed: ${e.message}")
@@ -2144,7 +2203,8 @@ class SessionManager(
 
     private suspend fun doReconnectAfterCancel(
         codecPreference: String, micSourcePreference: String, scalingMode: String,
-        directTransport: String, hotspotSsid: String, hotspotPassword: String,
+        directTransport: String, wppInterfaceName: String,
+        hotspotSsid: String, hotspotPassword: String,
         videoAutoNegotiate: Boolean, aaResolution: String, aaDpi: Int,
         aaAutoDpi: Boolean,
         aaWidthMargin: Int, aaHeightMargin: Int, aaPixelAspect: Int,
@@ -2158,6 +2218,7 @@ class SessionManager(
         safeAreaTop: Int, safeAreaBottom: Int, safeAreaLeft: Int, safeAreaRight: Int,
         gpsForwarding: Boolean,
         galVersion: String,
+        transportStartGeneration: Long,
     ) {
         observeJob = null
         decoderWatchJob = null
@@ -2204,7 +2265,7 @@ class SessionManager(
         // 8. Start the replacement protocol session synchronously while the
         // lifecycle mutex is held. Only after its exact owner is installed do
         // we publish the long-lived watcher job.
-        startSession(directTransport, hotspotSsid, hotspotPassword,
+        startSession(directTransport, wppInterfaceName, hotspotSsid, hotspotPassword,
             videoAutoNegotiate, codecPreference, aaResolution, aaDpi, aaAutoDpi,
             aaWidthMargin, aaHeightMargin, aaPixelAspect, aaTargetLayoutWidthDp,
             aaViewingDistanceMm, aaDecoderAdditionalDepth, aaAutoMargins,
@@ -2212,7 +2273,8 @@ class SessionManager(
             driveSide, hideClock, hideSignal, hideBattery, scalingMode,
             manualIpAddress,
             safeAreaTop, safeAreaBottom, safeAreaLeft, safeAreaRight,
-            gpsForwarding, galVersion)
+            gpsForwarding, galVersion,
+            transportStartGeneration = transportStartGeneration)
 
         observeJob = scope.launch {
             decoderWatchJob = launch { watchDecoderState() }

@@ -332,9 +332,9 @@ class WppWakeReconnectPolicyTest {
         assertTrue(manager.contains("startupOutcome.await()"))
 
         val startBlock = manager
-            .substringAfter("private fun startSession(")
+            .substringAfter("private suspend fun startSession(")
             .substringBefore("private fun prepareNativeSessionStart")
-        val ownerInstall = startBlock.indexOf("val ownerToken = installWirelessSessionAdmission(directTransport)")
+        val ownerInstall = startBlock.indexOf("val ownerToken = installWirelessSessionAdmissionIfCurrent(")
         val ownerQuery = startBlock.indexOf("AaWirelessBtControl.isCurrentSessionOwner(ownerToken)", startIndex = ownerInstall)
         val outcomeLog = startBlock.indexOf("WPP rearm outcome: source=", startIndex = ownerQuery)
         assertTrue(ownerInstall >= 0)

@@ -11,6 +11,8 @@ import com.openautolink.app.navigation.VehicleEnergyForecast
 import com.openautolink.app.transport.AudioPurpose
 import com.openautolink.app.transport.ConnectionState
 import com.openautolink.app.transport.ControlMessage
+import com.openautolink.app.transport.WppInterfacePolicy
+import com.openautolink.app.transport.bluetooth.AaWirelessBtControl
 import com.openautolink.app.transport.hotspot.TcpConnector
 import com.openautolink.app.transport.usb.UsbConnectionManager
 import com.openautolink.app.video.VideoFrame
@@ -140,15 +142,13 @@ class AasdkSession(
 
     var sdrConfig = AasdkSdrConfig()
 
-    // TCP connector — used in "hotspot" transport mode (Car Hotspot / Phone Hotspot)
+    // TCP connector — hotspot transport or WPP's companion-proxy route.
     @Volatile private var _tcpConnector: TcpConnector? = null
     /** Serializes connector ownership, socket handoff, and synchronous teardown. */
     private val connectionStartLock = Any()
 
-    /**
-     * WPP inbound listener. Only non-null in "wpp" transport mode, where the phone
-     * connects to us rather than the other way round.
-     */
+    /** WPP inbound fallback while no companion-proxy endpoint has been selected. */
+    @Volatile
     private var _wppServer: com.openautolink.app.transport.hotspot.WppTcpServer? = null
 
     // -- (A) Video frame-flow diagnostic counters --
@@ -166,8 +166,11 @@ class AasdkSession(
     // USB connection manager — only used in "usb" transport mode
     private var _usbConnectionManager: UsbConnectionManager? = null
 
-    /** Current transport mode: "hotspot" or "usb" */
+    /** Current transport mode: "hotspot", "usb", or "wpp". */
     var transportMode: String = "hotspot"
+
+    /** Immutable interface name owned by this WPP session generation. */
+    var wppInterfaceName: String = "ap_br_swlan0"
 
     /** Manual IP address for testing (emulator). Overrides gateway/mDNS discovery. */
     var manualIpAddress: String? = null
@@ -238,12 +241,12 @@ class AasdkSession(
     }
 
     /**
-     * Google WiFi Projection Protocol: the phone connects to US.
+     * Google WiFi Projection Protocol bootstrap.
      *
-     * The opposite direction to [startTcp]. In WPP the head unit advertises its
-     * `{ip, port}` over Bluetooth RFCOMM (see `AaWirelessBtServer`) and the phone
-     * then opens the TCP connection inbound. Proven against AA 17.4 on 2026-08-06:
-     * full BT handshake, WiFi association, then an inbound connection from the phone.
+     * Standard WPP advertises the head unit's `{ip, port}` over Bluetooth RFCOMM
+     * and the phone opens TCP inbound. On GM, OAL may instead advertise the
+     * companion's phone-local proxy; then [dialCompanion] stops this inbound
+     * listener and the car dials outbound from the same selected interface.
      *
      * The native session neither knows nor cares which side dialled — it needs a
      * connected socket — so this reuses [handleConnection] unchanged.
@@ -278,10 +281,13 @@ class AasdkSession(
                     startTcp(manualIp = address)
                 }
             // One recovery owner performs exactly one refresh. If a companion is
-            // known, its connector is started first so the phone cannot beat us to
-            // the proxy; otherwise the listener below is bound while SDP returns.
-            com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
-            if (known != null) return
+            // known, its source-bound connector is started before publication. If
+            // not, the bind-ready callback below publishes only after the selected-
+            // interface listener really exists.
+            if (known != null) {
+                com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
+                return
+            }
         } else {
             OalLog.i(TAG, "Initial WPP owner installed — waiting for its admitted Bluetooth " +
                     "handshake instead of pre-dialling a cached companion")
@@ -307,7 +313,8 @@ class AasdkSession(
         // moment it selects the loopback endpoint and therefore knows the address.
         // See AaWirelessBtControl -> onCompanionSelected.
 
-        OalLog.i(TAG, "Starting aasdk session (WPP transport — phone connects to us)")
+        OalLog.i(TAG, "Starting WPP selected-interface inbound listener; " +
+                "the handshake may switch to the companion's outbound proxy")
         _wppServer?.stop()
         lateinit var server: com.openautolink.app.transport.hotspot.WppTcpServer
         server = com.openautolink.app.transport.hotspot.WppTcpServer(
@@ -325,9 +332,31 @@ class AasdkSession(
                     }
                 }
             },
+            onBound = {
+                if (recovery) {
+                    OalLog.i(TAG, "WPP recovery listener bound — refreshing SDP")
+                    com.openautolink.app.transport.bluetooth.AaWirelessBtControl.readvertise()
+                }
+            },
+            bindInterfaceName = wppInterfaceName,
         )
         _wppServer = server
         server.start()
+    }
+
+    /** Wait until WPP has a real selected-interface listener before admission. */
+    suspend fun awaitWppTransportReady(): Boolean {
+        if (transportMode != "wpp") return true
+        return _wppServer?.awaitBound() == true
+    }
+
+    /** Resolve a pending bind wait before a lifecycle replacement queues on its mutex. */
+    fun cancelPendingWppTransportStart(reason: String) {
+        if (transportMode != "wpp") return
+        val server = _wppServer ?: return
+        OalLog.i(TAG, "Cancelling WPP transport start before $reason")
+        server.stop()
+        if (_wppServer === server) _wppServer = null
     }
 
     /**
@@ -410,7 +439,7 @@ class AasdkSession(
     }
 
     private fun startTcp(manualIp: String? = null) {
-        OalLog.i(TAG, "Starting aasdk session (TCP/hotspot transport)")
+        OalLog.i(TAG, "Starting TCP connector (hotspot or WPP companion-proxy transport)")
         synchronized(connectionStartLock) {
             // Record at the common ownership boundary. WPP restart calls startTcp()
             // directly, so recording only in dialCompanion() leaves the guard stale.
@@ -451,6 +480,19 @@ class AasdkSession(
                     }
                 },
             )
+            // WPP owns exactly one interface end-to-end; bind its selected source.
+            if (transportMode == "wpp") {
+                val selectedSourceIpv4 = WppInterfacePolicy.liveIpv4(wppInterfaceName)
+                if (selectedSourceIpv4 == null) {
+                    OalLog.e(TAG, "Selected WPP interface $wppInterfaceName has no live IPv4 — " +
+                            "aborting connector start; no fallback allowed")
+                    connector.stop()
+                    if (_tcpConnector === connector) _tcpConnector = null
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    return@synchronized
+                }
+                connector.sourceIpv4 = selectedSourceIpv4
+            }
             // An explicit dial target wins over the configured manual IP.
             connector.manualIp = manualIp ?: manualIpAddress
             _tcpConnector = connector

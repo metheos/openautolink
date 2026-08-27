@@ -315,9 +315,9 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             text = when (uiState.directTransport) {
                 "usb" -> "Phone connects to the car over a USB cable using AOA v2. The Wi-Fi connection mode below is ignored. A device picker is shown on the projection screen so the OS only prompts for the phone you select."
                 AppPreferences.DIRECT_TRANSPORT_WPP ->
-                    "The phone connects to the car directly, the way a factory head unit works — no companion app needed. " +
-                        "The car advertises itself over Bluetooth, then hands the phone the Wi-Fi details below. " +
-                        "Pair the phone to this head unit over Bluetooth first, and make sure \"Phone calls\" is enabled for it."
+                    "Factory-style Bluetooth/WPP startup. The companion app is required: " +
+                        "the car advertises the selected Wi-Fi path, then dials the companion proxy on that same interface. " +
+                        "Pair Bluetooth first and keep \"Phone calls\" enabled."
                 else -> "Phone and car talk over the shared Wi-Fi network configured below."
             },
             style = MaterialTheme.typography.bodySmall,
@@ -376,26 +376,55 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
-            LocalEchoTextField(
-                value = uiState.wppApInterface,
-                onValueChange = { viewModel.updateWppApInterface(it) },
-                label = { Text("Hotspot network interface") },
-                singleLine = true,
-                supportingText = {
-                    Text("The interface serving the car's hotspot. Default \"${AppPreferences.DEFAULT_WPP_AP_INTERFACE}\" is correct for AAOS head units — only change it if the phone joins the hotspot but projection never starts.")
-                },
+            var wppInterfaceMenuOpen by remember { mutableStateOf(false) }
+            var wppInterfaces by remember { mutableStateOf(viewModel.listCarHotspotInterfaces()) }
+            Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            LocalEchoTextField(
-                value = uiState.wppLocalIp,
-                onValueChange = { viewModel.updateWppLocalIp(it) },
-                label = { Text("Head unit IP (optional)") },
-                singleLine = true,
-                supportingText = {
-                    Text("Leave blank — this is detected automatically each time. Only set it to diagnose a one-off problem, and clear it afterwards: the car's hotspot subnet is stable across ignition cycles but can change across multi-week epochs, so a fixed value will eventually stop working.")
-                },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("WPP network interface", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        uiState.wppApInterface.ifBlank { AppPreferences.DEFAULT_WPP_AP_INTERFACE },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "All WPP advertising, discovery, and traffic is restricted to this interface. " +
+                            "GM EVs normally use ${AppPreferences.DEFAULT_WPP_AP_INTERFACE}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Box {
+                    FilledTonalButton(onClick = {
+                        wppInterfaces = viewModel.listCarHotspotInterfaces()
+                        wppInterfaceMenuOpen = true
+                    }) { Text("Choose") }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = wppInterfaceMenuOpen,
+                        onDismissRequest = { wppInterfaceMenuOpen = false },
+                    ) {
+                        if (wppInterfaces.isEmpty()) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("No active IPv4 interfaces") },
+                                onClick = { wppInterfaceMenuOpen = false },
+                                enabled = false,
+                            )
+                        } else {
+                            wppInterfaces.forEach { (name, ip) ->
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("$name  ($ip)") },
+                                    onClick = {
+                                        viewModel.updateWppApInterface(name)
+                                        wppInterfaceMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             LocalEchoTextField(
                 value = uiState.wppBssid,
                 onValueChange = { viewModel.updateWppBssid(it) },
@@ -414,9 +443,10 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
-        Spacer(modifier = Modifier.height(12.dp))
+        if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_HOTSPOT) {
+            Spacer(modifier = Modifier.height(12.dp))
 
-        SectionHeader("Connection Mode")
+            SectionHeader("Connection Mode")
         Spacer(modifier = Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -615,12 +645,14 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.5f))
-        Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+            HorizontalDivider(modifier = Modifier.fillMaxWidth(0.5f))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
 
-        // --- Manual IP (emulator/testing) ---
-        SectionHeader("Manual IP Address")
+        if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_HOTSPOT) {
+            // --- Manual IP (emulator/testing) ---
+            SectionHeader("Manual IP Address")
         Spacer(modifier = Modifier.height(4.dp))
 
         Row(
@@ -681,6 +713,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
     }
 }
 

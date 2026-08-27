@@ -35,7 +35,7 @@ class SessionReadinessInstrumentationTest {
 
         val sessionStart = managerSource.indexOf("session.start()", startIndex = nativeEnd)
         val installOwner = managerSource.indexOf(
-            "installWirelessSessionAdmission(directTransport)",
+            "installWirelessSessionAdmissionIfCurrent(",
             startIndex = sessionStart,
         )
         val reportAdmission = managerSource.indexOf(
