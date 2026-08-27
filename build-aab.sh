@@ -2,7 +2,7 @@
 # One-command OpenAutoLink AAB builder for Linux and Windows WSL.
 set -euo pipefail
 
-OAL_BUILDER_IMAGE="${OAL_BUILDER_IMAGE:-ghcr.io/mossyhub/openautolink-builder:latest}"
+OAL_BUILDER_IMAGE="${OAL_BUILDER_IMAGE:-ghcr.io/mossyhub/openautolink-builder@sha256:8f7d4fecfec6015a8cc1272422c767be5873b0bd395307c57814e150d7fbf370}"
 OAL_BUILDER_STATE_DIR="${OAL_BUILDER_STATE_DIR:-$HOME/.openautolink-builder}"
 OAL_REPO_URL="${OAL_REPO_URL:-https://github.com/mossyhub/openautolink.git}"
 OAL_REF="${OAL_REF:-main}"

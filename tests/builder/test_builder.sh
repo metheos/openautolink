@@ -88,6 +88,7 @@ assert_eq 'R\+D\=Lab' "$(escape_dname_value 'R+D=Lab')" "DName metacharacter esc
 
 assert_file_contains "$BOOTSTRAP" 'OAL_BUILDER_STATE_DIR' "state directory override"
 assert_file_contains "$BOOTSTRAP" 'OAL_BUILDER_IMAGE' "image override"
+assert_file_contains "$BOOTSTRAP" 'openautolink-builder@sha256:8f7d4fecfec6015a8cc1272422c767be5873b0bd395307c57814e150d7fbf370' "immutable default builder image"
 assert_file_contains "$BOOTSTRAP" '/dev/tty' "pipe-safe interactive UI"
 assert_file_contains "$BOOTSTRAP" 'Existing upload keystore' "existing-key import UI"
 assert_file_contains "$BOOTSTRAP" 'docker pull' "builder image update"

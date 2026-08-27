@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/mossyhub/openautolink/main/build-aa
 curl -fsSL https://raw.githubusercontent.com/mossyhub/openautolink/main/build-aab.sh | bash
 ```
 
-The host needs Docker, `curl`, `flock` (normally supplied by `util-linux`), and an x86-64 CPU; Android Studio, Java, Gradle, the Android SDK, NDK, CMake, Git, OpenSSL, and aasdk are supplied or managed by the builder image. ARM64 hosts are not currently published or supported.
+The host needs Docker, `curl`, `flock` (normally supplied by `util-linux`), and an x86-64 CPU; Android Studio, Java, Gradle, the Android SDK, NDK, CMake, Git, OpenSSL, and aasdk are supplied or managed by the builder image. ARM64 hosts are not currently published or supported. The bootstrap defaults to an immutable tested GHCR image digest rather than a mutable `latest` tag.
 
 ## First run
 
