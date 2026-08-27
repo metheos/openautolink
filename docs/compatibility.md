@@ -26,6 +26,12 @@ A build, Play installation, `CONNECTED` status, or process log is not proof of s
 | **Other GM AAOS vehicles** | AAOS version, SoC, radio, and permissions vary | **Unknown** | Similar infotainment appearance does not prove equivalent networking, USB, VHAL, audio, or display behavior. |
 | **Non-GM AAOS vehicles** | Vendor-specific | **Experimental** | The app may install, but Play policy, sideloading, Bluetooth, Wi-Fi topology, VHAL permissions, cluster APIs, and display zones differ. |
 
+## Polestar and other AAOS testers wanted
+
+If your Polestar or another vehicle runs Android Automotive OS but does not include Android Auto, the project wants to hear from you. Contact the maintainer through the [OpenAutoLink XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) or [Reddit](https://www.reddit.com/user/IPickedThisUserID/).
+
+The maintainer can work with prospective testers on installation and evidence collection. If a Google Play invitation is appropriate, send the Google-account email used by the vehicle **privately**, never in a public comment. A place in the test group does not imply that an untested vehicle is compatible.
+
 ## Phone compatibility
 
 The phone requires:

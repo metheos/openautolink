@@ -21,8 +21,10 @@ OpenAutoLink runs the Android Auto protocol directly on the vehicle's Android Au
 [Latest release](https://github.com/mossyhub/openautolink/releases/latest) · [GM installation](docs/install-gm.md) · [Compatibility](docs/compatibility.md) · [Troubleshooting](docs/troubleshooting.md) · [XDA discussion](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/)
 
 > [!IMPORTANT]
-> GM production head units do not permit ADB installation or APK sideloading. Installing the car app requires Google Play testing. Read [Installing on a locked GM vehicle](docs/install-gm.md) before creating an account or downloading anything.<br><br>
+> GM production head units do not permit ADB installation or APK sideloading. The easiest route is the maintainer's Google Play test group: about 45 of 100 places are currently filled. If building and Play Console setup are blocking you, privately send the Google-account email used by your vehicle to the maintainer through the [XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) or [Reddit](https://www.reddit.com/user/IPickedThisUserID/). Do not post your email publicly. Self-publishing remains available for people who want their own app identity and release track.<br><br>
 > Official builds are published on [GitHub Releases](https://github.com/mossyhub/openautolink/releases/latest). The companion APK installs on an Android phone. The car APK is for emulators and AAOS systems that permit sideloading; it cannot be sideloaded onto a locked GM production vehicle.
+
+**Polestar and other AAOS owners wanted:** If your vehicle runs Android Automotive OS but does not include Android Auto, contact the maintainer through XDA or Reddit. OpenAutoLink needs real-vehicle testers beyond GM; installation, networking, audio, vehicle APIs, and display behavior must be proven on each platform.
 
 [![CI](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml/badge.svg)](https://github.com/mossyhub/openautolink/actions/workflows/ci.yml)
 [![Release](https://github.com/mossyhub/openautolink/actions/workflows/release-apk.yml/badge.svg)](https://github.com/mossyhub/openautolink/releases/latest)
@@ -109,9 +111,9 @@ Read the [full compatibility and evidence notes](docs/compatibility.md) before a
 | Vehicle | Compatible AAOS head unit without native Android Auto |
 | Phone | Android phone running Android Auto and the OpenAutoLink Companion |
 | Vehicle network | Car Wi-Fi access point for current wireless WPP, or a USB data connection |
-| GM installation | Google Play Console account, account verification, signing key, and an internal/closed testing release |
+| Locked-vehicle installation | A place in the maintainer's Play test group, or your own Play Console account, signing key, and test release |
 
-No additional projection hardware is required, but installation on a locked GM vehicle is an advanced one-time software process.
+No additional projection hardware is required. Locked vehicles still require Google Play delivery, either through the maintainer's test group or your own Play Console release.
 
 ## Installation
 
@@ -125,9 +127,11 @@ Release APKs use the project's signing key. A locally built debug APK uses a dif
 
 ### Locked GM vehicle
 
-You must build a signed AAB under your own unique application ID and publish it through a Google Play internal or closed testing track. Preserve the signing key: future updates must use the same application ID and key.
+**Recommended:** ask to join the maintainer's Google Play test group. It supports up to 100 people and currently has roughly 55 open places. Privately send the Google-account email used by the vehicle through the [XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) or [Reddit](https://www.reddit.com/user/IPickedThisUserID/). Do not put your email in a public comment.
 
-Follow [Installing OpenAutoLink on a locked GM vehicle](docs/install-gm.md). Do not download the car APK expecting to sideload it onto a production GM head unit.
+**Independent route:** build a signed AAB under your own unique application ID and publish it through your own Google Play internal or closed testing track. Preserve the signing key: future updates must use the same application ID and key.
+
+Follow [Installing OpenAutoLink on a locked GM vehicle](docs/install-gm.md) for both routes. Do not download the car APK expecting to sideload it onto a production GM head unit.
 
 ### Other AAOS systems
 
@@ -198,6 +202,8 @@ A CarPlay research prototype proved access to a CPC200's MFi authentication chip
 
 - Use [GitHub issues](https://github.com/mossyhub/openautolink/issues) for reproducible defects.
 - Use the [XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) for setup discussion and vehicle reports.
+- If building is the blocker, privately ask the maintainer about a place in the Google Play test group; do not publish your Google-account email.
+- **Polestar and other non-GM AAOS owners:** please reach out if your vehicle lacks Android Auto. New platforms need installation and end-to-end projection testing.
 - Include the exact vehicle, model year, AAOS version, Android Auto version, transport, and both car/companion logs where available.
 
 ## Acknowledgments

@@ -1,8 +1,29 @@
 # Installing OpenAutoLink on a locked GM vehicle
 
-GM production AAOS head units do not expose ADB and do not permit APK sideloading. The car app must arrive through Google Play as a signed Android App Bundle (AAB).
+GM production AAOS head units do not expose ADB and do not permit APK sideloading. The car app must arrive through Google Play.
 
-This is an advanced, one-time setup. Afterward, updates use the same application ID, signing key, and Play testing track.
+There are two installation routes:
+
+1. **Join the maintainer's Google Play test group — recommended.** About 45 of 100 places are currently filled, leaving roughly 55 places available. This route does not require building the car app or operating a Play Console release.
+2. **Self-publish the car app.** This advanced route gives you an independent app identity and update track, but requires building, signing, and maintaining your own Play Console app.
+
+Availability in the maintainer group can change.
+
+## Recommended: join the maintainer test group
+
+1. Use the Google account signed into the vehicle's Play Store.
+2. Privately send that account's email address to the maintainer through the [OpenAutoLink XDA thread](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/) or [Reddit](https://www.reddit.com/user/IPickedThisUserID/).
+3. **Do not post your email address in a public reply.** Use the platform's private-message feature.
+4. After the maintainer adds the account, accept the Google Play testing invitation or opt-in link provided to you.
+5. Sign into the vehicle's Play Store with that same account and install OpenAutoLink.
+6. Install the matching companion APK from [GitHub Releases](https://github.com/mossyhub/openautolink/releases/latest) on the Android phone.
+7. Grant the car permissions and continue with [Wireless WPP setup](wireless-wpp.md) or USB.
+
+If the app does not appear, confirm the vehicle uses the invited Google account and that the testing opt-in was accepted. Play propagation can take time.
+
+## Independent route: self-publish
+
+The remainder of this guide is for people who want to build and maintain their own Play app. After the one-time setup, updates use the same application ID, signing key, and Play testing track.
 
 ## Before you begin
 
@@ -138,6 +159,12 @@ Google may require account or app review before the release becomes available. T
 4. Open **Settings → Apps → OpenAutoLink → Permissions**.
 5. Grant **Car information**, microphone, and any other requested permissions needed for the features you use.
 6. Open OpenAutoLink and continue with [Wireless WPP setup](wireless-wpp.md) or USB.
+
+## Testing a non-GM AAOS vehicle
+
+Polestar and other AAOS owners whose vehicles do not include Android Auto are specifically invited to contact the maintainer through XDA or Reddit. Do not assume the GM result transfers: Play delivery, app permissions, Bluetooth/Wi-Fi topology, audio policy, vehicle APIs, and display zoning differ by manufacturer.
+
+When reaching out, include the make, model, model year, market, AAOS version, and whether the vehicle permits APK installation. The first goal is to establish a safe installation path and a sustained rendered session before claiming feature support.
 
 ## Updating later
 
