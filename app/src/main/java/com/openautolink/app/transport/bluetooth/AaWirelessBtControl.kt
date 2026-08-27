@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import com.openautolink.app.diagnostics.OalLog
 import com.openautolink.app.transport.OalProtocol
+import com.openautolink.app.transport.WppInterfacePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -232,12 +233,15 @@ object AaWirelessBtControl {
 
     fun hasCurrentWppOwner(): Boolean = sessionAdmission.currentWppOwner() != null
 
-    fun installSessionOwner(transportMode: String): WppSessionAdmission.Token {
+    fun installSessionOwner(
+        transportMode: String,
+        wppInterfaceName: String? = null,
+    ): WppSessionAdmission.Token {
         val token = synchronized(this) {
-            sessionAdmission.installSession(transportMode)
+            sessionAdmission.installSession(transportMode, wppInterfaceName)
         }
         OalLog.i(TAG, "Session admission installed: generation=${token.generation} " +
-                "transport=${token.transportMode}")
+                "transport=${token.transportMode} interface=${token.wppInterfaceName ?: "none"}")
         if (transportMode == "wpp") {
             ensureAdvertising()
         } else {
@@ -406,7 +410,7 @@ object AaWirelessBtControl {
     private fun startBootstrapCompanionDiscovery(
         attempt: BootstrapAttempt,
         candidates: List<String>,
-        manualIp: String?,
+        selectedLocalIpv4: String,
     ) {
         scope.launch {
             val deadline = System.currentTimeMillis() + WppBootstrapPolicy.DISCOVERY_DEADLINE_MS
@@ -439,8 +443,8 @@ object AaWirelessBtControl {
                     val remainingMs = (deadline - System.currentTimeMillis())
                         .coerceIn(1L, 5_000L)
                         .toInt()
-                    found = findCompanionOnAnySubnet(
-                        manualIp = manualIp,
+                    found = findCompanionOnSelectedInterface(
+                        selectedLocalIpv4 = selectedLocalIpv4,
                         phoneBtAddress = attempt.phoneBtAddress,
                         phoneBtName = attempt.phoneBtName,
                         overallTimeoutMs = remainingMs,
@@ -517,6 +521,14 @@ object AaWirelessBtControl {
         reportedPhoneId: String? = null,
         reportedFriendlyName: String? = null,
     ) {
+        val selectedLocalIpv4 = currentSelectedWppIpv4()
+        if (selectedLocalIpv4 == null ||
+            !WppInterfacePolicy.isPeerOnSelectedSubnet(selectedLocalIpv4, host)
+        ) {
+            OalLog.i(TAG, "Rejecting companion at $host — outside selected WPP interface " +
+                    "subnet (${selectedLocalIpv4 ?: "unavailable"})")
+            return
+        }
         val liveProbe = askCompanion(host, connectTimeoutMs = 800)
         val probe = liveProbe ?: reportedProxyPort?.let { port ->
             CompanionProbe(reportedPhoneId, reportedFriendlyName, port)
@@ -832,14 +844,21 @@ object AaWirelessBtControl {
      * Discovery's global address history is intentionally excluded: it can contain
      * every nearby phone and was the source of cross-phone speculative dials.
      */
-    fun withIdentityValidatedCompanion(action: (String) -> Unit): String? =
-        synchronized(phoneClaimLock) {
+    fun withIdentityValidatedCompanion(action: (String) -> Unit): String? {
+        val selectedLocalIpv4 = currentSelectedWppIpv4() ?: return null
+        return synchronized(phoneClaimLock) {
             val btAddress = activePhoneBt ?: return null
             if (phoneIdByBtAddress[btAddress].isNullOrBlank()) return null
             val address = lastAddressByPhone[btAddress] ?: return null
+            if (!WppInterfacePolicy.isPeerOnSelectedSubnet(selectedLocalIpv4, address)) {
+                OalLog.i(TAG, "Rejecting cached companion at $address — outside selected " +
+                        "WPP interface subnet ($selectedLocalIpv4)")
+                return null
+            }
             action(address)
             address
         }
+    }
 
     /**
      * Reset attempt ownership on ignition off while retaining address hints.
@@ -855,11 +874,15 @@ object AaWirelessBtControl {
     fun resetForNextIgnition() {
         // Snapshot the addresses BEFORE clearing them — the notify is async and
         // would otherwise race the clear and find nothing to send to.
+        val selectedLocalIpv4 = currentSelectedWppIpv4()
         val targets = buildList {
             lastKnownPhoneIp?.let { add(it) }
             synchronized(recentPhoneIps) { addAll(recentPhoneIps) }
-        }.distinct()
-        notifyCompanionOfShutdown(targets)
+        }.distinct().filter { target ->
+            selectedLocalIpv4 != null &&
+                WppInterfacePolicy.isPeerOnSelectedSubnet(selectedLocalIpv4, target)
+        }
+        notifyCompanionOfShutdown(targets, selectedLocalIpv4)
         releaseActivePhone()
         // Keep address hints across ignition. A stale address costs one bounded
         // probe before the attempt-owned scan; clearing every address forces every
@@ -892,12 +915,13 @@ object AaWirelessBtControl {
      * companion still discovers the loss the slow way. Delivering it saves the
      * next connection from a pooled socket to a car that no longer exists.
      */
-    private fun notifyCompanionOfShutdown(targets: List<String>) {
-        if (targets.isEmpty()) return
+    private fun notifyCompanionOfShutdown(targets: List<String>, sourceIpv4: String?) {
+        if (targets.isEmpty() || sourceIpv4 == null) return
         for (ip in targets) {
             scope.launch {
                 runCatching {
                     java.net.Socket().use { s ->
+                        s.bind(java.net.InetSocketAddress(sourceIpv4, 0))
                         s.connect(java.net.InetSocketAddress(ip, IDENTITY_PORT), 250)
                         s.getOutputStream().apply { write("BYE!\n".toByteArray()); flush() }
                     }
@@ -976,6 +1000,14 @@ object AaWirelessBtControl {
      */
     @Volatile
     var activePhoneCompanionIp: String? = null
+        private set
+
+    /** Name and IPv4 currently owned by the explicit WPP interface selection. */
+    @Volatile
+    private var selectedWppInterfaceName: String? = null
+
+    @Volatile
+    var selectedWppInterfaceIpv4: String? = null
         private set
 
     private fun isDebuggableBuild(context: Context): Boolean =
@@ -1108,15 +1140,28 @@ object AaWirelessBtControl {
                 return
             }
             val prefs = com.openautolink.app.data.AppPreferences.getInstance(context)
-            val apInterface = prefs.wppApInterface.first()
+            val apInterface = expectedOwner.wppInterfaceName
+            if (apInterface.isNullOrBlank()) {
+                OalLog.e(TAG, "Not advertising — WPP session owner has no interface")
+                return
+            }
+            selectedWppInterfaceName = apInterface
 
-            // Common readiness chokepoint. Ignition/socket-death recovery used to
-            // bypass this and could publish a telematics address before the car AP.
+            // Common readiness chokepoint. The selected interface is authoritative:
+            // never advertise or dial through another live NIC when it is absent.
             awaitApInterface(apInterface)
             if (!sessionAdmission.isCurrent(expectedOwner)) {
                 OalLog.i(TAG, "Not advertising — WPP owner changed while waiting for AP")
                 return
             }
+            val interfaceIpv4 = localIpv4Address(apInterface)
+            if (interfaceIpv4 == null) {
+                selectedWppInterfaceIpv4 = null
+                OalLog.w(TAG, "Not advertising — selected WPP interface '$apInterface' " +
+                        "is unavailable or has no IPv4 address")
+                return
+            }
+            selectedWppInterfaceIpv4 = interfaceIpv4
 
             val ssid = intent?.getStringExtra("ssid")?.takeIf { it.isNotBlank() }
                 ?: prefs.hotspotSsid.first()
@@ -1125,12 +1170,12 @@ object AaWirelessBtControl {
             val bssid = intent?.getStringExtra("bssid")?.takeIf { it.isNotBlank() }
                 ?: prefs.wppBssid.first()
             val port = intent?.getIntExtra("port", 5277) ?: 5277
-            // The address the phone is told to dial. Detected from the live
-            // interface rather than stored, because it changes with the network.
-            val ip = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
-                ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() }
-                ?: localIpv4Address(apInterface)
-                ?: ""
+            val requestedIp = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
+            if (requestedIp != null && requestedIp != interfaceIpv4) {
+                OalLog.w(TAG, "Ignoring WPP IP override $requestedIp — selected interface " +
+                        "$apInterface owns $interfaceIpv4")
+            }
+            val ip = interfaceIpv4
 
             val problems = buildList {
                 if (ssid.isBlank()) add("SSID is empty")
@@ -1153,8 +1198,6 @@ object AaWirelessBtControl {
             )
             startAdvertising(
                 context, creds,
-                manualIp = intent?.getStringExtra("ip")?.takeIf { it.isNotBlank() }
-                    ?: prefs.wppLocalIp.first().takeIf { it.isNotBlank() },
                 apInterface = apInterface,
                 expectedOwner = expectedOwner,
             )
@@ -1226,76 +1269,31 @@ object AaWirelessBtControl {
             kotlinx.coroutines.delay(1_000)
         }
         OalLog.w(TAG, "$apInterface did not appear within ${timeoutMs}ms — " +
-                "advertising anyway with whatever address is available")
+                "strict WPP interface selection prevents fallback advertising")
     }
 
-    /**
-     * Last-resort scan for the companion across EVERY network the head unit is on.
-     *
-     * A Blazer has two independent radios and they sit on different networks:
-     *
-     *   ap_br_swlan0  the telematics module's AP ("Blazing", 10.2.110.x) that the
-     *                 phone joins — and whose inbound filtering is the reason the
-     *                 loopback endpoint exists at all
-     *   wlan0         the head unit's own Android WiFi, a client only. Observed on
-     *                 home WiFi (192.168.0.104) and on the phone's hotspot
-     *                 (10.187.47.188), never on Blazing
-     *
-     * An earlier version scanned only the telematics subnet and so missed the
-     * companion entirely when it was reachable over wlan0: at 16:34:29 the scan of
-     * 10.2.110.0/24 found nothing, and 25s later discovery reported the phone at
-     * 10.187.47.73 — the phone-hotspot subnet, via the other radio.
-     *
-     * Which radio carries the traffic does not matter to the design; only that the
-     * head unit can dial the companion. Reaching it over the phone's own hotspot is
-     * arguably better, since the phone is the AP there and the telematics module's
-     * filtering is bypassed completely.
-     */
-    private fun findCompanionOnAnySubnet(
-        manualIp: String?,
+    /** Scan only the explicitly selected WPP interface subnet. */
+    private fun findCompanionOnSelectedInterface(
+        selectedLocalIpv4: String,
         phoneBtAddress: String,
         phoneBtName: String?,
         overallTimeoutMs: Int = 20_000,
     ): ResolvedCompanion? {
-        val localIps = buildList {
-            manualIp?.takeIf { it.isNotBlank() }?.let { add(it) }
-            addAll(allLocalIpv4())
-        }.distinct()
-        if (localIps.isEmpty()) return null
-
-        val deadline = System.currentTimeMillis() + overallTimeoutMs
-        for (ip in localIps) {
-            val prefix = ip.substringBeforeLast('.', "")
-            if (prefix.isEmpty()) continue
-            val remainingMs = (deadline - System.currentTimeMillis()).coerceAtLeast(1L).toInt()
-            OalLog.i(TAG, "Scanning $prefix.0/24 for the companion")
-            scanSubnet(
-                prefix = prefix,
-                ourIp = ip,
-                phoneBtAddress = phoneBtAddress,
-                phoneBtName = phoneBtName,
-                overallTimeoutMs = remainingMs,
-            )?.let { return it }
-            if (System.currentTimeMillis() >= deadline) break
-        }
-        OalLog.w(TAG, "No companion on any local subnet (${localIps.joinToString()})")
-        return null
-    }
-
-    /** Every non-loopback IPv4 the head unit currently holds, across both radios. */
-    private fun allLocalIpv4(): List<String> = runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces().toList()
-            .filter { it.isUp && !it.isLoopback && !it.isVirtual }
-            // The telematics module also exposes several vt* interfaces on
-            // 172.16.x that lead nowhere useful; scanning them wastes seconds.
-            .filterNot { it.name.startsWith("vt") }
-            .flatMap { nif ->
-                nif.inetAddresses.toList()
-                    .filterIsInstance<java.net.Inet4Address>()
-                    .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
-                    .mapNotNull { it.hostAddress }
+        val prefix = selectedLocalIpv4.substringBeforeLast('.', "")
+        if (prefix.isEmpty()) return null
+        OalLog.i(TAG, "Scanning selected WPP interface subnet $prefix.0/24 for the companion")
+        return scanSubnet(
+            prefix = prefix,
+            ourIp = selectedLocalIpv4,
+            phoneBtAddress = phoneBtAddress,
+            phoneBtName = phoneBtName,
+            overallTimeoutMs = overallTimeoutMs,
+        ).also {
+            if (it == null) {
+                OalLog.w(TAG, "No companion on selected WPP interface subnet $prefix.0/24")
             }
-    }.getOrDefault(emptyList())
+        }
+    }
 
     /**
      * Scans one /24 for the companion, returning its address AND proxy port.
@@ -1371,15 +1369,20 @@ object AaWirelessBtControl {
     private fun askCompanion(
         phoneIp: String,
         connectTimeoutMs: Int = 1200,
-    ): CompanionProbe? = runCatching {
-        java.net.Socket().use { sock ->
-            sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), connectTimeoutMs)
-            sock.soTimeout = connectTimeoutMs
-            sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
-            val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
-            CompanionIdentityPolicy.parseProbe(reply)
-        }
-    }.getOrNull()
+    ): CompanionProbe? {
+        val sourceIpv4 = selectedWppInterfaceIpv4 ?: return null
+        if (!WppInterfacePolicy.isPeerOnSelectedSubnet(sourceIpv4, phoneIp)) return null
+        return runCatching {
+            java.net.Socket().use { sock ->
+                sock.bind(java.net.InetSocketAddress(sourceIpv4, 0))
+                sock.connect(java.net.InetSocketAddress(phoneIp, IDENTITY_PORT), connectTimeoutMs)
+                sock.soTimeout = connectTimeoutMs
+                sock.getOutputStream().apply { write("OAL?\n".toByteArray()); flush() }
+                val reply = sock.getInputStream().bufferedReader().readLine().orEmpty()
+                CompanionIdentityPolicy.parseProbe(reply)
+            }
+        }.getOrNull()
+    }
 
     private fun probeMatchesBluetoothOwner(
         phoneBtAddress: String,
@@ -1449,62 +1452,33 @@ object AaWirelessBtControl {
         return fallback
     }
 
-    private fun localIpv4Address(apInterface: String): String? = runCatching {
-        data class Candidate(val name: String, val addr: String)
+    private fun currentSelectedWppIpv4(): String? {
+        val interfaceName = selectedWppInterfaceName ?: return null
+        return localIpv4Address(interfaceName).also { selectedWppInterfaceIpv4 = it }
+    }
 
+    /** Resolve only the explicitly selected interface. */
+    private fun localIpv4Address(apInterface: String): String? = runCatching {
         val candidates = java.net.NetworkInterface.getNetworkInterfaces().toList()
             .filter { it.isUp && !it.isLoopback && !it.isVirtual }
             .flatMap { nif ->
                 nif.inetAddresses.toList()
                     .filterIsInstance<java.net.Inet4Address>()
                     .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
-                    .mapNotNull { it.hostAddress?.let { a -> Candidate(nif.name, a) } }
+                    .mapNotNull { it.hostAddress?.let { address ->
+                        WppInterfacePolicy.InterfaceIpv4(nif.name, address)
+                    } }
             }
-        if (candidates.isEmpty()) return@runCatching null
-
-        // Interface tiers. The configured AP interface wins outright; the rest
-        // are fallbacks for OEMs that name it differently, so a wrong setting
-        // degrades to a guess rather than to nothing.
-        fun tier(name: String): Int = when {
-            name == apInterface -> 0
-            name.startsWith("ap_br_") || name.startsWith("ap") ||
-                name.startsWith("swlan") || name == "wlan1" -> 1
-            name.startsWith("wlan") -> 2
-            else -> 3
-        }
-        fun isPrivate(a: String): Boolean =
-            a.startsWith("10.") || a.startsWith("192.168.") ||
-                (a.startsWith("172.") && a.substringAfter('.').substringBefore('.').toIntOrNull()
-                    ?.let { it in 16..31 } == true)
-
-        // A gateway-looking address (x.y.z.1) is a strong signal for "this
-        // interface IS the access point", since an AP is the gateway for its
-        // clients. Ranks above interface-name guessing, which varies by OEM.
-        fun looksLikeGateway(a: String) = a.endsWith(".1")
-
-        val chosen = candidates.sortedWith(
-            compareBy<Candidate> { tier(it.name) }
-                .thenBy { if (looksLikeGateway(it.addr)) 0 else 1 }
-                .thenBy { if (isPrivate(it.addr)) 0 else 1 }
-        ).first()
-
-        // Always log, not just when ambiguous: the car AP has used several
-        // different subnets across multi-week epochs, so the value used by each
-        // handshake must remain visible even though it is usually stable per cycle.
-        run {
-            OalLog.i(TAG, "Local address candidates: " +
-                    candidates.joinToString { "${it.name}=${it.addr}" } +
-                    " — advertising ${chosen.addr} (${chosen.name}). " +
-                    "If the phone joins the AP but projection never starts, compare this " +
-                    "against the phone's own address: they must share a subnet.")
-        }
-        chosen.addr
+        val chosen = WppInterfacePolicy.selectedIpv4(apInterface, candidates)
+        OalLog.i(TAG, "Local address candidates: " +
+                candidates.joinToString { "${it.name}=${it.address}" } +
+                " — selected $apInterface=${chosen ?: "unavailable"}; no fallback allowed")
+        chosen
     }.getOrNull()
 
     private fun startAdvertising(
         context: Context,
         creds: AaWirelessBtServer.WifiCredentials,
-        manualIp: String?,
         apInterface: String,
         expectedOwner: WppSessionAdmission.Token,
     ) {
@@ -1551,11 +1525,8 @@ object AaWirelessBtControl {
         // stated plainly in the log, not inferred later from the phone's silence.
         val canAdvertise = bt.canAdvertise()
         OalLog.i(TAG, "SDP advertise capability: $canAdvertise")
-        // Re-resolve on every handshake. The AP is usually stable across ignition
-        // cycles but has changed across longer epochs, so no cached address is a
-        // permanent source of truth.
-        // Honour a manual override if one is set, otherwise look it up live.
-        bt.setAddressResolver { manualIp ?: localIpv4Address(apInterface) }
+        // Re-resolve the exact selected interface on every handshake. No fallback.
+        bt.setAddressResolver { localIpv4Address(apInterface) }
 
         // Endpoint selection, evaluated per handshake.
         //
@@ -1620,9 +1591,9 @@ object AaWirelessBtControl {
             // it is a cheap fact about the current interfaces rather than a guess
             // about elapsed time, but the fast path — try the remembered address
             // first — is what actually matters.
-            val localPrefixes = allLocalIpv4().mapNotNull {
-                it.substringBeforeLast('.', "").takeIf(String::isNotEmpty)
-            }.toSet()
+            val selectedLocalIpv4 = localIpv4Address(apInterface)
+                ?: return@setEndpointResolver null
+            selectedWppInterfaceIpv4 = selectedLocalIpv4
             // The address this phone used last time goes first.
             //
             // The address history is shared across phones, so with two phones in
@@ -1637,12 +1608,12 @@ object AaWirelessBtControl {
                 synchronized(recentPhoneIps) { addAll(recentPhoneIps) }
             }.distinct()
             val candidates = allKnown.filter { ip ->
-                ip.substringBeforeLast('.', "") in localPrefixes
+                WppInterfacePolicy.isPeerOnSelectedSubnet(selectedLocalIpv4, ip)
             }
             val dropped = allKnown - candidates.toSet()
             if (dropped.isNotEmpty()) {
-                OalLog.i(TAG, "Ignoring ${dropped.joinToString()} — not on any subnet " +
-                        "this car is currently on (${localPrefixes.joinToString()})")
+                OalLog.i(TAG, "Ignoring ${dropped.joinToString()} — outside selected WPP " +
+                        "interface $apInterface subnet ($selectedLocalIpv4)")
             }
             // companionIp tracks WHICH address answered, from either path. It has
             // to be set everywhere proxyPort is, or the dial below is skipped and
@@ -1706,8 +1677,8 @@ object AaWirelessBtControl {
                 }
                 // The scan returns the port too — asking again would cost another
                 // slow round trip over the telematics bridge.
-                findCompanionOnAnySubnet(
-                    manualIp = manualIp,
+                findCompanionOnSelectedInterface(
+                    selectedLocalIpv4 = selectedLocalIpv4,
                     phoneBtAddress = phoneBtAddress,
                     phoneBtName = phoneBtName,
                 )?.let { resolved ->
@@ -1805,7 +1776,7 @@ object AaWirelessBtControl {
                             "knownAddrs=${allKnown.joinToString().ifEmpty { "none" }} " +
                             "usable=${candidates.joinToString().ifEmpty { "none" }} — " +
                             "waiting for companion discovery after AP association")
-                    startBootstrapCompanionDiscovery(attempt, candidates, manualIp)
+                    startBootstrapCompanionDiscovery(attempt, candidates, selectedLocalIpv4)
                     AaWirelessBtServer.Endpoint.PhoneLoopback(OalProtocol.WPP_PROXY_PORT)
                 }
             }

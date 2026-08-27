@@ -11,14 +11,23 @@ class WppSessionAdmission {
     class Token internal constructor(
         val generation: Long,
         val transportMode: String,
+        /** Immutable interface selected by this protocol-session generation. */
+        val wppInterfaceName: String?,
     )
 
     private val lock = Any()
     private var generation = 0L
     private var active: Token? = null
 
-    fun installSession(transportMode: String): Token = synchronized(lock) {
-        Token(++generation, transportMode).also { active = it }
+    fun installSession(
+        transportMode: String,
+        wppInterfaceName: String? = null,
+    ): Token = synchronized(lock) {
+        val ownedInterface = wppInterfaceName?.trim()?.takeIf { it.isNotEmpty() }
+        require(transportMode != "wpp" || ownedInterface != null) {
+            "WPP session admission requires an immutable interface name"
+        }
+        Token(++generation, transportMode, ownedInterface).also { active = it }
     }
 
     fun clearSession(token: Token): Boolean = synchronized(lock) {

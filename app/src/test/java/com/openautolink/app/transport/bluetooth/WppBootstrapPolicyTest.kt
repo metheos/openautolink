@@ -103,7 +103,8 @@ class WppBootstrapPolicyTest {
 
         assertTrue(scanner.contains("bootstrapAttempt.get() !== attempt"))
         assertTrue(scanner.contains("val remainingMs = (deadline - System.currentTimeMillis())"))
-        assertTrue(scanner.contains("findCompanionOnAnySubnet("))
+        assertTrue(scanner.contains("findCompanionOnSelectedInterface("))
+        assertTrue(scanner.contains("selectedLocalIpv4 = selectedLocalIpv4"))
         assertTrue(scanner.contains("phoneBtAddress = attempt.phoneBtAddress"))
         assertTrue(scanner.contains("phoneBtName = attempt.phoneBtName"))
         assertTrue(scanner.contains("WppBootstrapPolicy.DISCOVERY_DEADLINE_MS"))

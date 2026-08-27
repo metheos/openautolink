@@ -186,6 +186,7 @@ class SettingsReceiver : BroadcastReceiver() {
                     micSourcePreference = prefs.micSource.first(),
                     scalingMode = prefs.videoScalingMode.first(),
                     directTransport = prefs.directTransport.first(),
+                    wppInterfaceName = prefs.wppApInterface.first(),
                     hotspotSsid = prefs.hotspotSsid.first(),
                     hotspotPassword = prefs.hotspotPassword.first(),
                     videoAutoNegotiate = prefs.videoAutoNegotiate.first(),

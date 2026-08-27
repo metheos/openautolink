@@ -21,8 +21,6 @@ data class SettingsUiState(
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
     /** AP BSSID advertised to the phone in WPP mode. Must be entered by hand. */
     val wppBssid: String = "",
-    /** Manual head-unit IP for WPP; blank means auto-detect. */
-    val wppLocalIp: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
     /** Exact AP frequency in MHz sent to the phone; 0 = advertise the default 5GHz set. */
@@ -214,7 +212,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)
     private val _wppBssidOverride = MutableStateFlow("")
-    private val _wppLocalIpOverride = MutableStateFlow("")
     private val _wppApInterfaceOverride = MutableStateFlow(AppPreferences.DEFAULT_WPP_AP_INTERFACE)
     private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
@@ -228,9 +225,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
         viewModelScope.launch {
             preferences.wppBssid.collect { _wppBssidOverride.value = it }
-        }
-        viewModelScope.launch {
-            preferences.wppLocalIp.collect { _wppLocalIpOverride.value = it }
         }
         viewModelScope.launch {
             preferences.wppApInterface.collect { _wppApInterfaceOverride.value = it }
@@ -251,7 +245,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _hotspotPasswordOverride,
         _directTransportOverride,
         _wppBssidOverride,
-        _wppLocalIpOverride,
         _wppApInterfaceOverride,
         _wppChannelMhzOverride,
         galVersion,
@@ -260,10 +253,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         state.copy(
             hotspotSsid = arr[1] as String, hotspotPassword = arr[2] as String,
             directTransport = arr[3] as String, wppBssid = arr[4] as String,
-            wppLocalIp = arr[5] as String,
-            wppApInterface = arr[6] as String,
-            wppChannelMhz = arr[7] as String,
-            galVersion = arr[8] as String,
+            wppApInterface = arr[5] as String,
+            wppChannelMhz = arr[6] as String,
+            galVersion = arr[7] as String,
         )
     }.stateIn(
         viewModelScope,
@@ -360,11 +352,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateWppApInterface(name: String) {
         _wppApInterfaceOverride.value = name
         viewModelScope.launch { preferences.setWppApInterface(name) }
-    }
-
-    fun updateWppLocalIp(ip: String) {
-        _wppLocalIpOverride.value = ip
-        viewModelScope.launch { preferences.setWppLocalIp(ip) }
     }
 
     fun updateWppBssid(bssid: String) {
@@ -617,6 +604,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val hotspotSsid = preferences.hotspotSsid.first()
             val hotspotPassword = preferences.hotspotPassword.first()
             val directTransport = preferences.directTransport.first()
+            val wppInterfaceName = _wppApInterfaceOverride.value
+            preferences.setWppApInterface(wppInterfaceName)
             val videoAutoNeg = preferences.videoAutoNegotiate.first()
             val aaRes = preferences.aaResolution.first()
             val aaDpi = preferences.aaDpi.first()
@@ -649,6 +638,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 micSourcePreference = micSrc,
                 scalingMode = scalingMode,
                 directTransport = directTransport,
+                wppInterfaceName = wppInterfaceName,
                 hotspotSsid = hotspotSsid,
                 hotspotPassword = hotspotPassword,
                 videoAutoNegotiate = videoAutoNeg,

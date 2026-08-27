@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import com.openautolink.app.diagnostics.OalLog
+import com.openautolink.app.transport.WppInterfacePolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +60,9 @@ class TcpConnector(
      * dial succeeds, so moving onto a real phone hotspot re-enables the path.
      */
     private var gatewayFailures = 0
+
+    /** When set, bind outbound sockets to this selected local IPv4. */
+    var sourceIpv4: String? = null
 
     /** When set, connects only to this IP (skips mDNS and gateway discovery). */
     var manualIp: String? = null
@@ -192,9 +196,20 @@ class TcpConnector(
             OalLog.d(TAG, "Skipping unusable (IPv6) host from $source: $host")
             return false
         }
+        val sourceIpv4 = sourceIpv4
+        if (sourceIpv4 != null &&
+            !WppInterfacePolicy.isPeerOnSelectedSubnet(sourceIpv4, host)
+        ) {
+            OalLog.i(TAG, "Skipping $host from $source — outside selected WPP source subnet $sourceIpv4")
+            return false
+        }
         OalLog.i(TAG, "Connecting to $host:$port ($source)")
         return try {
             val socket = Socket()
+            if (sourceIpv4 != null) {
+                socket.bind(InetSocketAddress(sourceIpv4, 0))
+                OalLog.i(TAG, "Binding TCP connector to selected WPP source $sourceIpv4")
+            }
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             // Socket.connect() is blocking and is not cancelled with connectJob.
             // A different Bluetooth phone can replace this connector while the
@@ -215,7 +230,11 @@ class TcpConnector(
             } catch (e: Exception) {
                 OalLog.d(TAG, "TCP keepalive tuning unavailable: ${e.message}")
             }
-            OalLog.i(TAG, "Connected to companion at $host:$port ($source)")
+            if (sourceIpv4 != null) {
+                OalLog.i(TAG, "Connected to companion at $host:$port from $sourceIpv4 ($source)")
+            } else {
+                OalLog.i(TAG, "Connected to companion at $host:$port ($source)")
+            }
             // A successful dial is the strongest evidence of where the companion
             // is — better than any cache or scan. Publish it so the Bluetooth
             // handshake does not go looking for an address we are already

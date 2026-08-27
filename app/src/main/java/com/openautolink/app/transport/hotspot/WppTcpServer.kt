@@ -3,9 +3,12 @@ package com.openautolink.app.transport.hotspot
 import android.os.ParcelFileDescriptor
 import android.system.Os
 import com.openautolink.app.diagnostics.OalLog
+import com.openautolink.app.transport.WppInterfacePolicy
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.InetSocketAddress
@@ -38,12 +41,11 @@ import java.net.Socket
  * advertised a port with nothing bound to it. `/proc/net/tcp` on the head unit
  * showed no listener on 5277.
  *
- * ## Why this matters beyond fixing the test
- *
- * With a listener in place the phone connects **directly to the head unit**. The
- * companion app is not in the wireless path at all — no mDNS, no UDP probe, no
- * identity port, no warm proxy. That removes the entire class of companion-side
- * bridge faults from wireless projection.
+ * This is the standards-compatible inbound path and the fallback while the
+ * companion endpoint is unknown. OAL's preferred GM path still uses companion
+ * discovery and advertises a phone-local loopback proxy; that handshake stops
+ * this listener and makes the car dial the companion from the same selected
+ * interface because the vehicle AP blocks phone-to-car inbound traffic.
  *
  * ## Contract
  *
@@ -54,6 +56,10 @@ import java.net.Socket
 class WppTcpServer(
     private val scope: CoroutineScope,
     private val onSocketReady: (Socket) -> Unit,
+    /** Called only after the selected-interface socket has actually bound. */
+    private val onBound: () -> Unit = {},
+    /** Immutable interface name owned by this WPP session generation. */
+    private val bindInterfaceName: String,
     /** Port to bind. Must match the port advertised in the WifiStartRequest. */
     private val port: Int = DEFAULT_PORT,
 ) {
@@ -69,13 +75,20 @@ class WppTcpServer(
 
         /** Accept backlog. One phone at a time; a small backlog absorbs retries. */
         private const val BACKLOG = 4
+        private const val BIND_ADDRESS_WAIT_MS = 46_000L
     }
 
+    private enum class LifecycleState { NEW, RUNNING, STOPPED }
+
+    private val lifecycleLock = Any()
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+    private val bindOutcome = CompletableDeferred<Boolean>()
 
     @Volatile
-    private var isRunning = false
+    private var lifecycleState = LifecycleState.NEW
+
+    private fun isRunning(): Boolean = lifecycleState == LifecycleState.RUNNING
 
     /** True while a session owns the accepted socket. Guards against duplicates. */
     private val sessionActive = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -86,43 +99,108 @@ class WppTcpServer(
         private set
 
     fun start() {
-        if (isRunning) return
-        isRunning = true
-        acceptJob = scope.launch(Dispatchers.IO) { acceptLoop() }
+        synchronized(lifecycleLock) {
+            if (lifecycleState != LifecycleState.NEW) return
+            lifecycleState = LifecycleState.RUNNING
+            acceptJob = scope.launch(Dispatchers.IO) { acceptLoop() }
+        }
     }
 
-    private suspend fun acceptLoop() {
-        try {
-            // Bind on all interfaces: in WPP the phone may reach us over the car's
-            // AP, the phone's own hotspot, or a shared network, and we do not know
-            // which local address it will use until it arrives.
-            serverSocket = ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port), BACKLOG)
-            }
-            boundPort = serverSocket?.localPort ?: 0
-            OalLog.i(TAG, "WPP TCP server listening on 0.0.0.0:$boundPort — " +
-                    "phone will connect here after the Bluetooth handshake")
-        } catch (e: Exception) {
-            OalLog.e(TAG, "Failed to bind WPP TCP port $port: ${e.message}")
-            isRunning = false
-            return
-        }
+    /** Positive readiness signal used to prevent SDP publication before bind. */
+    suspend fun awaitBound(): Boolean = bindOutcome.await()
 
-        while (isRunning && scope.isActive) {
-            val socket = try {
-                serverSocket?.accept()
-            } catch (e: Exception) {
-                if (isRunning) OalLog.w(TAG, "WPP accept() failed: ${e.message}")
-                null
-            } ?: run {
-                // Socket closed under us — nothing to recover to.
-                if (isRunning && serverSocket == null) return
+    private suspend fun acceptLoop() {
+        var uncommittedSocket: ServerSocket? = null
+        try {
+            val deadline = System.currentTimeMillis() + BIND_ADDRESS_WAIT_MS
+            var selectedAddress = WppInterfacePolicy.liveIpv4(bindInterfaceName)
+            if (selectedAddress == null) {
+                OalLog.i(TAG, "Waiting for selected WPP interface before binding TCP server")
+            }
+            while (isRunning() && scope.isActive && selectedAddress == null &&
+                System.currentTimeMillis() < deadline
+            ) {
+                delay(250)
+                selectedAddress = WppInterfacePolicy.liveIpv4(bindInterfaceName)
+            }
+            val bindAddress = selectedAddress
+            if (bindAddress == null) {
+                OalLog.e(TAG, "Selected WPP interface unavailable — TCP server not bound")
+                synchronized(lifecycleLock) {
+                    if (lifecycleState == LifecycleState.RUNNING) {
+                        lifecycleState = LifecycleState.STOPPED
+                    }
+                    bindOutcome.complete(false)
+                }
                 return
             }
 
+            val candidate = ServerSocket()
+            uncommittedSocket = candidate
+            candidate.reuseAddress = true
+            candidate.bind(InetSocketAddress(bindAddress, port), BACKLOG)
+            val committed = synchronized(lifecycleLock) {
+                if (lifecycleState != LifecycleState.RUNNING) {
+                    false
+                } else {
+                    serverSocket = candidate
+                    boundPort = candidate.localPort
+                    uncommittedSocket = null
+                    true
+                }
+            }
+            if (!committed) {
+                runCatching { candidate.close() }
+                bindOutcome.complete(false)
+                return
+            }
+
+            synchronized(lifecycleLock) {
+                if (lifecycleState != LifecycleState.RUNNING || serverSocket !== candidate) {
+                    bindOutcome.complete(false)
+                    return
+                }
+                OalLog.i(TAG, "WPP selected-interface inbound listener ready on " +
+                        "$bindAddress:$boundPort")
+                bindOutcome.complete(true)
+                runCatching { onBound() }
+                    .onFailure { OalLog.w(TAG, "WPP bind-ready callback failed: ${it.message}") }
+            }
+        } catch (e: Exception) {
+            runCatching { uncommittedSocket?.close() }
+            OalLog.e(TAG, "Failed to bind WPP TCP port $port: ${e.message}")
+            synchronized(lifecycleLock) {
+                if (lifecycleState == LifecycleState.RUNNING) {
+                    lifecycleState = LifecycleState.STOPPED
+                }
+                bindOutcome.complete(false)
+            }
+            return
+        }
+
+        while (isRunning() && scope.isActive) {
+            val listeningSocket = synchronized(lifecycleLock) {
+                serverSocket?.takeIf { lifecycleState == LifecycleState.RUNNING }
+            } ?: break
+            val socket = try {
+                listeningSocket.accept()
+            } catch (e: Exception) {
+                if (isRunning()) OalLog.w(TAG, "WPP accept() failed: ${e.message}")
+                null
+            } ?: break
+
+            val remoteHost = runCatching { socket.inetAddress?.hostAddress }.getOrNull()
             val remote = runCatching { socket.remoteSocketAddress?.toString() ?: "?" }
                 .getOrDefault("?")
+            val bindAddress = listeningSocket.inetAddress?.hostAddress
+            if (remoteHost == null || bindAddress == null ||
+                !WppInterfacePolicy.isPeerOnSelectedSubnet(bindAddress, remoteHost)
+            ) {
+                OalLog.w(TAG, "Rejecting WPP connection from $remote — outside selected " +
+                        "interface subnet (${bindAddress ?: "unavailable"})")
+                runCatching { socket.close() }
+                continue
+            }
             OalLog.i(TAG, "Phone connected over WPP from $remote")
             // Log the peer address explicitly: on a flat /23 an open port attracts
             // unrelated LAN traffic, and gearhead may reconnect the phone under a
@@ -153,6 +231,7 @@ class WppTcpServer(
 
             onSocketReady(socket)
         }
+        stop()
     }
 
     /**
@@ -187,14 +266,26 @@ class WppTcpServer(
     }
 
     fun stop() {
-        if (!isRunning && serverSocket == null) return
-        isRunning = false
-        runCatching { serverSocket?.close() }
-        serverSocket = null
-        acceptJob?.cancel()
-        acceptJob = null
-        boundPort = 0
-        sessionActive.set(false)
+        var socketToClose: ServerSocket? = null
+        var jobToCancel: Job? = null
+        val transitioned = synchronized(lifecycleLock) {
+            if (lifecycleState == LifecycleState.STOPPED) {
+                false
+            } else {
+                lifecycleState = LifecycleState.STOPPED
+                socketToClose = serverSocket
+                serverSocket = null
+                jobToCancel = acceptJob
+                acceptJob = null
+                boundPort = 0
+                sessionActive.set(false)
+                bindOutcome.complete(false)
+                true
+            }
+        }
+        if (!transitioned) return
+        runCatching { socketToClose?.close() }
+        jobToCancel?.cancel()
         OalLog.i(TAG, "WPP TCP server stopped")
     }
 }

@@ -119,9 +119,9 @@ The phone is the access point; the car is a client. Single-phone optimized — s
 
 ## Features
 
-- **Wireless (WPP)** — Bluetooth handshake plus Google's WiFi Projection Protocol, the path factory head units use. Required on Android Auto 17.4+
+- **Wireless (WPP)** — Bluetooth handshake plus Google's WiFi Projection Protocol, the path factory head units use. Required on Android Auto 17.4+. Advertisement, discovery, and transport are locked to one explicitly selected head-unit interface (default: GM `ap_br_swlan0`) with no cross-interface fallback
 - **Car Hotspot mode** — phones join the car's built-in WiFi like home WiFi. Multi-phone support, no hotspot toggling (Android Auto 17.3 and older)
-- **Phone Hotspot mode** — phone is the AP, car is the client. Simpler single-phone fallback for cars without a built-in hotspot
+- **Phone Hotspot mode** — phone is the AP, car is the client. Legacy single-phone fallback for Android Auto 17.3 and older; stock 17.4+ WPP cannot make a phone join its own hotspot
 - **USB cable support** — AOA v2 direct connection for wired setups
 - **aasdk v1.6 native protocol** — battle-tested C++ AA library via JNI, not a reimplementation
 - **EV battery data in Android Auto** — battery %, range, fuel type, charge port forwarded from VHAL into AA. Google Maps shows battery level alongside navigation

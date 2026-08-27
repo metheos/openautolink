@@ -20,7 +20,8 @@ class WppSessionAdmissionTest {
         val admission = WppSessionAdmission()
 
         assertFalse(admission.canAdvertise())
-        val wpp = admission.installSession("wpp")
+        val wpp = admission.installSession("wpp", "ap_br_swlan0")
+        assertTrue(wpp.wppInterfaceName == "ap_br_swlan0")
         assertTrue(admission.canAdvertise())
         assertTrue(admission.clearSession(wpp))
         assertFalse(admission.canAdvertise())
@@ -29,8 +30,8 @@ class WppSessionAdmissionTest {
     @Test
     fun `stale teardown cannot clear a replacement WPP owner`() {
         val admission = WppSessionAdmission()
-        val old = admission.installSession("wpp")
-        val replacement = admission.installSession("wpp")
+        val old = admission.installSession("wpp", "ap_br_swlan0")
+        val replacement = admission.installSession("wpp", "wlan1")
 
         assertFalse(admission.clearSession(old))
         assertTrue(admission.canAdvertise())
