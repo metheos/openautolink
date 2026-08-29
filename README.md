@@ -15,12 +15,13 @@
 
 OpenAutoLink runs the Android Auto protocol directly on the vehicle's Android Automotive OS (AAOS) head unit. It restores the phone-based Android Auto experience while integrating vehicle data, the instrument cluster, steering-wheel controls, microphone, calls, and ignition reconnects.
 
-**Proven in vehicles:**
+**Real-world GM EV use:**
 
 - **2024 Chevrolet Blazer EV** — maintainer-validated daily driver
-- **2025 Chevrolet Equinox EV** — successful independent owner report
+- **2025–2026 Chevrolet Equinox EV** — community-tested, including a successful independent owner report and earlier issue reports
 - **2027 Chevrolet Bolt** — successful independent owner demonstration
-- **2026 Chevrolet Equinox EV** — active testing; startup and USB problems remain unresolved in the reports received
+
+GM's recent AAOS EVs share much of the same infotainment platform. A problem reported on one model or model year is recorded as an app/phone/setup observation—not proof that the vehicle is incompatible. OpenAutoLink and Android Auto are both changing quickly, so older reports may no longer reproduce on current builds.
 
 [Latest release](https://github.com/mossyhub/openautolink/releases/latest) · [GM installation](docs/install-gm.md) · [Compatibility](docs/compatibility.md) · [Troubleshooting](docs/troubleshooting.md) · [XDA discussion](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/)
 
@@ -95,16 +96,15 @@ USB does not use the companion. GM's AAOS build asks for USB permission on every
 
 ## Compatibility
 
-Compatibility is evidence-based, not inferred from the AAOS logo or vehicle brand.
+Compatibility is evidence-based, but individual bug reports are not treated as model-specific verdicts. GM's recent AAOS EVs share substantial platform architecture, while app version, Android Auto version, phone behavior, setup, and exact vehicle software can all affect a result.
 
-| Vehicle | AAOS | Status | Evidence |
+| Vehicle | AAOS | Evidence | Report context |
 |---|---:|---|---|
-| 2024 Chevrolet Blazer EV | 12L | **Maintainer validated** | Daily-driver and repeated ignition testing |
-| 2025 Chevrolet Equinox EV | 14 | **Owner reported working** | [Independent XDA report](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90708465) |
-| 2026 Chevrolet Equinox EV | 14 | **Testing / unresolved** | [Startup](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90620330) and [USB](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90686188) failures reported; do not call supported yet |
-| 2027 Chevrolet Bolt | — | **Owner demonstrated working** | [Independent video](https://www.youtube.com/watch?v=xEYOxJroplQ) and [owner discussion](https://www.reddit.com/r/BoltEV/comments/1vom8ee/bought_the_2027_bolt_despite_misgivings_over_lack/) |
-| Other GM AAOS vehicles | Varies | **Unknown** | Similar hardware is not proof |
-| Non-GM AAOS vehicles | Varies | **Experimental** | Installation, networking, permissions, and display zoning vary |
+| 2024 Chevrolet Blazer EV | 12L | **Maintainer validated** | Daily use across many changing development builds; imperfect sessions have also driven ongoing fixes |
+| 2025–2026 Chevrolet Equinox EV | 14 reported | **Community tested** | A [successful owner report](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90708465), plus earlier [startup](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90620330) and [USB](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90686188) issue reports; those issues are not established as Equinox-specific and may be dated |
+| 2027 Chevrolet Bolt | — | **Owner demonstrated working** | [Independent video](https://www.youtube.com/watch?v=xEYOxJroplQ) and [first-hand owner report](https://www.chevybolt.org/threads/openautolink-the-cheapest-way-to-get-andriod-auto-on-the-27-bolt.63027/), including occasional reconnect/slowness on the tested build |
+| Other GM AAOS EVs | Varies | **Testing encouraged** | Shared GM platform makes broad compatibility plausible, but each successful report adds useful evidence |
+| Non-GM AAOS vehicles | Varies | **Experimental** | Installation, networking, permissions, and display zoning can differ substantially |
 
 Read the [full compatibility and evidence notes](docs/compatibility.md) before assuming a vehicle will work.
 
@@ -174,7 +174,7 @@ The walkthrough demonstrates the interface and projection features. Its original
 - **Apple CarPlay is not supported.** A dormant research branch exists, but it has never produced a complete CarPlay session or rendered frame.
 - Android Auto 17.4+ requires **Wireless (WPP)**, a fresh Bluetooth pairing after migration, and correct access-point details.
 - The companion is required for wireless projection on the validated GM topology.
-- 2026 Equinox EV USB operation is not confirmed and has produced freezes in testing.
+- Startup, reconnect, speed, audio, and USB issues have appeared during development on multiple setups. Treat old reports as build-specific until reproduced on a current release—not as proof against a particular GM model.
 - GM asks for USB permission after every connection; the platform does not preserve the grant.
 - The car app cannot be sideloaded onto locked GM production head units.
 - Non-GM AAOS compatibility is unknown until tested on the exact platform.

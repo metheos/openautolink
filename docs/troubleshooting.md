@@ -69,9 +69,9 @@ GM AAOS re-requests USB permission after every connection even when **Always all
 
 Two dialogs may appear during AOA re-enumeration: one from the OS and one from OpenAutoLink. Current releases suppress duplicate app requests, but the system dialog remains.
 
-## USB freezes on an Equinox EV
+## USB freezes or stalls
 
-USB is confirmed on the maintainer's 2024 Blazer EV but is not established across every GM radio. 2026 Equinox EV testers have reported freezes.
+USB is confirmed on the maintainer's 2024 Blazer EV. Some users, including 2026 Equinox EV testers, reported freezes on earlier development builds. Those reports are useful debugging evidence but do not establish an Equinox-specific defect; app version, phone, cable, port, permissions, timing, and vehicle software may all contribute.
 
 Capture:
 
@@ -82,7 +82,7 @@ Capture:
 - the last car log line before the freeze;
 - whether the same phone works over WPP.
 
-Do not call USB supported on that platform until a sustained rendered session is observed.
+For the reported setup, call USB confirmed only after a current build produces a sustained rendered session. Do not generalize either a failure or success to the entire model without comparative evidence.
 
 ## Audio is doubled, silent, stale, or controlled by the wrong app
 

@@ -1,6 +1,8 @@
 # Compatibility and evidence
 
-OpenAutoLink compatibility depends on the exact head unit, AAOS build, permissions, networking, audio policy, physical display zoning, and Google Play installation path. Sharing a vehicle brand or AAOS version is not enough to call a vehicle supported.
+OpenAutoLink compatibility depends on the head unit, AAOS build, app version, Android Auto version, phone, setup, permissions, networking, audio policy, physical display zoning, and installation path. GM's recent AAOS EVs share substantial infotainment architecture, so an isolated problem on one model is not presumed to be vehicle-specific without comparative evidence.
+
+This project changes quickly. Community reports below are dated observations of the software and setup tested at that time. They are preserved because they are useful evidence, but an old failure does not establish that the same car fails with the current release—and a successful stream does not prove every feature.
 
 ## Evidence levels
 
@@ -9,9 +11,9 @@ OpenAutoLink compatibility depends on the exact head unit, AAOS build, permissio
 | **Maintainer validated** | Repeated real-vehicle use with direct logs and visual confirmation |
 | **Owner demonstrated working** | Independent owner supplied a visible successful result |
 | **Owner reported working** | Independent owner described a successful install/session, but maintainer reproduction is unavailable |
-| **Testing / unresolved** | Installation or connection attempted; material failures remain |
+| **Issue reported** | A user recorded a failure on the tested app/phone/setup; this is not a vehicle incompatibility verdict |
 | **Experimental** | Architecture appears possible, but there is no successful real-vehicle evidence |
-| **Unknown** | No credible test evidence |
+| **Not yet reported** | No credible real-vehicle result has been received yet |
 
 A build, Play installation, `CONNECTED` status, or process log is not proof of successful projection. A positive result requires a rendered frame and continued video/input behavior; feature-specific support requires observing that feature.
 
@@ -19,11 +21,11 @@ A build, Play installation, `CONNECTED` status, or process log is not proof of s
 
 | Vehicle | Platform information | Status | Evidence and limits |
 |---|---|---|---|
-| **2024 Chevrolet Blazer EV** | GM AAOS 12L; maintainer vehicle | **Maintainer validated** | Wireless WPP, sustained video, touch, audio, calls, EV data, cluster integration, ignition reconnect, USB, and H.265 startup have been exercised on real hardware. |
-| **2025 Chevrolet Equinox EV** | GM AAOS 14 reported by testers | **Owner reported working** | [Owner reported installation and a working session](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90708465). An initial audio stop cleared after reconnecting; broader feature parity is not established. |
-| **2026 Chevrolet Equinox EV** | GM AAOS 14 reported by testers | **Testing / unresolved** | Testers reported a [startup/logo stall](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90620330) and [USB freezes](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90686188). Do not present this model year as supported until a sustained rendered session is demonstrated. |
+| **2024 Chevrolet Blazer EV** | GM AAOS 12L; maintainer vehicle | **Maintainer validated** | Wireless WPP, sustained video, touch, audio, calls, EV data, cluster integration, ignition reconnect, USB, and H.265 startup have been exercised on real hardware. The maintainer has also encountered many defects while continuously changing and testing the software; those failures are not evidence that the Blazer itself is incompatible. |
+| **2025 Chevrolet Equinox EV** | GM AAOS 14 reported by testers | **Owner reported working** | An owner [reported installation and a working session](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90708465). An initial audio stop cleared after reconnecting. This is positive evidence for the shared GM platform, not a claim that every feature was audited. |
+| **2026 Chevrolet Equinox EV** | GM AAOS 14 reported by testers | **Community testing** | Users earlier reported a [startup/logo stall](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90620330) and [USB freezes](https://xdaforums.com/t/open-source-openautolink-wireless-android-auto-bridge-for-aaos-gm-evs.4785192/post-90686188). These are retained as software/setup issue reports; there is not enough comparative evidence to attribute them to the 2026 Equinox, and newer OpenAutoLink releases may behave differently. |
 | **2027 Chevrolet Bolt** | GM AAOS; exact build not captured in the public report | **Owner demonstrated working** | The owner posted [a running OpenAutoLink video](https://www.youtube.com/watch?v=xEYOxJroplQ) and a [first-hand Bolt report](https://www.chevybolt.org/threads/openautolink-the-cheapest-way-to-get-andriod-auto-on-the-27-bolt.63027/). They report a Samsung S24 Ultra with Android Auto 17.3 works well, with occasional manual reconnects and some slowness; broader feature coverage has not been audited. |
-| **Other GM AAOS vehicles** | AAOS version, SoC, radio, and permissions vary | **Unknown** | Similar infotainment appearance does not prove equivalent networking, USB, VHAL, audio, or display behavior. |
+| **Other GM AAOS EVs** | AAOS version, SoC, radio, and permissions can vary | **Testing encouraged** | Shared GM architecture makes broad compatibility plausible. Exact behavior still needs owner reports, but lack of a report is not evidence of incompatibility. |
 | **Non-GM AAOS vehicles** | Vendor-specific | **Experimental** | The app may install, but Play policy, sideloading, Bluetooth, Wi-Fi topology, VHAL permissions, cluster APIs, and display zones differ. |
 
 ## Polestar and other AAOS testers wanted
@@ -78,10 +80,13 @@ Do not post Wi-Fi passwords, invitation tokens, Play credentials, or signing mat
 
 ## Current support language
 
-Use these exact distinctions in public discussion:
+Use these distinctions in public discussion:
 
 - **Validated:** 2024 Blazer EV.
 - **Demonstrated working:** 2027 Bolt.
 - **Owner reported working:** 2025 Equinox EV.
-- **Testing, not yet supported:** 2026 Equinox EV.
-- **Experimental/unknown:** every untested vehicle.
+- **Community testing with earlier issue reports:** 2026 Equinox EV. The reports are not proven model-specific and may be stale after later fixes.
+- **Testing encouraged:** other GM AAOS EVs; the shared platform is promising, but evidence is still being collected.
+- **Experimental:** non-GM AAOS vehicles until tested on their different platform integrations.
+
+Do not turn one user's failure into a model blacklist. Record the app version, Android Auto version, phone, transport, setup, and date; then ask whether the same failure reproduces on a current build or another GM vehicle.
