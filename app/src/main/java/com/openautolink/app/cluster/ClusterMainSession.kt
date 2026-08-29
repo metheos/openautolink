@@ -7,8 +7,6 @@ import com.openautolink.app.diagnostics.DiagnosticLog
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.Session
-import androidx.car.app.model.Action
-import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarText
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
@@ -39,7 +37,9 @@ import java.time.ZonedDateTime
  *
  * GM has an internal cluster manager (OnStarTurnByTurnManager) that consumes
  * NavigationManager data and renders turn-by-turn on the instrument cluster.
- * The [RelayScreen] is never visible — GM's system ignores it.
+ * [RelayScreen] exists only to satisfy the main-display host contract while the
+ * bootstrap activity is transparent. The activity task is retired as soon as
+ * this primary session owns a [NavigationManager].
  *
  * Primary/secondary multiplexing handles Templates Host creating multiple sessions:
  * - AAOS emulator: creates DISPLAY_TYPE_MAIN + DISPLAY_TYPE_CLUSTER (two sessions)
@@ -69,13 +69,16 @@ class ClusterMainSession : Session() {
          */
         fun endActiveNavigation() {
             val session = primarySessions.currentOwner() ?: return
-            try {
-                session.navigationManager?.navigationEnded()
-                session.isNavigating = false
-                Log.i(TAG, "navigationEnded() forced on user exit")
-                DiagnosticLog.i("cluster", "navigationEnded() forced on user exit")
-            } catch (e: Exception) {
-                Log.w(TAG, "endActiveNavigation() failed: ${e.message}")
+            if (session.navigationLifecycle.onRouteTerminated() ==
+                ClusterNavigationLifecyclePolicy.Action.END
+            ) {
+                try {
+                    session.navigationManager?.navigationEnded()
+                    Log.i(TAG, "navigationEnded() forced on user exit")
+                    DiagnosticLog.i("cluster", "navigationEnded() forced on user exit")
+                } catch (e: Exception) {
+                    Log.w(TAG, "endActiveNavigation() failed: ${e.message}")
+                }
             }
         }
 
@@ -88,8 +91,7 @@ class ClusterMainSession : Session() {
 
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
-    private var isNavigating = false
-    private var hasSeenActiveNav = false
+    private val navigationLifecycle = ClusterNavigationLifecyclePolicy()
     private var arrivalTimeoutJob: Job? = null
     private var bindingLease: ClusterBindingRegistry.SessionLease? = null
     private var tripOutcomeLogged = false
@@ -164,32 +166,19 @@ class ClusterMainSession : Session() {
             override fun onStopNavigation() {
                 if (!isCurrentPrimary()) return
                 Log.i(TAG, "onStopNavigation callback from Templates Host")
-                // Do NOT set isNavigating = false — GM's Templates Host may call this
-                // spuriously. We only end navigation on explicit nav_state_clear or
-                // arrival timeout. Re-calling navigationStarted() to re-assert nav.
-                try {
-                    navigationManager?.navigationStarted()
-                    Log.i(TAG, "Re-asserted navigationStarted() after onStopNavigation")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to re-assert navigationStarted(): ${e.message}")
-                    isNavigating = false
-                }
+                arrivalTimeoutJob?.cancel()
+                arrivalTimeoutJob = null
+                navigationLifecycle.onHostStop()
+                DiagnosticLog.i(
+                    "cluster",
+                    "Host stopped navigation; suppressing current route until clear",
+                )
             }
 
             override fun onAutoDriveEnabled() {
                 Log.d(TAG, "Auto drive enabled")
             }
         })
-
-        // Call navigationStarted() IMMEDIATELY — this is the trigger that causes
-        // Templates Host to create ClusterTurnCardActivity on the cluster display.
-        try {
-            navigationManager?.navigationStarted()
-            isNavigating = true
-            Log.i(TAG, "navigationStarted() called")
-        } catch (e: Exception) {
-            Log.w(TAG, "navigationStarted() failed: ${e.message}")
-        }
 
         val sessionScope = CoroutineScope(Dispatchers.Main)
         scope = sessionScope
@@ -198,18 +187,34 @@ class ClusterMainSession : Session() {
             collectNavigationState()
         }
 
+        if (navigationManager != null) {
+            if (ClusterBindingState.markReady(lease)) {
+                DiagnosticLog.i(
+                    "cluster",
+                    "Cluster session ready generation=${lease.generation}; collector and NavigationManager callback installed",
+                )
+                ClusterBootstrapWindowProtector.moveTaskToBack(lease.generation)
+            } else {
+                DiagnosticLog.w(
+                    "cluster",
+                    "Cluster session ready rejected for retired generation=${lease.generation}",
+                )
+            }
+        }
+
         return RelayScreen(carContext)
     }
 
     private fun retirePrimary(reason: String, endNavigation: Boolean) {
-        if (endNavigation && isNavigating) {
+        if (endNavigation && navigationLifecycle.onRouteTerminated() ==
+            ClusterNavigationLifecyclePolicy.Action.END
+        ) {
             try {
                 navigationManager?.navigationEnded()
             } catch (e: Exception) {
                 Log.e(TAG, "navigationEnded() failed during $reason: ${e.message}")
             }
         }
-        isNavigating = false
         arrivalTimeoutJob?.cancel()
         arrivalTimeoutJob = null
         scope?.cancel()
@@ -244,17 +249,28 @@ class ClusterMainSession : Session() {
         val navManager = navigationManager ?: return
 
         if (maneuver != null) {
-            hasSeenActiveNav = true
-
-            if (!isNavigating) {
-                try {
-                    navManager.navigationStarted()
-                    isNavigating = true
-                    Log.i(TAG, "navigationStarted() (re-start)")
-                } catch (e: Exception) {
-                    Log.e(TAG, "navigationStarted() failed: ${e.message}")
-                    return
+            when (navigationLifecycle.onRouteAvailable()) {
+                ClusterNavigationLifecyclePolicy.Action.NONE -> return
+                ClusterNavigationLifecyclePolicy.Action.START_AND_UPDATE -> {
+                    try {
+                        navManager.navigationStarted()
+                        Log.i(TAG, "navigationStarted() — first maneuver in route epoch")
+                        DiagnosticLog.i(
+                            "cluster",
+                            "Navigation ownership outcome=started generation=${bindingLease?.generation}",
+                        )
+                    } catch (e: Exception) {
+                        navigationLifecycle.onNavigationStartFailed()
+                        Log.e(TAG, "navigationStarted() failed: ${e.message}")
+                        DiagnosticLog.e(
+                            "cluster",
+                            "Navigation ownership outcome=start-failed generation=${bindingLease?.generation} error=${e.message}",
+                        )
+                        return
+                    }
                 }
+                ClusterNavigationLifecyclePolicy.Action.UPDATE -> Unit
+                ClusterNavigationLifecyclePolicy.Action.END -> return
             }
 
             try {
@@ -283,10 +299,11 @@ class ClusterMainSession : Session() {
                 if (arrivalTimeoutJob?.isActive != true) {
                     arrivalTimeoutJob = scope?.launch {
                         delay(ARRIVAL_TIMEOUT_MS)
-                        if (isNavigating) {
+                        if (navigationLifecycle.onRouteTerminated() ==
+                            ClusterNavigationLifecyclePolicy.Action.END
+                        ) {
                             Log.i(TAG, "Arrival timeout — ending navigation")
                             try { navManager.navigationEnded() } catch (_: Exception) {}
-                            isNavigating = false
                         }
                     }
                 }
@@ -294,16 +311,19 @@ class ClusterMainSession : Session() {
                 arrivalTimeoutJob?.cancel()
                 arrivalTimeoutJob = null
             }
-        } else if (isNavigating && hasSeenActiveNav) {
+        } else {
             arrivalTimeoutJob?.cancel()
             arrivalTimeoutJob = null
-            Log.i(TAG, "navigationEnded() — nav cleared")
-            try {
-                navManager.navigationEnded()
-            } catch (e: Exception) {
-                Log.e(TAG, "navigationEnded() failed: ${e.message}")
+            if (navigationLifecycle.onRouteCleared() ==
+                ClusterNavigationLifecyclePolicy.Action.END
+            ) {
+                Log.i(TAG, "navigationEnded() — nav cleared")
+                try {
+                    navManager.navigationEnded()
+                } catch (e: Exception) {
+                    Log.e(TAG, "navigationEnded() failed: ${e.message}")
+                }
             }
-            isNavigating = false
         }
     }
 
@@ -377,12 +397,7 @@ class ClusterMainSession : Session() {
         override fun onGetTemplate(): Template =
             NavigationTemplate.Builder()
                 .setNavigationInfo(
-                    MessageInfo.Builder("OpenAutoLink — Cluster Navigation")
-                        .setText("Cluster navigation service active.")
-                        .build()
-                )
-                .setActionStrip(
-                    ActionStrip.Builder().addAction(Action.APP_ICON).build()
+                    MessageInfo.Builder("\u200B").build()
                 )
                 .build()
     }
