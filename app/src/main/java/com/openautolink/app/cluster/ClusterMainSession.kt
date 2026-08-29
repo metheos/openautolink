@@ -38,9 +38,8 @@ import java.time.ZonedDateTime
  * GM has an internal cluster manager (OnStarTurnByTurnManager) that consumes
  * NavigationManager data and renders turn-by-turn on the instrument cluster.
  * [RelayScreen] exists only to satisfy the main-display host contract while the
- * bootstrap activity is transparent. Once the primary session owns a
- * [NavigationManager], the activity stays alive as the renderer owner but its
- * task is moved behind the existing foreground task.
+ * bootstrap activity is transparent. The activity task is retired as soon as
+ * this primary session owns a [NavigationManager].
  *
  * Primary/secondary multiplexing handles Templates Host creating multiple sessions:
  * - AAOS emulator: creates DISPLAY_TYPE_MAIN + DISPLAY_TYPE_CLUSTER (two sessions)
