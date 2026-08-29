@@ -25,6 +25,7 @@ import com.openautolink.app.input.IgnitionMonitor
 import com.openautolink.app.input.ImuForwarder
 import com.openautolink.app.input.VehicleDataForwarder
 import com.openautolink.app.input.VehicleDataForwarderImpl
+import com.openautolink.app.media.GmMediaControlPolicy
 import com.openautolink.app.media.OalMediaBrowserService
 import com.openautolink.app.media.OalMediaSessionManager
 import com.openautolink.app.navigation.ManeuverState
@@ -56,6 +57,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -82,6 +84,10 @@ class SessionManager(
          * goodbye is never worth delaying shutdown for.
          */
         private const val BYEBYE_TIMEOUT_MS = 400
+        private const val MASTER_MUTE_CHANGED_ACTION = "android.media.MASTER_MUTE_CHANGED_ACTION"
+        private const val STREAM_MUTE_CHANGED_ACTION = "android.media.STREAM_MUTE_CHANGED_ACTION"
+        private const val EXTRA_MASTER_VOLUME_MUTED = "android.media.EXTRA_MASTER_VOLUME_MUTED"
+        private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
 
         // aasdk SensorType ordinals (app/src/main/proto/oal/sensors.proto).
         // Used to answer the phone's SensorStartRequest with current state.
@@ -883,6 +889,13 @@ class SessionManager(
 
     /** SCREEN_OFF/_ON receiver registration tracker. */
     private var screenReceiver: android.content.BroadcastReceiver? = null
+    /** Process-scope state for the temporary GM media-control field trial. */
+    @Volatile private var experimentalGmMediaControlsEnabled = false
+    @Volatile private var experimentalGmMediaControlsObserverStarted = false
+    private val experimentalMediaControlLock = Any()
+    private var muteStateReceiver: android.content.BroadcastReceiver? = null
+    @Volatile private var lastKnownMasterMuted = false
+    @Volatile private var lastDeliveredHuMuted: Boolean? = null
 
     private fun currentUiNightMode(): Boolean? {
         val nightMask = context?.resources?.configuration?.uiMode?.and(Configuration.UI_MODE_NIGHT_MASK)
@@ -1247,6 +1260,7 @@ class SessionManager(
                 media.updatePlaybackState(p.playing, p.positionMs)
             }
         }
+        observeExperimentalGmMediaControls()
 
         // Cluster service is gated by user preference (default ON). When disabled,
         // the CarAppService component is disabled so Templates Host won't bind it.
@@ -1638,7 +1652,23 @@ class SessionManager(
                 "autoNeg=$videoAutoNegotiate selected=${resW}x${resH}",
         )
 
+        val storedExperimentalControls = AppPreferences.getInstance(ctx)
+            .experimentalGmMediaControls.first()
+        if (storedExperimentalControls != experimentalGmMediaControlsEnabled) {
+            applyExperimentalGmMediaControls(storedExperimentalControls)
+        }
+
         val session = AasdkSession(scope, ctx)
+        session.desiredExperimentalMediaControlsEnabled = experimentalGmMediaControlsEnabled
+        if (experimentalGmMediaControlsEnabled) {
+            val streamMuted = runCatching {
+                audioManager?.isStreamMute(AudioManager.STREAM_MUSIC) ?: false
+            }.getOrDefault(false)
+            session.desiredHeadUnitMuted = GmMediaControlPolicy.effectiveMuted(
+                masterMuted = lastKnownMasterMuted,
+                streamMuted = streamMuted,
+            )
+        }
         session.transportMode = directTransport
         session.wppInterfaceName = wppInterfaceName
         // Effective AA content_insets:
@@ -1736,33 +1766,40 @@ class SessionManager(
             session.connectionState.collect { connState ->
                 val reportedState = connState.toSessionState()
                 val attempt = _reconnectAttempt.value
-                synchronized(sessionStateLock) {
-                    if (aasdkSession !== session) return@synchronized
-                    val currentState = _sessionState.value
-                    val startStreamingServices = shouldStartStreamingServices(
-                        currentState,
-                        reportedState,
-                    )
-                    reconcileTransportSessionState(currentState, reportedState).also {
-                        _sessionState.value = it
-                        _statusMessage.value = when (it) {
-                            SessionState.IDLE ->
-                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                                else when (directTransport) {
-                                    "usb" -> "USB: ${UsbConnectionManager.status.value}"
-                                    else -> "Searching for phone…"
-                                }
-                            SessionState.CONNECTING ->
-                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                                else "Phone connecting..."
-                            SessionState.CONNECTED -> "Handshake..."
-                            SessionState.STREAMING -> "Streaming"
-                            SessionState.ERROR ->
-                                if (attempt > 0) "Reconnecting (attempt $attempt)…"
-                                else "Error"
+                val isCurrent = synchronized(sessionStateLock) {
+                    if (aasdkSession !== session) {
+                        false
+                    } else {
+                        val currentState = _sessionState.value
+                        val startStreamingServices = shouldStartStreamingServices(
+                            currentState,
+                            reportedState,
+                        )
+                        reconcileTransportSessionState(currentState, reportedState).also {
+                            _sessionState.value = it
+                            _statusMessage.value = when (it) {
+                                SessionState.IDLE ->
+                                    if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                    else when (directTransport) {
+                                        "usb" -> "USB: ${UsbConnectionManager.status.value}"
+                                        else -> "Searching for phone…"
+                                    }
+                                SessionState.CONNECTING ->
+                                    if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                    else "Phone connecting..."
+                                SessionState.CONNECTED -> "Handshake..."
+                                SessionState.STREAMING -> "Streaming"
+                                SessionState.ERROR ->
+                                    if (attempt > 0) "Reconnecting (attempt $attempt)…"
+                                    else "Error"
+                            }
                         }
+                        if (startStreamingServices) startStreamingServicesLocked(session)
+                        true
                     }
-                    if (startStreamingServices) startStreamingServicesLocked(session)
+                }
+                if (isCurrent && reportedState == SessionState.STREAMING) {
+                    syncExperimentalHuMuteState("session-streaming")
                 }
             }
         }
@@ -1830,6 +1867,10 @@ class SessionManager(
             OalLog.i(TAG, "Rejecting native start while this session is retiring")
             return false
         }
+
+        // A replacement native generation must receive a fresh effective mute
+        // state after its control and input channels reach STREAMING.
+        lastDeliveredHuMuted = null
 
         ensureVideoDecoder()
         ensureAudioPlayer()
@@ -2608,6 +2649,208 @@ class SessionManager(
             try { ctx.unregisterReceiver(it) } catch (_: Exception) {}
         }
         screenReceiver = null
+    }
+
+    private fun observeExperimentalGmMediaControls() {
+        if (experimentalGmMediaControlsObserverStarted) return
+        val ctx = context ?: return
+        experimentalGmMediaControlsObserverStarted = true
+        val preferences = AppPreferences.getInstance(ctx)
+        scope.launch {
+            preferences.experimentalGmMediaControls.distinctUntilChanged().collect { enabled ->
+                applyExperimentalGmMediaControls(enabled)
+            }
+        }
+    }
+
+    private fun applyExperimentalGmMediaControls(enabled: Boolean) {
+        synchronized(experimentalMediaControlLock) {
+            val wasEnabled = experimentalGmMediaControlsEnabled
+            if (!enabled) {
+                val currentSession = synchronized(sessionStateLock) { aasdkSession }
+                val shouldRestoreGain = lastDeliveredHuMuted == true ||
+                    currentSession?.desiredHeadUnitMuted == true
+                experimentalGmMediaControlsEnabled = false
+                currentSession?.setExperimentalMediaControlsEnabled(false)
+                if (wasEnabled && shouldRestoreGain) {
+                    // Clear both the live native state and the wrapper's retained
+                    // state, including a mute that was primed before channels opened.
+                    val restored = currentSession?.setHeadUnitMuted(false) ?: false
+                    OalLog.i(
+                        TAG,
+                        "AA audio focus sync outcome=${if (restored) "queued" else "rejected"}: " +
+                            "state=GAIN source=toggle-disabled",
+                    )
+                }
+                _mediaSessionManager?.setExperimentalControlsEnabled(false)
+                _mediaSessionManager?.mediaControlCallback = null
+                unregisterMuteStateReceiver()
+                lastDeliveredHuMuted = null
+                OalLog.i(TAG, "Experimental GM media controls disabled; legacy key-remap path unchanged")
+                return
+            }
+
+            experimentalGmMediaControlsEnabled = true
+            _mediaSessionManager?.mediaControlCallback = object : OalMediaSessionManager.MediaControlCallback {
+                override fun onCommand(command: GmMediaControlPolicy.Command) {
+                    routeMediaSessionCommand(command)
+                }
+            }
+            synchronized(sessionStateLock) { aasdkSession }
+                ?.setExperimentalMediaControlsEnabled(true)
+            _mediaSessionManager?.setExperimentalControlsEnabled(true)
+            registerMuteStateReceiver()
+            primeExperimentalUnmutedState()
+            syncExperimentalHuMuteState(if (wasEnabled) "settings-refresh" else "toggle-enabled")
+            OalLog.i(TAG, "Experimental GM media controls enabled; legacy key-remap path unchanged")
+        }
+    }
+
+    private fun routeMediaSessionCommand(command: GmMediaControlPolicy.Command) {
+        val keyCode = GmMediaControlPolicy.keyCodeFor(
+            command,
+            enabled = experimentalGmMediaControlsEnabled,
+        )
+        if (keyCode == null) {
+            OalLog.i(TAG, "MediaSession command outcome=rejected: command=$command reason=disabled")
+            return
+        }
+
+        val lifecycle = lifecycleGeneration
+        val target = synchronized(sessionStateLock) {
+            aasdkSession?.let { it to it.currentNativeSessionGeneration() }
+        }
+        if (target == null || target.second == 0L) {
+            OalLog.i(
+                TAG,
+                "MediaSession command outcome=rejected: command=$command keycode=$keyCode " +
+                    "lifecycle=$lifecycle reason=no-native-session",
+            )
+            return
+        }
+        val (targetSession, nativeGeneration) = target
+        OalLog.i(
+            TAG,
+            "MediaSession command attempted: command=$command keycode=$keyCode " +
+                "lifecycle=$lifecycle nativeGeneration=$nativeGeneration",
+        )
+        scope.launch {
+            val stillCurrent = synchronized(sessionStateLock) {
+                experimentalGmMediaControlsEnabled &&
+                    aasdkSession === targetSession && lifecycle == lifecycleGeneration
+            }
+            val queued = stillCurrent &&
+                targetSession.sendKeyPress(keyCode, nativeGeneration)
+            OalLog.i(
+                TAG,
+                "MediaSession command outcome=${if (queued) "queued" else "rejected"}: " +
+                    "command=$command keycode=$keyCode lifecycle=$lifecycle " +
+                    "nativeGeneration=$nativeGeneration",
+            )
+        }
+    }
+
+    private fun registerMuteStateReceiver() {
+        if (muteStateReceiver != null) return
+        val ctx = context ?: return
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                when (intent?.action) {
+                    MASTER_MUTE_CHANGED_ACTION -> {
+                        lastKnownMasterMuted = intent.getBooleanExtra(
+                            EXTRA_MASTER_VOLUME_MUTED,
+                            lastKnownMasterMuted,
+                        )
+                        scope.launch { syncExperimentalHuMuteState("master-broadcast") }
+                    }
+                    STREAM_MUTE_CHANGED_ACTION -> {
+                        if (intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1) == AudioManager.STREAM_MUSIC) {
+                            scope.launch { syncExperimentalHuMuteState("stream-broadcast") }
+                        }
+                    }
+                }
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(MASTER_MUTE_CHANGED_ACTION)
+            addAction(STREAM_MUTE_CHANGED_ACTION)
+        }
+        try {
+            val stickyMaster = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                ctx.registerReceiver(receiver, filter)
+            }
+            if (stickyMaster?.action == MASTER_MUTE_CHANGED_ACTION &&
+                stickyMaster.hasExtra(EXTRA_MASTER_VOLUME_MUTED)
+            ) {
+                lastKnownMasterMuted = stickyMaster.getBooleanExtra(EXTRA_MASTER_VOLUME_MUTED, false)
+            }
+            muteStateReceiver = receiver
+            OalLog.i(TAG, "GM master/stream mute receiver registered")
+        } catch (e: Exception) {
+            OalLog.w(TAG, "GM master/stream mute receiver registration failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterMuteStateReceiver() {
+        val receiver = muteStateReceiver
+        muteStateReceiver = null
+        if (receiver != null) {
+            try {
+                context?.unregisterReceiver(receiver)
+            } catch (e: Exception) {
+                OalLog.w(TAG, "GM master/stream mute receiver unregister failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun primeExperimentalUnmutedState() {
+        val manager = audioManager ?: return
+        val streamMuted = runCatching { manager.isStreamMute(AudioManager.STREAM_MUSIC) }
+            .getOrDefault(false)
+        if (GmMediaControlPolicy.effectiveMuted(lastKnownMasterMuted, streamMuted)) return
+        val primed = synchronized(sessionStateLock) { aasdkSession }
+            ?.primeHeadUnitMuted(false) ?: false
+        OalLog.i(
+            TAG,
+            "AA audio focus sync outcome=${if (primed) "primed" else "deferred"}: " +
+                "state=GAIN source=experimental-initial-unmuted",
+        )
+    }
+
+    private fun syncExperimentalHuMuteState(reason: String) {
+        synchronized(experimentalMediaControlLock) {
+            val manager = audioManager ?: return
+            val masterMuted = lastKnownMasterMuted
+            val streamMuted = runCatching { manager.isStreamMute(AudioManager.STREAM_MUSIC) }
+                .getOrElse {
+                    OalLog.w(TAG, "Failed to read HU media-stream mute ($reason): ${it.message}")
+                    return
+                }
+            val targetMuted = GmMediaControlPolicy.nextMuteState(
+                enabled = experimentalGmMediaControlsEnabled,
+                masterMuted = masterMuted,
+                streamMuted = streamMuted,
+                lastDeliveredMuted = lastDeliveredHuMuted,
+            ) ?: return
+
+            OalLog.i(
+                TAG,
+                "HU mute state changed: master=$masterMuted stream=$streamMuted " +
+                    "effective=$targetMuted source=$reason",
+            )
+            val queued = synchronized(sessionStateLock) {
+                aasdkSession?.setHeadUnitMuted(targetMuted) ?: false
+            }
+            if (queued) lastDeliveredHuMuted = targetMuted
+            OalLog.i(
+                TAG,
+                "AA audio focus sync outcome=${if (queued) "queued" else "rejected"}: " +
+                    "state=${if (targetMuted) "LOSS" else "GAIN"} source=$reason",
+            )
+        }
     }
 
     // ------------------------------------------------------------------

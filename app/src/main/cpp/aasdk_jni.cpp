@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <mutex>
+#include <atomic>
 
 #include "jni_session.h"
 #include "jni_log_bridge.h"
@@ -22,6 +23,7 @@
 static JavaVM* gJvm = nullptr;
 static std::mutex gSessionMutex;  // protects create/start/stop (rare)
 static std::shared_ptr<openautolink::jni::JniSession> gSession;
+static std::atomic<jlong> gSessionGeneration{0};
 
 // Lock-free snapshot for hot-path calls (touch, sensor, mic, keyframe).
 // Writers (create/stop) update under gSessionMutex then store atomically.
@@ -60,7 +62,7 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeInstallCrashHandler(
  * Class:     com_openautolink_app_transport_aasdk_AasdkNative
  * Method:    nativeCreateSession
  */
-JNIEXPORT void JNICALL
+JNIEXPORT jlong JNICALL
 Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeCreateSession(
     JNIEnv* /*env*/, jclass /*clazz*/)
 {
@@ -72,7 +74,9 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeCreateSession(
     }
     auto session = std::make_shared<openautolink::jni::JniSession>(gJvm);
     std::atomic_store(&gSession, session);
-    LOGI("Native session created");
+    const jlong generation = gSessionGeneration.fetch_add(1) + 1;
+    LOGI("Native session created generation=%lld", static_cast<long long>(generation));
+    return generation;
 }
 
 /*
@@ -195,6 +199,31 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSendKeyEvent(
 
 /*
  * Class:     com_openautolink_app_transport_aasdk_AasdkNative
+ * Method:    nativeSendKeyPress
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSendKeyPress(
+    JNIEnv* /*env*/, jclass /*clazz*/, jint keyCode, jlong expectedGeneration)
+{
+    std::lock_guard<std::mutex> lock(gSessionMutex);
+    auto session = std::atomic_load(&gSession);
+    if (!session || gSessionGeneration.load() != expectedGeneration) return JNI_FALSE;
+    return session->sendKeyPress(keyCode) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSetExperimentalMediaControlsEnabled(
+    JNIEnv* /*env*/, jclass /*clazz*/, jboolean enabled, jlong expectedGeneration)
+{
+    std::lock_guard<std::mutex> lock(gSessionMutex);
+    auto session = std::atomic_load(&gSession);
+    if (!session || gSessionGeneration.load() != expectedGeneration) return JNI_FALSE;
+    return session->setExperimentalMediaControlsEnabled(enabled == JNI_TRUE)
+        ? JNI_TRUE : JNI_FALSE;
+}
+
+/*
+ * Class:     com_openautolink_app_transport_aasdk_AasdkNative
  * Method:    nativeSendGpsLocation
  */
 JNIEXPORT void JNICALL
@@ -259,6 +288,30 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeRequestKeyframe(
     if (gSession) {
         gSession->requestKeyframe();
     }
+}
+
+/*
+ * Class:     com_openautolink_app_transport_aasdk_AasdkNative
+ * Method:    nativeSetHeadUnitMuted
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSetHeadUnitMuted(
+    JNIEnv* /*env*/, jclass /*clazz*/, jboolean muted, jlong expectedGeneration)
+{
+    std::lock_guard<std::mutex> lock(gSessionMutex);
+    auto session = std::atomic_load(&gSession);
+    if (!session || gSessionGeneration.load() != expectedGeneration) return JNI_FALSE;
+    return session->setHeadUnitMuted(muted == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_openautolink_app_transport_aasdk_AasdkNative_nativePrimeHeadUnitMuted(
+    JNIEnv* /*env*/, jclass /*clazz*/, jboolean muted, jlong expectedGeneration)
+{
+    std::lock_guard<std::mutex> lock(gSessionMutex);
+    auto session = std::atomic_load(&gSession);
+    if (!session || gSessionGeneration.load() != expectedGeneration) return JNI_FALSE;
+    return session->primeHeadUnitMuted(muted == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 // Typed vehicle sensor JNI methods — each calls the corresponding C++ method

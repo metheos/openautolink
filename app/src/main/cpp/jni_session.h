@@ -127,6 +127,12 @@ public:
     /** Send key event to phone. */
     void sendKeyEvent(int keyCode, bool isDown);
 
+    /** Queue a complete down/up media-key press as one native operation. */
+    bool sendKeyPress(int keyCode);
+
+    /** Gate only the experimental MediaSession command path. */
+    bool setExperimentalMediaControlsEnabled(bool enabled);
+
     /** Send GPS location to phone. */
     void sendGpsLocation(double lat, double lon, double alt,
                          float speed, float bearing, long long timestampMs);
@@ -160,6 +166,12 @@ public:
 
     /** Send unsolicited AUDIO_FOCUS_STATE_GAIN to phone. */
     void sendUnsolicitedAudioFocusGain();
+
+    /** Mirror HU mute/unmute into unsolicited AA audio-focus notifications. */
+    bool setHeadUnitMuted(bool muted);
+
+    /** Record initial HU mute state without emitting a focus notification. */
+    bool primeHeadUnitMuted(bool muted);
 
     // ---- IControlServiceChannelEventHandler ----
     void onVersionResponse(uint16_t majorCode, uint16_t minorCode,
@@ -295,6 +307,11 @@ private:
     std::atomic<bool> pingOutstanding_{false};
     std::atomic<bool> aborted_{false};
     std::atomic<bool> sessionStoppedFired_{false};
+    std::atomic<bool> headUnitMuted_{false};
+    std::atomic<bool> headUnitMuteExplicit_{false};
+    std::atomic<bool> experimentalMediaControlsEnabled_{false};
+    // IO-thread confined; reset only when an async send fails.
+    int lastQueuedHeadUnitMute_ = -1;
     // Reason string passed to Kotlin onSessionStopped. Defaults to "stopped";
     // ByeByeRequest from phone overrides this (e.g. "byebye_user_selection" when
     // the user taps the Exit button in the AA app launcher) so Kotlin can decide
@@ -330,6 +347,8 @@ private:
 
     void sendPing();
     void schedulePing();
+    bool flushHeadUnitAudioFocusState(bool suppressInitialUnmuted);
+    bool sendUnsolicitedAudioFocusState(int state);
 
 public:
     bool shouldSendAudioAcks() const { return sdrConfig_.sendAudioAcks; }

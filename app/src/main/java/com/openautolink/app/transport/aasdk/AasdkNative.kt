@@ -24,7 +24,7 @@ object AasdkNative {
 
     /** Create a new native aasdk session. Must be called before start. */
     @JvmStatic
-    external fun nativeCreateSession()
+    external fun nativeCreateSession(): Long
 
     /**
      * Start the AA session over the given transport pipe.
@@ -68,6 +68,16 @@ object AasdkNative {
 
     @JvmStatic
     external fun nativeSendKeyEvent(keyCode: Int, isDown: Boolean)
+
+    /** Queue one complete down/up media-key press on the current native session. */
+    @JvmStatic
+    external fun nativeSendKeyPress(keyCode: Int, expectedNativeGeneration: Long): Boolean
+
+    @JvmStatic
+    external fun nativeSetExperimentalMediaControlsEnabled(
+        enabled: Boolean,
+        expectedNativeGeneration: Long,
+    ): Boolean
 
     @JvmStatic
     external fun nativeSendGpsLocation(
@@ -133,6 +143,22 @@ object AasdkNative {
 
     @JvmStatic
     external fun nativeRequestKeyframe()
+
+    /**
+     * Notify native aasdk when the head unit media stream mute state changes.
+     * Native maps this to unsolicited audio-focus loss/gain for the phone.
+     */
+    @JvmStatic
+    external fun nativeSetHeadUnitMuted(
+        muted: Boolean,
+        expectedNativeGeneration: Long,
+    ): Boolean
+
+    @JvmStatic
+    external fun nativePrimeHeadUnitMuted(
+        muted: Boolean,
+        expectedNativeGeneration: Long,
+    ): Boolean
 
     @JvmStatic
     external fun nativeIsStreaming(): Boolean
