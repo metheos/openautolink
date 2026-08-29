@@ -14,7 +14,8 @@ internal class ClusterBootstrapTaskState<T : Any> {
 
     @Synchronized
     fun protect(generation: Long, owner: T) {
-        if (this.generation != generation) {
+        if (generation < this.generation) return
+        if (generation > this.generation) {
             backgroundRequestedGeneration = Long.MIN_VALUE
         }
         this.generation = generation

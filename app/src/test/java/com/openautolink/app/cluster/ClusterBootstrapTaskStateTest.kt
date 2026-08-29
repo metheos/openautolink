@@ -4,6 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClusterBootstrapTaskStateTest {
@@ -36,6 +37,22 @@ class ClusterBootstrapTaskStateTest {
         state.protect(8, replacement)
 
         assertNull(state.pendingTargetFor(replacement))
+        assertNull(state.requestBackground(7))
+    }
+
+    @Test
+    fun staleGenerationCannotReplaceCurrentOwnerOrClearPendingRequest() {
+        val state = ClusterBootstrapTaskState<Any>()
+        val current = Any()
+        val stale = Any()
+        state.protect(8, current)
+        val currentTarget = state.requestBackground(8)!!
+
+        state.protect(7, stale)
+
+        assertSame(current, state.pendingTargetFor(current)!!.owner)
+        assertTrue(state.isCurrent(currentTarget))
+        assertNull(state.pendingTargetFor(stale))
         assertNull(state.requestBackground(7))
     }
 
