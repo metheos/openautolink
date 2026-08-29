@@ -62,19 +62,20 @@ class OalMediaSessionManager private constructor(private val context: Context) {
 
     // Dedup: avoid redundant pushes to MediaSession
     private var lastPushedPlaying: Boolean? = null
+    private var lastPushedState = PlaybackStateCompat.STATE_NONE
+    private var lastPushedPosition = 0L
+    @Volatile private var experimentalControlsEnabled = false
 
     // Album art cache: avoid redundant BitmapFactory decodes
     private var cachedArtHash = 0
     private var cachedBitmap: android.graphics.Bitmap? = null
 
-    // Media control callback for routing steering wheel buttons to bridge
+    // Media control callback for routing GM's native MediaSession controls to AA.
+    @Volatile
     var mediaControlCallback: MediaControlCallback? = null
 
     interface MediaControlCallback {
-        fun onPlay()
-        fun onPause()
-        fun onSkipToNext()
-        fun onSkipToPrevious()
+        fun onCommand(command: GmMediaControlPolicy.Command)
     }
 
     fun initialize() {
@@ -83,10 +84,25 @@ class OalMediaSessionManager private constructor(private val context: Context) {
 
             mediaSession = MediaSessionCompat(context, "OpenAutoLinkMedia").apply {
                 setCallback(object : MediaSessionCompat.Callback() {
-                    override fun onPlay() { mediaControlCallback?.onPlay() }
-                    override fun onPause() { mediaControlCallback?.onPause() }
-                    override fun onSkipToNext() { mediaControlCallback?.onSkipToNext() }
-                    override fun onSkipToPrevious() { mediaControlCallback?.onSkipToPrevious() }
+                    override fun onPlay() {
+                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PLAY)
+                    }
+
+                    override fun onPause() {
+                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PAUSE)
+                    }
+
+                    override fun onStop() {
+                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.STOP)
+                    }
+
+                    override fun onSkipToNext() {
+                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.NEXT)
+                    }
+
+                    override fun onSkipToPrevious() {
+                        mediaControlCallback?.onCommand(GmMediaControlPolicy.Command.PREVIOUS)
+                    }
 
                     override fun onMediaButtonEvent(mediaButtonEvent: android.content.Intent): Boolean {
                         val ke = mediaButtonEvent.getParcelableExtra<android.view.KeyEvent>(android.content.Intent.EXTRA_KEY_EVENT)
@@ -131,6 +147,8 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             cachedArtHash = 0
             cachedBitmap = null
             lastPushedPlaying = null
+            lastPushedState = PlaybackStateCompat.STATE_NONE
+            lastPushedPosition = 0L
             Log.i(TAG, "MediaSession released")
         }
         instance = null
@@ -150,6 +168,8 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             cachedArtHash = 0
             cachedBitmap = null
             lastPushedPlaying = false
+            lastPushedState = PlaybackStateCompat.STATE_NONE
+            lastPushedPosition = 0L
             session.setMetadata(
                 MediaMetadataCompat.Builder()
                     .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "OpenAutoLink")
@@ -162,6 +182,17 @@ class OalMediaSessionManager private constructor(private val context: Context) {
     }
 
     fun getSessionToken(): MediaSessionCompat.Token? = mediaSession?.sessionToken
+
+    fun setExperimentalControlsEnabled(enabled: Boolean) {
+        synchronized(sessionLock) {
+            if (experimentalControlsEnabled == enabled) return
+            experimentalControlsEnabled = enabled
+            mediaSession?.setPlaybackState(
+                buildPlaybackState(lastPushedState, lastPushedPosition),
+            )
+            Log.i(TAG, "Experimental transport controls enabled=$enabled")
+        }
+    }
 
     /**
      * Update now-playing metadata from bridge media_metadata control message.
@@ -235,6 +266,8 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             // for consumers that DO listen to onMetadataChanged.
             val playing = lastPushedPlaying ?: false
             val st = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+            lastPushedState = st
+            lastPushedPosition = 0L
             session.setPlaybackState(buildPlaybackState(st, 0L))
         }
     }
@@ -250,21 +283,23 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             // when PlaybackState changes. Skipping the push leaves the cluster stuck on
             // the previous track's title/art until nav takes over and is cancelled.
             lastPushedPlaying = playing
+            lastPushedPosition = positionMs
 
             val state = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+            lastPushedState = state
             session.setPlaybackState(buildPlaybackState(state, positionMs))
         }
     }
 
     private fun buildPlaybackState(state: Int, position: Long): PlaybackStateCompat {
+        var actions = PlaybackStateCompat.ACTION_PLAY or
+            PlaybackStateCompat.ACTION_PAUSE or
+            PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+            PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+            PlaybackStateCompat.ACTION_PLAY_PAUSE
+        if (experimentalControlsEnabled) actions = actions or PlaybackStateCompat.ACTION_STOP
         return PlaybackStateCompat.Builder()
-            .setActions(
-                PlaybackStateCompat.ACTION_PLAY or
-                    PlaybackStateCompat.ACTION_PAUSE or
-                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
-                    PlaybackStateCompat.ACTION_PLAY_PAUSE
-            )
+            .setActions(actions)
             .setState(state, position, if (state == PlaybackStateCompat.STATE_PLAYING) 1.0f else 0f)
             .build()
     }

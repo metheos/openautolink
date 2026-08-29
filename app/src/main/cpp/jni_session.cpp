@@ -981,38 +981,99 @@ void JniSession::onAudioFocusRequest(
 
 void JniSession::sendUnsolicitedAudioFocusGain()
 {
-    auto focus = headUnitMuted_.load()
-        ? aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_LOSS
-        : aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN;
-    sendUnsolicitedAudioFocusState(static_cast<int>(focus));
+    // Off mode is byte-for-behavior compatible with the established path: every
+    // audio setup emits an unsolicited GAIN, with no experimental dedupe.
+    if (!experimentalMediaControlsEnabled_.load()) {
+        sendUnsolicitedAudioFocusState(static_cast<int>(
+            aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN));
+        return;
+    }
+
+    // In experimental mode, an explicitly primed unmuted state must not add a
+    // new unsolicited GAIN merely because the toggle was enabled.
+    flushHeadUnitAudioFocusState(headUnitMuteExplicit_.load());
 }
 
-void JniSession::setHeadUnitMuted(bool muted)
+bool JniSession::setHeadUnitMuted(bool muted)
 {
-    bool previous = headUnitMuted_.exchange(muted);
-    if (previous == muted) return;
+    if (stopped_ || !ioService_) {
+        nativeDiag(2, "audio", "HU mute state rejected: reason=session-retired");
+        return false;
+    }
+    headUnitMuted_.store(muted);
+    headUnitMuteExplicit_.store(true);
+    auto self = shared_from_this();
+    ioService_->post([self]() {
+        self->flushHeadUnitAudioFocusState(false);
+    });
+    nativeDiag(1, "audio", "HU mute state queued: muted=" +
+               std::string(muted ? "true" : "false"));
+    return true;
+}
 
-    LOGI("HU mute state changed: %s", muted ? "muted" : "unmuted");
+bool JniSession::primeHeadUnitMuted(bool muted)
+{
+    if (stopped_) return false;
+    headUnitMuted_.store(muted);
+    headUnitMuteExplicit_.store(true);
+    nativeDiag(1, "audio", "HU mute state primed without send: muted=" +
+               std::string(muted ? "true" : "false"));
+    return true;
+}
+
+bool JniSession::flushHeadUnitAudioFocusState(bool suppressInitialUnmuted)
+{
+    if (stopped_ || !controlChannel_ || !strand_) {
+        nativeDiag(1, "audio", "HU mute state primed: muted=" +
+                   std::string(headUnitMuted_.load() ? "true" : "false"));
+        return false;
+    }
+    const bool muted = headUnitMuted_.load();
+    const int desiredMute = muted ? 1 : 0;
+    if (lastQueuedHeadUnitMute_ == desiredMute) return true;
+    if (suppressInitialUnmuted && !muted && lastQueuedHeadUnitMute_ < 0) {
+        nativeDiag(1, "audio", "AA audio focus sync outcome=suppressed: "
+                   "state=GAIN reason=experimental-initial-unmuted");
+        return true;
+    }
     auto focus = muted
         ? aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_LOSS
         : aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN;
-    sendUnsolicitedAudioFocusState(static_cast<int>(focus));
+    const bool queued = sendUnsolicitedAudioFocusState(static_cast<int>(focus));
+    if (queued) lastQueuedHeadUnitMute_ = desiredMute;
+    return queued;
 }
 
-void JniSession::sendUnsolicitedAudioFocusState(int state)
+bool JniSession::sendUnsolicitedAudioFocusState(int state)
 {
+    if (stopped_ || !controlChannel_ || !strand_) {
+        nativeDiag(2, "audio", "AA audio focus sync outcome=rejected: state=" +
+                   std::to_string(state) + " reason=session-not-ready");
+        return false;
+    }
+    const int desiredMute =
+        state == static_cast<int>(
+            aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_LOSS) ? 1 : 0;
     auto self = shared_from_this();
-    ioService_->post([this, self, state]() {
-        if (stopped_ || !controlChannel_ || !strand_) return;
-        LOGI("Sending unsolicited audio focus state=%d", state);
-        aap_protobuf::service::control::message::AudioFocusNotification notification;
-        notification.set_focus_state(
-            static_cast<aap_protobuf::service::control::message::AudioFocusStateType>(state));
-        notification.set_unsolicited(true);
-        auto promise = aasdk::channel::SendPromise::defer(*strand_);
-        promise->then([]() {}, [this](const auto& e) { this->onChannelError(e); });
-        controlChannel_->sendAudioFocusResponse(notification, std::move(promise));
-    });
+    aap_protobuf::service::control::message::AudioFocusNotification notification;
+    notification.set_focus_state(
+        static_cast<aap_protobuf::service::control::message::AudioFocusStateType>(state));
+    notification.set_unsolicited(true);
+    auto promise = aasdk::channel::SendPromise::defer(*strand_);
+    promise->then(
+        [self, state]() {
+            self->nativeDiag(1, "audio", "AA audio focus sync outcome=sent: state=" +
+                             std::to_string(state));
+        },
+        [self, state, desiredMute](const aasdk::error::Error& e) {
+            if (self->lastQueuedHeadUnitMute_ == desiredMute) {
+                self->lastQueuedHeadUnitMute_ = -1;
+            }
+            self->nativeDiag(3, "audio", "AA audio focus sync outcome=failed: state=" +
+                             std::to_string(state) + " error=" + e.what());
+        });
+    controlChannel_->sendAudioFocusResponse(notification, std::move(promise));
+    return true;
 }
 
 void JniSession::onNavigationFocusRequest(
@@ -2134,6 +2195,68 @@ void JniSession::sendKeyEvent(int keyCode, bool isDown)
             });
         self->inputChannel_->sendInputReport(report, std::move(promise));
     });
+}
+
+bool JniSession::sendKeyPress(int keyCode)
+{
+    if (!experimentalMediaControlsEnabled_ || !streaming_ || !inputChannel_ || stopped_) {
+        nativeDiag(2, "input", "Key press rejected: keycode=" + std::to_string(keyCode) +
+                   " experimental=" + (experimentalMediaControlsEnabled_ ? "true" : "false") +
+                   " streaming=" + (streaming_ ? "true" : "false") +
+                   " inputChannel=" + (inputChannel_ ? "ready" : "null") +
+                   " stopped=" + (stopped_ ? "true" : "false"));
+        return false;
+    }
+
+    auto self = shared_from_this();
+    ioService_->post([self, keyCode]() {
+        if (!self->experimentalMediaControlsEnabled_ || self->stopped_ ||
+            !self->inputChannel_ || !self->strand_) {
+            self->nativeDiag(2, "input", "Key press send rejected: keycode=" +
+                             std::to_string(keyCode) + " reason=session-not-ready");
+            return;
+        }
+        auto completed = std::make_shared<std::atomic<int>>(0);
+        auto failed = std::make_shared<std::atomic<bool>>(false);
+        for (bool down : {true, false}) {
+            aap_protobuf::service::inputsource::message::InputReport report;
+            auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            report.set_timestamp(static_cast<uint64_t>(now));
+            auto* key = report.mutable_key_event()->add_keys();
+            key->set_keycode(static_cast<uint32_t>(keyCode));
+            key->set_down(down);
+            key->set_metastate(0);
+            key->set_longpress(false);
+
+            auto promise = aasdk::channel::SendPromise::defer(*self->strand_);
+            promise->then(
+                [self, keyCode, completed, failed]() {
+                    const int edges = completed->fetch_add(1) + 1;
+                    if (edges == 2 && !failed->load()) {
+                        self->nativeDiag(1, "input", "Key press send complete: keycode=" +
+                                         std::to_string(keyCode) + " edges=2");
+                    }
+                },
+                [self, keyCode, down, failed](const aasdk::error::Error& e) {
+                    failed->store(true);
+                    self->nativeDiag(3, "input", "Key press send failed: keycode=" +
+                                     std::to_string(keyCode) + " edge=" +
+                                     (down ? "down" : "up") + " error=" + e.what());
+                });
+            self->inputChannel_->sendInputReport(report, std::move(promise));
+        }
+    });
+    return true;
+}
+
+bool JniSession::setExperimentalMediaControlsEnabled(bool enabled)
+{
+    if (stopped_) return false;
+    experimentalMediaControlsEnabled_.store(enabled);
+    nativeDiag(1, "input", "Experimental MediaSession native gate enabled=" +
+               std::string(enabled ? "true" : "false"));
+    return true;
 }
 
 void JniSession::sendGpsLocation(double lat, double lon, double alt,
