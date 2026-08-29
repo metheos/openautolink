@@ -194,7 +194,7 @@ For release-specific defects, see [open issues](https://github.com/mossyhub/open
 | [Phone calls](docs/phone-calls.md) | Keep projected controls while retaining native HFP audio |
 | [Architecture](docs/architecture.md) | Component structure and data flow |
 | [Embedded knowledge](docs/embedded-knowledge.md) | Hard-won protocol and hardware constraints |
-| [Local testing](docs/testing.md) | Emulator and development workflow |
+| [Legacy SBC/emulator testing](docs/testing.md) | Historical bridge-mode emulator and diagnostic workflow |
 | [Privacy policy](docs/privacy-policy.md) | Data access and handling |
 
 ## Does it support CarPlay?

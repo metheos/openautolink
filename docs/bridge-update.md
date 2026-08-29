@@ -1,4 +1,7 @@
-# Bridge OTA Update System — As-Built Documentation
+# Legacy Bridge OTA Update System — As-Built Documentation
+
+> [!CAUTION]
+> This document describes the retired SBC/bridge architecture preserved on the [`bridge-mode`](https://github.com/mossyhub/openautolink/tree/bridge-mode) branch. Current OpenAutoLink runs directly on the AAOS head unit and has no bridge binary to install or update. Do not follow this document for a current installation; use the [main README](../README.md), [one-command AAB builder](build-aab.md), and [current WPP guide](wireless-wpp.md).
 
 ## Overview
 

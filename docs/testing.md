@@ -1,8 +1,13 @@
-# OpenAutoLink — Local Testing Guide
+# OpenAutoLink — Legacy SBC and Emulator Testing Guide
+
+> [!CAUTION]
+> This document records the retired SBC/bridge development environment. Current OpenAutoLink runs the Android Auto protocol directly on the AAOS head unit and does **not** require an SBC, Ethernet adapter, or bridge service. Do not use this guide for a new installation. Use the [one-command personal AAB builder](build-aab.md), [GM installation guide](install-gm.md), and [current WPP setup](wireless-wpp.md) instead.
+
+The emulator, mock-stream, and diagnostic material below remains available for contributors maintaining or reproducing the historical `bridge-mode` architecture. Every SBC, bridge SSH, bridge OTA, Ethernet, and phone-hotspot instruction in this file is legacy unless a section explicitly says otherwise.
 
 ## Overview
 
-Full end-to-end testing requires the AAOS app talking to the bridge over a real network. Since the GM head unit has **no ADB access** due to GM restrictions, we use the Android SDK AAOS emulator as a stand-in. The bridge runs on a physical SBC connected to the development PC via two separate network cables.
+In the historical architecture, full end-to-end testing required the AAOS app to talk to an external bridge over a real network. Since the GM head unit has **no ADB access** due to GM restrictions, the project used an Android SDK AAOS emulator as a stand-in and ran the bridge on a physical SBC connected to the development PC.
 
 ```
 ┌──────────────────┐         ┌─────────────────────────────────────┐
@@ -447,18 +452,20 @@ ssh khadas@192.168.137.x "timeout 10 tcpdump -i eth0 port 5290 -w -" > capture.r
 scripts\start-mock-bridge.ps1 -VideoFile capture.h264
 ```
 
-## 9. Testing in the Real Car
+## 9. Historical real-car bridge testing
 
 In-car testing is harder than emulator testing but critical at key milestones — it's the only way to validate real hardware decoders, audio routing, VHAL integration, and actual reconnection behavior.
 
-### What's Different
+### What was different
 
 - **No ADB access** — GM locks down ADB on production head units. No `logcat`, no `adb install`, no `adb reverse`
 - **No debug APKs** — the app must be built as a **signed AAB** (Android App Bundle) and uploaded to the **Google Play Console internal/closed testing track** for every new build
 - **No live debugging** — rely on the app's built-in diagnostics screen for status and error info
-- **Bridge SSH still works** — the second USB NIC cable from your laptop to the SBC provides SSH access, same as in emulator testing. You can still deploy bridge updates, view logs, and restart services from your laptop while sitting in the car
+- **Bridge SSH was available** — the second USB NIC cable provided access to the retired SBC architecture
 
-### Deploying a Test Build
+### Historical manual deployment
+
+Current self-builders should use the [one-command AAB builder](build-aab.md). The commands below document the older contributor workflow only.
 
 ```powershell
 # 1. Build signed AAB (prompts for keystore password)
@@ -477,7 +484,7 @@ In-car testing is harder than emulator testing but critical at key milestones �
 >
 > **Keystore:** The signing keystore lives at `secrets/upload-key.jks` (gitignored). Create one with `scripts\create-upload-keystore.ps1` if you don't have it yet.
 
-### Bridge Access While In-Car
+### Historical bridge access while in-car
 
 SSH into the SBC from your laptop the same way as on the bench — share WiFi to your USB NIC, discover the SBC via ARP, and connect:
 
@@ -501,9 +508,9 @@ sudo journalctl -u openautolink.service -f
 
 This is why emulator testing handles the bulk of development — it's the only environment with full `adb` access for rapid iteration. In-car testing validates what the emulator can't.
 
-## 10. Remote Diagnostics (No ADB Required)
+## 10. Historical remote diagnostics (no ADB required)
 
-Since GM locks ADB on the production head unit, the app has built-in remote diagnostics tools that work over TCP — no USB cable, no ADB, no root. Everything runs over the phone's hotspot network (phone + car + laptop all connected).
+This section records the bridge-era TCP diagnostic workflow. It assumed the phone, car, and laptop could share the phone's hotspot. That is not the current WPP topology and is not a reachable workaround on every production vehicle.
 
 ### Remote Log Server
 

@@ -56,7 +56,7 @@ Run the same command again:
 curl -fsSL https://raw.githubusercontent.com/mossyhub/openautolink/main/build-aab.sh | bash
 ```
 
-The builder remembers the package ID, signing identity, signing key, Gradle cache, native-dependency cache, and last successful local version. It refreshes the builder image, fetches current `main`, and creates the next signed AAB.
+The builder remembers the package ID, signing identity, signing key, Gradle cache, native-dependency cache, and last successful local version. It ensures the pinned builder image is present, fetches current `main`, and creates the next signed AAB.
 
 The version counter advances **only after** the AAB has built and passed verification. A failed build does not consume the next local version code.
 
@@ -97,6 +97,7 @@ The fetched source and Gradle build never receive the real secrets directory. Si
 ├── secrets/      # upload key and generated password — back this up
 ├── source/       # builder-owned OpenAutoLink checkout
 ├── cache/        # Gradle and verified native dependencies
+├── staging/      # unsigned bundle handed to the offline signing step
 ├── home/         # container user home
 └── output/       # verified AABs, checksums, and metadata
 ```
