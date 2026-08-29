@@ -12,8 +12,6 @@ import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
 import androidx.car.app.navigation.model.Destination
-import androidx.car.app.navigation.model.MessageInfo
-import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.navigation.model.Step
 import androidx.car.app.navigation.model.TravelEstimate
 import androidx.car.app.navigation.model.Trip
@@ -395,11 +393,6 @@ class ClusterMainSession : Session() {
     }
 
     private class RelayScreen(carContext: CarContext) : Screen(carContext) {
-        override fun onGetTemplate(): Template =
-            NavigationTemplate.Builder()
-                .setNavigationInfo(
-                    MessageInfo.Builder("\u200B").build()
-                )
-                .build()
+        override fun onGetTemplate(): Template = ClusterRelayTemplateFactory.build()
     }
 }
