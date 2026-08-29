@@ -34,11 +34,21 @@ class ClusterMainSessionWiringContractTest {
 
     @Test
     fun bootstrapTemplateDoesNotExposeIssue116Placeholder() {
-        val source = projectFile(
+        val sessionSource = projectFile(
             "app/src/main/java/com/openautolink/app/cluster/ClusterMainSession.kt",
         )
+        val templateSource = projectFile(
+            "app/src/main/java/com/openautolink/app/cluster/ClusterRelayTemplateFactory.kt",
+        )
+        val visiblePlaceholderText = listOf(
+            "OpenAutoLink — Cluster Navigation",
+            "Cluster navigation service active.",
+        )
 
-        assertFalse(source.contains("OpenAutoLink — Cluster Navigation"))
-        assertFalse(source.contains("Cluster navigation service active."))
+        assertTrue(sessionSource.contains("ClusterRelayTemplateFactory.build()"))
+        visiblePlaceholderText.forEach { text ->
+            assertFalse(sessionSource.contains(text))
+            assertFalse(templateSource.contains(text))
+        }
     }
 }
