@@ -29,6 +29,7 @@ internal class ClusterBindingRegistry {
     private var activeGeneration: Long? = null
     private val liveSessionIds = linkedSetOf<Long>()
     private var primarySessionId: Long? = null
+    private var readySessionId: Long? = null
 
     @Synchronized
     fun openManager(): ManagerLease {
@@ -36,6 +37,7 @@ internal class ClusterBindingRegistry {
         activeGeneration = generation
         liveSessionIds.clear()
         primarySessionId = null
+        readySessionId = null
         return ManagerLease(generation)
     }
 
@@ -45,6 +47,7 @@ internal class ClusterBindingRegistry {
         activeGeneration = null
         liveSessionIds.clear()
         primarySessionId = null
+        readySessionId = null
         return true
     }
 
@@ -63,6 +66,19 @@ internal class ClusterBindingRegistry {
             return false
         }
         primarySessionId = lease.sessionId
+        readySessionId = null
+        return true
+    }
+
+    @Synchronized
+    fun markReady(lease: SessionLease): Boolean {
+        if (activeGeneration != lease.generation ||
+            primarySessionId != lease.sessionId ||
+            lease.sessionId !in liveSessionIds
+        ) {
+            return false
+        }
+        readySessionId = lease.sessionId
         return true
     }
 
@@ -71,6 +87,7 @@ internal class ClusterBindingRegistry {
         if (activeGeneration != lease.generation) return
         liveSessionIds -= lease.sessionId
         if (primarySessionId == lease.sessionId) primarySessionId = null
+        if (readySessionId == lease.sessionId) readySessionId = null
     }
 
     @Synchronized
@@ -80,6 +97,12 @@ internal class ClusterBindingRegistry {
     @Synchronized
     fun hasLiveSession(lease: ManagerLease): Boolean =
         activeGeneration == lease.generation && primarySessionId in liveSessionIds
+
+    @Synchronized
+    fun hasReadySession(lease: ManagerLease): Boolean =
+        activeGeneration == lease.generation &&
+            readySessionId == primarySessionId &&
+            readySessionId in liveSessionIds
 
     @Synchronized
     fun isSessionCurrent(lease: SessionLease): Boolean =
@@ -151,6 +174,9 @@ internal object ClusterBindingState {
     fun markPrimary(lease: ClusterBindingRegistry.SessionLease): Boolean =
         registry.markPrimary(lease)
 
+    fun markReady(lease: ClusterBindingRegistry.SessionLease): Boolean =
+        registry.markReady(lease)
+
     fun unregisterSession(lease: ClusterBindingRegistry.SessionLease) =
         registry.unregisterSession(lease)
 
@@ -159,6 +185,9 @@ internal object ClusterBindingState {
 
     fun hasLiveSession(lease: ClusterBindingRegistry.ManagerLease): Boolean =
         registry.hasLiveSession(lease)
+
+    fun hasReadySession(lease: ClusterBindingRegistry.ManagerLease): Boolean =
+        registry.hasReadySession(lease)
 
     fun isSessionCurrent(lease: ClusterBindingRegistry.SessionLease): Boolean =
         registry.isSessionCurrent(lease)
