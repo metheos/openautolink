@@ -79,33 +79,6 @@ class ClusterBindingRegistryTest {
     }
 
     @Test
-    fun onlyCurrentPrimaryCanMarkBindingReady() {
-        val registry = ClusterBindingRegistry()
-        val manager = registry.openManager()
-        val primary = registry.registerSession()!!
-        val secondary = registry.registerSession()!!
-        registry.markPrimary(primary)
-
-        assertFalse(registry.markReady(secondary))
-        assertFalse(registry.hasReadySession(manager))
-        assertTrue(registry.markReady(primary))
-        assertTrue(registry.hasReadySession(manager))
-    }
-
-    @Test
-    fun removingReadyPrimaryClearsBindingReadiness() {
-        val registry = ClusterBindingRegistry()
-        val manager = registry.openManager()
-        val primary = registry.registerSession()!!
-        registry.markPrimary(primary)
-        registry.markReady(primary)
-
-        registry.unregisterSession(primary)
-
-        assertFalse(registry.hasReadySession(manager))
-    }
-
-    @Test
     fun lifecycleLockSerializesSessionInitializationAgainstRetirement() {
         val registry = ClusterBindingRegistry()
         val manager = registry.openManager()

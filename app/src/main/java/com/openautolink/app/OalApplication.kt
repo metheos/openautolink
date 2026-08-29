@@ -33,10 +33,6 @@ class OalApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Install before any session infrastructure can launch AndroidX CarAppActivity.
-        // onActivityPreCreated applies zero-alpha/non-focusable protection before
-        // BaseCarAppActivity creates the Templates Host surface.
-        com.openautolink.app.cluster.ClusterBootstrapWindowProtector.install(this)
         loadPreviousCrash()
         loadPreviousNativeCrash()
         installCrashHandler()
