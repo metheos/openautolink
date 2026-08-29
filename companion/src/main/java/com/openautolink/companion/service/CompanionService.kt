@@ -16,6 +16,7 @@ import com.openautolink.companion.MainActivity
 import com.openautolink.companion.R
 import com.openautolink.companion.diagnostics.CompanionFileLogger
 import com.openautolink.companion.diagnostics.CompanionLog
+import com.openautolink.companion.diagnostics.CompanionRuntimeHealthMonitor
 import com.openautolink.companion.diagnostics.PhoneWppDiagnostics
 import com.openautolink.companion.diagnostics.PhoneWppStage
 import com.openautolink.companion.diagnostics.ProcessExitSummary
@@ -50,6 +51,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
     private var fileLogger: CompanionFileLogger? = null
     private var fileLogIdleTimeoutJob: kotlinx.coroutines.Job? = null
     private var wppNetworkObserver: WppNetworkObserver? = null
+    private var runtimeHealthMonitor: CompanionRuntimeHealthMonitor? = null
     /** True once a connection has been observed during the current logging session. */
     @Volatile private var loggingSessionEverConnected: Boolean = false
 
@@ -80,6 +82,13 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
         // Do this after persistent logging starts: CompanionFileLogger clears the
         // logcat ring when it begins, so logging first would erase the evidence.
         logPreviousProcessExit()
+        runtimeHealthMonitor = CompanionRuntimeHealthMonitor(
+            applicationContext,
+            serviceScope,
+        ).also { it.start() }
+        if (_fileLoggingActive.value) {
+            runtimeHealthMonitor?.record("logging_start")
+        }
     }
 
     /** Start file logging if the persisted "always log" pref is enabled. */
@@ -198,7 +207,13 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
                 nowMs = System.currentTimeMillis(),
                 description = previous.description,
             )
-            CompanionLog.w(TAG, "Previous companion process exit: $summary")
+            if (ProcessExitSummary.isMemoryPressureReason(previous.reason)) {
+                CompanionLog.w(TAG, "COMPANION MEMORY EXIT $summary")
+            } else if (ProcessExitSummary.isResourcePressureReason(previous.reason)) {
+                CompanionLog.w(TAG, "COMPANION RESOURCE EXIT $summary")
+            } else {
+                CompanionLog.w(TAG, "Previous companion process exit: $summary")
+            }
         } catch (e: Exception) {
             CompanionLog.w(
                 TAG,
@@ -303,6 +318,17 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
 
     // ── Wake lock ──────────────────────────────────────────────────────
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        runtimeHealthMonitor?.record("trim_memory_$level")
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onLowMemory() {
+        super.onLowMemory()
+        runtimeHealthMonitor?.record("low_memory_callback")
+    }
+
     private fun acquireWakeLock() {
         // Release existing lock before acquiring a new one to reset the timeout
         releaseWakeLock()
@@ -393,6 +419,8 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
             multicastLock?.release()
             CompanionLog.d(TAG, "MulticastLock released")
         }
+        runtimeHealthMonitor?.stop()
+        runtimeHealthMonitor = null
         serviceScope.cancel()
         _instance = null
         super.onDestroy()
@@ -441,6 +469,7 @@ class CompanionService : Service(), TcpAdvertiser.StateListener {
             CompanionLog.fileLogger = logger
             _fileLoggingActive.value = true
             _fileLoggingPath.value = path
+            runtimeHealthMonitor?.record("logging_start")
             loggingSessionEverConnected = _isConnected.value
             CompanionLog.i(TAG, "File logging enabled: $path")
             // 10-minute idle timeout: if the AA proxy never connects while

@@ -25,6 +25,11 @@ internal object ProcessExitSummary {
             "ageMs=$ageMs pssKb=$pssKb rssKb=$rssKb description=$safeDescription"
     }
 
+    fun isMemoryPressureReason(reason: Int): Boolean = reason == 3
+
+    /** Includes Android's broader CPU/wakeup/resource termination category. */
+    fun isResourcePressureReason(reason: Int): Boolean = reason == 3 || reason == 9
+
     private fun reasonName(reason: Int): String = when (reason) {
         0 -> "UNKNOWN"
         1 -> "EXIT_SELF"
