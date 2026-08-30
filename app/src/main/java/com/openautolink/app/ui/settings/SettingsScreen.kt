@@ -353,7 +353,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                     onClick = { viewModel.autoConfigureWpp() },
                     enabled = !wppAutoConfigStatus.inProgress,
                 ) {
-                    Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-config")
+                    Text(if (wppAutoConfigStatus.inProgress) "Refreshing..." else "Refresh visible networks")
                 }
                 if (wppAutoConfigStatus.inProgress) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -390,7 +390,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                                     Column {
                                         Text(candidate.ssid)
                                         Text(
-                                            candidate.bssid,
+                                            "${candidate.bssid} • ${candidate.signalLabel} • ${if (candidate.is5GHz) "5 GHz" else "2.4 GHz"}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )

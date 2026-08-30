@@ -23,7 +23,12 @@ data class WppNetworkCandidate(
    val ssid: String,
    val bssid: String,
    val signalLevel: Int,
-)
+   val is5GHz: Boolean,
+   val frequencyMhz: Int,
+) {
+   val signalLabel: String
+       get() = "${signalLevel} dBm"
+}
 
 data class WppAutoConfigStatus(
     val inProgress: Boolean = false,
@@ -417,16 +422,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     if (normalizedSsid == null || bssid.isNullOrBlank()) {
                         null
                     } else {
+                        val is5GHz = scan.frequency in 4900..5900
                         WppNetworkCandidate(
                             ssid = normalizedSsid,
                             bssid = bssid,
                             signalLevel = scan.level,
+                            is5GHz = is5GHz,
+                            frequencyMhz = scan.frequency,
                         )
                     }
                 }
-                .distinctBy { it.ssid }
-                .sortedByDescending { it.signalLevel }
-                .take(3)
+                .distinctBy { it.ssid to it.bssid }
+                .sortedWith(
+                    compareByDescending<WppNetworkCandidate> { it.is5GHz }
+                        .thenByDescending { it.signalLevel }
+                )
+                .take(5)
                 .toList()
             Result.success(candidates)
         } catch (_: SecurityException) {
