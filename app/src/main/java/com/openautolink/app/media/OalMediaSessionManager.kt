@@ -64,7 +64,6 @@ class OalMediaSessionManager private constructor(private val context: Context) {
     private var lastPushedPlaying: Boolean? = null
     private var lastPushedState = PlaybackStateCompat.STATE_NONE
     private var lastPushedPosition = 0L
-    @Volatile private var experimentalControlsEnabled = false
 
     // Album art cache: avoid redundant BitmapFactory decodes
     private var cachedArtHash = 0
@@ -183,17 +182,6 @@ class OalMediaSessionManager private constructor(private val context: Context) {
 
     fun getSessionToken(): MediaSessionCompat.Token? = mediaSession?.sessionToken
 
-    fun setExperimentalControlsEnabled(enabled: Boolean) {
-        synchronized(sessionLock) {
-            if (experimentalControlsEnabled == enabled) return
-            experimentalControlsEnabled = enabled
-            mediaSession?.setPlaybackState(
-                buildPlaybackState(lastPushedState, lastPushedPosition),
-            )
-            Log.i(TAG, "Experimental transport controls enabled=$enabled")
-        }
-    }
-
     /**
      * Update now-playing metadata from bridge media_metadata control message.
      */
@@ -292,12 +280,12 @@ class OalMediaSessionManager private constructor(private val context: Context) {
     }
 
     private fun buildPlaybackState(state: Int, position: Long): PlaybackStateCompat {
-        var actions = PlaybackStateCompat.ACTION_PLAY or
+        val actions = PlaybackStateCompat.ACTION_PLAY or
             PlaybackStateCompat.ACTION_PAUSE or
+            PlaybackStateCompat.ACTION_STOP or
             PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
             PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
             PlaybackStateCompat.ACTION_PLAY_PAUSE
-        if (experimentalControlsEnabled) actions = actions or PlaybackStateCompat.ACTION_STOP
         return PlaybackStateCompat.Builder()
             .setActions(actions)
             .setState(state, position, if (state == PlaybackStateCompat.STATE_PLAYING) 1.0f else 0f)

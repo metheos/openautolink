@@ -51,8 +51,6 @@ data class SettingsUiState(
     val gpsForwarding: Boolean = AppPreferences.DEFAULT_GPS_FORWARDING,
     val alwaysInPark: Boolean = AppPreferences.DEFAULT_ALWAYS_IN_PARK,
     val clusterNavigation: Boolean = AppPreferences.DEFAULT_CLUSTER_NAVIGATION,
-    val experimentalGmMediaControls: Boolean =
-        AppPreferences.DEFAULT_EXPERIMENTAL_GM_MEDIA_CONTROLS,
     val overlayStatsButton: Boolean = AppPreferences.DEFAULT_OVERLAY_STATS_BUTTON,
     val overlayPhoneSwitchButton: Boolean = AppPreferences.DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON,
     val overlayReconnectButton: Boolean = AppPreferences.DEFAULT_OVERLAY_RECONNECT_BUTTON,
@@ -149,7 +147,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         preferences.simulateIgnitionButton,
         preferences.overlayPhoneSwitchButton,
         preferences.overlayReconnectButton,
-        preferences.experimentalGmMediaControls,
     ) { values: Array<Any> ->
         SettingsUiState(
             videoAutoNegotiate = values[0] as Boolean,
@@ -202,7 +199,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             simulateIgnitionButton = values[47] as Boolean,
             overlayPhoneSwitchButton = values[48] as Boolean,
             overlayReconnectButton = values[49] as Boolean,
-            experimentalGmMediaControls = values[50] as Boolean,
         )
     }.stateIn(
         viewModelScope,
@@ -485,10 +481,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateClusterNavigation(enabled: Boolean) {
         viewModelScope.launch { preferences.setClusterNavigation(enabled) }
-    }
-
-    fun updateExperimentalGmMediaControls(enabled: Boolean) {
-        viewModelScope.launch { preferences.setExperimentalGmMediaControls(enabled) }
     }
 
     fun updateOverlayStatsButton(visible: Boolean) {

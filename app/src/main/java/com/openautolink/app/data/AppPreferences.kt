@@ -125,10 +125,6 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         // reports a usable gear. See issue #61.
         val ALWAYS_IN_PARK = booleanPreferencesKey("always_in_park")
         val CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation")
-        // Opt-in field trial for GM-native MediaSession controls and mute sync.
-        // Default off preserves the current activity/key-remap behavior.
-        val EXPERIMENTAL_GM_MEDIA_CONTROLS =
-            booleanPreferencesKey("experimental_gm_media_controls")
         val OVERLAY_STATS_BUTTON = booleanPreferencesKey("overlay_stats_button")
         val OVERLAY_PHONE_SWITCH_BUTTON = booleanPreferencesKey("overlay_phone_switch_button")
         val OVERLAY_RECONNECT_BUTTON = booleanPreferencesKey("overlay_reconnect_button")
@@ -321,7 +317,6 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         const val DEFAULT_GPS_FORWARDING = true
         const val DEFAULT_ALWAYS_IN_PARK = false
         const val DEFAULT_CLUSTER_NAVIGATION = true
-        const val DEFAULT_EXPERIMENTAL_GM_MEDIA_CONTROLS = false
         const val DEFAULT_OVERLAY_STATS_BUTTON = true
         const val DEFAULT_OVERLAY_PHONE_SWITCH_BUTTON = true
         const val DEFAULT_OVERLAY_RECONNECT_BUTTON = false
@@ -555,10 +550,6 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     val clusterNavigation: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[CLUSTER_NAVIGATION] ?: DEFAULT_CLUSTER_NAVIGATION
-    }
-
-    val experimentalGmMediaControls: Flow<Boolean> = dataStore.data.map { prefs ->
-        prefs[EXPERIMENTAL_GM_MEDIA_CONTROLS] ?: DEFAULT_EXPERIMENTAL_GM_MEDIA_CONTROLS
     }
 
     val overlayStatsButton: Flow<Boolean> = dataStore.data.map { prefs ->
@@ -828,10 +819,6 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
 
     suspend fun setClusterNavigation(enabled: Boolean) {
         dataStore.edit { it[CLUSTER_NAVIGATION] = enabled }
-    }
-
-    suspend fun setExperimentalGmMediaControls(enabled: Boolean) {
-        dataStore.edit { it[EXPERIMENTAL_GM_MEDIA_CONTROLS] = enabled }
     }
 
     suspend fun setOverlayStatsButton(visible: Boolean) {

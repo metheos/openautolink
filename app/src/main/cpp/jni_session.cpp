@@ -981,16 +981,8 @@ void JniSession::onAudioFocusRequest(
 
 void JniSession::sendUnsolicitedAudioFocusGain()
 {
-    // Off mode is byte-for-behavior compatible with the established path: every
-    // audio setup emits an unsolicited GAIN, with no experimental dedupe.
-    if (!experimentalMediaControlsEnabled_.load()) {
-        sendUnsolicitedAudioFocusState(static_cast<int>(
-            aap_protobuf::service::control::message::AUDIO_FOCUS_STATE_GAIN));
-        return;
-    }
-
-    // In experimental mode, an explicitly primed unmuted state must not add a
-    // new unsolicited GAIN merely because the toggle was enabled.
+    // GM mute synchronization is built in. A primed unmuted state suppresses
+    // the redundant initial GAIN; a primed mute sends LOSS once control is ready.
     flushHeadUnitAudioFocusState(headUnitMuteExplicit_.load());
 }
 
@@ -1004,7 +996,8 @@ bool JniSession::setHeadUnitMuted(bool muted)
     headUnitMuteExplicit_.store(true);
     auto self = shared_from_this();
     ioService_->post([self]() {
-        self->flushHeadUnitAudioFocusState(false);
+        // Suppress a redundant first GAIN, but still send GAIN after a queued LOSS.
+        self->flushHeadUnitAudioFocusState(true);
     });
     nativeDiag(1, "audio", "HU mute state queued: muted=" +
                std::string(muted ? "true" : "false"));
@@ -1023,7 +1016,7 @@ bool JniSession::primeHeadUnitMuted(bool muted)
 
 bool JniSession::flushHeadUnitAudioFocusState(bool suppressInitialUnmuted)
 {
-    if (stopped_ || !controlChannel_ || !strand_) {
+    if (stopped_ || !streaming_ || !controlChannel_ || !strand_) {
         nativeDiag(1, "audio", "HU mute state primed: muted=" +
                    std::string(headUnitMuted_.load() ? "true" : "false"));
         return false;
@@ -1033,7 +1026,7 @@ bool JniSession::flushHeadUnitAudioFocusState(bool suppressInitialUnmuted)
     if (lastQueuedHeadUnitMute_ == desiredMute) return true;
     if (suppressInitialUnmuted && !muted && lastQueuedHeadUnitMute_ < 0) {
         nativeDiag(1, "audio", "AA audio focus sync outcome=suppressed: "
-                   "state=GAIN reason=experimental-initial-unmuted");
+                   "state=GAIN reason=built-in-initial-unmuted");
         return true;
     }
     auto focus = muted
@@ -2199,9 +2192,8 @@ void JniSession::sendKeyEvent(int keyCode, bool isDown)
 
 bool JniSession::sendKeyPress(int keyCode)
 {
-    if (!experimentalMediaControlsEnabled_ || !streaming_ || !inputChannel_ || stopped_) {
+    if (!streaming_ || !inputChannel_ || stopped_) {
         nativeDiag(2, "input", "Key press rejected: keycode=" + std::to_string(keyCode) +
-                   " experimental=" + (experimentalMediaControlsEnabled_ ? "true" : "false") +
                    " streaming=" + (streaming_ ? "true" : "false") +
                    " inputChannel=" + (inputChannel_ ? "ready" : "null") +
                    " stopped=" + (stopped_ ? "true" : "false"));
@@ -2210,8 +2202,7 @@ bool JniSession::sendKeyPress(int keyCode)
 
     auto self = shared_from_this();
     ioService_->post([self, keyCode]() {
-        if (!self->experimentalMediaControlsEnabled_ || self->stopped_ ||
-            !self->inputChannel_ || !self->strand_) {
+        if (self->stopped_ || !self->inputChannel_ || !self->strand_) {
             self->nativeDiag(2, "input", "Key press send rejected: keycode=" +
                              std::to_string(keyCode) + " reason=session-not-ready");
             return;
@@ -2247,15 +2238,6 @@ bool JniSession::sendKeyPress(int keyCode)
             self->inputChannel_->sendInputReport(report, std::move(promise));
         }
     });
-    return true;
-}
-
-bool JniSession::setExperimentalMediaControlsEnabled(bool enabled)
-{
-    if (stopped_) return false;
-    experimentalMediaControlsEnabled_.store(enabled);
-    nativeDiag(1, "input", "Experimental MediaSession native gate enabled=" +
-               std::string(enabled ? "true" : "false"));
     return true;
 }
 

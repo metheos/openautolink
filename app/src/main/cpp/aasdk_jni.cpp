@@ -211,17 +211,6 @@ Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSendKeyPress(
     return session->sendKeyPress(keyCode) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_openautolink_app_transport_aasdk_AasdkNative_nativeSetExperimentalMediaControlsEnabled(
-    JNIEnv* /*env*/, jclass /*clazz*/, jboolean enabled, jlong expectedGeneration)
-{
-    std::lock_guard<std::mutex> lock(gSessionMutex);
-    auto session = std::atomic_load(&gSession);
-    if (!session || gSessionGeneration.load() != expectedGeneration) return JNI_FALSE;
-    return session->setExperimentalMediaControlsEnabled(enabled == JNI_TRUE)
-        ? JNI_TRUE : JNI_FALSE;
-}
-
 /*
  * Class:     com_openautolink_app_transport_aasdk_AasdkNative
  * Method:    nativeSendGpsLocation
