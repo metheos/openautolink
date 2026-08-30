@@ -69,8 +69,9 @@ class AppPreferences private constructor(private val dataStore: DataStore<Prefer
         /**
          * BSSID of the access point the phone should join for WPP.
          *
-         * Must be typed in: an unprivileged app cannot read a running SoftAP's
-         * BSSID, and gearhead hard-rejects empty, zero and broadcast MACs
+         * Auto-config derives this from the selected AP interface MAC when
+         * possible. Manual entry remains available as an override/fallback.
+         * Gearhead hard-rejects empty, zero and broadcast MACs
          * (WIFI_INVALID_BSSID) before it will attempt projection.
          */
         val WPP_BSSID = stringPreferencesKey("wpp_bssid")

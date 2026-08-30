@@ -1,6 +1,7 @@
 package com.openautolink.app.ui.settings
 
 import android.app.Application
+import android.net.wifi.WifiManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.openautolink.app.data.AppPreferences
@@ -14,12 +15,19 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.net.NetworkInterface
+
+data class WppAutoConfigStatus(
+    val inProgress: Boolean = false,
+    val message: String = "",
+    val isError: Boolean = false,
+)
 
 data class SettingsUiState(
     val directTransport: String = AppPreferences.DEFAULT_DIRECT_TRANSPORT,
     val hotspotSsid: String = AppPreferences.DEFAULT_HOTSPOT_SSID,
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
-    /** AP BSSID advertised to the phone in WPP mode. Must be entered by hand. */
+    /** AP BSSID advertised to the phone in WPP mode. Auto-config can derive this from interface MAC. */
     val wppBssid: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
@@ -218,6 +226,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _wppApInterfaceOverride = MutableStateFlow(AppPreferences.DEFAULT_WPP_AP_INTERFACE)
     private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
+    private val _wppAutoConfigStatus = MutableStateFlow(WppAutoConfigStatus())
+
+    val wppAutoConfigStatus: StateFlow<WppAutoConfigStatus> = _wppAutoConfigStatus
 
     private val seedIdrThresholds = preferences.seedIdrThresholds.stateIn(
         viewModelScope,
@@ -370,6 +381,82 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateWppBssid(bssid: String) {
         _wppBssidOverride.value = bssid
         viewModelScope.launch { preferences.setWppBssid(bssid) }
+    }
+
+    fun autoConfigureWpp() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                inProgress = true,
+                message = "Detecting interface MAC and SSID...",
+                isError = false,
+            )
+
+            val ifaceName = _wppApInterfaceOverride.value
+                .ifBlank { AppPreferences.DEFAULT_WPP_AP_INTERFACE }
+                .trim()
+            val iface = runCatching { NetworkInterface.getByName(ifaceName) }.getOrNull()
+            if (iface == null) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Interface '$ifaceName' was not found.",
+                    isError = true,
+                )
+                return@launch
+            }
+
+            val hw = iface.hardwareAddress
+            if (hw == null || hw.isEmpty()) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Interface '$ifaceName' does not expose a hardware MAC address.",
+                    isError = true,
+                )
+                return@launch
+            }
+
+            val bssid = hw.joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+            _wppBssidOverride.value = bssid
+            preferences.setWppBssid(bssid)
+
+            val wifiManager = getApplication<Application>()
+                .applicationContext
+                .getSystemService(WifiManager::class.java)
+            if (wifiManager == null) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Detected BSSID ($bssid), but Wi-Fi service is unavailable for SSID lookup.",
+                    isError = true,
+                )
+                return@launch
+            }
+
+            val ssidResult = runCatching {
+                wifiManager.scanResults.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
+                    ?.SSID
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+            }
+
+            if (ssidResult.isFailure) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Detected BSSID ($bssid), but SSID scan failed. Ensure Location permission and Wi-Fi scanning are enabled.",
+                    isError = true,
+                )
+                return@launch
+            }
+
+            val ssid = ssidResult.getOrNull()
+            if (ssid != null) {
+                _hotspotSsidOverride.value = ssid
+                preferences.setHotspotSsid(ssid)
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Auto-config complete. Filled BSSID and SSID from '$ifaceName'.",
+                    isError = false,
+                )
+            } else {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Detected BSSID ($bssid), but no matching SSID was found in current scan results.",
+                    isError = true,
+                )
+            }
+        }
     }
 
     fun updateDirectTransport(transport: String) {

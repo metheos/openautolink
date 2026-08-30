@@ -326,13 +326,11 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
         )
 
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
+                    val wppAutoConfigStatus by viewModel.wppAutoConfigStatus.collectAsStateWithLifecycle()
             Spacer(modifier = Modifier.height(8.dp))
-            // These must be entered by hand. An unprivileged app cannot read a
-            // running access point's SSID/passphrase/BSSID on AAOS —
-            // getWifiApConfiguration() is signature-gated — so there is nothing
-            // to auto-fill from. The phone hard-rejects wrong or missing values
-            // (WIFI_INVALID_BSSID / WIFI_SECURITY_NOT_SUPPORTED) before it will
-            // start projection, so the hints below matter.
+                    // We can derive BSSID from the selected AP interface MAC and then
+                    // try to match SSID via visible scan results. Password still remains
+                    // manual because SoftAP credentials are signature-gated on AAOS.
             Text(
                 text = "Wi-Fi details sent to the phone",
                 style = MaterialTheme.typography.titleSmall,
@@ -340,11 +338,40 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             )
             Text(
                 text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. " +
-                    "These can't be detected automatically.",
+                            "Auto-config can fill BSSID and may fill SSID from scan results.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FilledTonalButton(
+                            onClick = { viewModel.autoConfigureWpp() },
+                            enabled = !wppAutoConfigStatus.inProgress,
+                        ) {
+                            Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-config")
+                        }
+                        if (wppAutoConfigStatus.inProgress) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                    if (wppAutoConfigStatus.message.isNotBlank()) {
+                        Text(
+                            text = wppAutoConfigStatus.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (wppAutoConfigStatus.isError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                Color(0xFF4CAF50)
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                        )
+                    }
             LocalEchoTextField(
                 value = uiState.hotspotSsid,
                 onValueChange = { viewModel.updateHotspotSsid(it) },
