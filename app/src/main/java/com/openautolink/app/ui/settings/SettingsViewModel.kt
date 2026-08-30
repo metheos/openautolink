@@ -1,9 +1,13 @@
 package com.openautolink.app.ui.settings
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.os.Build
 import android.net.wifi.WifiManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.ContextCompat
 import com.openautolink.app.data.AppPreferences
 import com.openautolink.app.transport.NetworkInterfaceInfo
 import com.openautolink.app.transport.NetworkInterfaceScanner
@@ -427,11 +431,43 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
 
-            val ssidResult = runCatching {
-                wifiManager.scanResults.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
-                    ?.SSID
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+            val appContext = getApplication<Application>().applicationContext
+            val hasFineLocation = ContextCompat.checkSelfPermission(
+                appContext,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasNearbyWifi = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(
+                    appContext,
+                    Manifest.permission.NEARBY_WIFI_DEVICES,
+                ) == PackageManager.PERMISSION_GRANTED
+            if (!hasFineLocation || !hasNearbyWifi) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Detected BSSID ($bssid), but Wi-Fi scan permission is missing. Grant Location and Nearby Wi-Fi Devices.",
+                    isError = true,
+                )
+                return@launch
+            }
+
+            val ssidResult = try {
+                Result.success(
+                    wifiManager.scanResults.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
+                        ?.SSID
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+                )
+            } catch (_: SecurityException) {
+                Result.failure<String?>(SecurityException("scan denied"))
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+
+            if (ssidResult.exceptionOrNull() is SecurityException) {
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = "Detected BSSID ($bssid), but Wi-Fi scan access was denied by the system.",
+                    isError = true,
+                )
+                return@launch
             }
 
             if (ssidResult.isFailure) {
