@@ -74,12 +74,6 @@ object AasdkNative {
     external fun nativeSendKeyPress(keyCode: Int, expectedNativeGeneration: Long): Boolean
 
     @JvmStatic
-    external fun nativeSetExperimentalMediaControlsEnabled(
-        enabled: Boolean,
-        expectedNativeGeneration: Long,
-    ): Boolean
-
-    @JvmStatic
     external fun nativeSendGpsLocation(
         lat: Double, lon: Double, alt: Double,
         speed: Float, bearing: Float, timestampMs: Long

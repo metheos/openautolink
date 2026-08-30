@@ -1,30 +1,47 @@
 package com.openautolink.app.media
 
+import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
 class GmMediaControlWiringContractTest {
 
     @Test
-    fun `experimental control mode is off by default and reachable from Settings`() {
-        val preferences = source("app/src/main/java/com/openautolink/app/data/AppPreferences.kt")
-        val settingsVm = source("app/src/main/java/com/openautolink/app/ui/settings/SettingsViewModel.kt")
-        val settingsUi = source("app/src/main/java/com/openautolink/app/ui/settings/SettingsScreen.kt")
+    fun `GM media controls are built in with no user or native enable gate`() {
+        val files = listOf(
+            "app/src/main/java/com/openautolink/app/data/AppPreferences.kt",
+            "app/src/main/java/com/openautolink/app/ui/settings/SettingsViewModel.kt",
+            "app/src/main/java/com/openautolink/app/ui/settings/SettingsScreen.kt",
+            "app/src/main/java/com/openautolink/app/media/OalMediaSessionManager.kt",
+            "app/src/main/java/com/openautolink/app/session/SessionManager.kt",
+            "app/src/main/java/com/openautolink/app/transport/aasdk/AasdkSession.kt",
+            "app/src/main/java/com/openautolink/app/transport/aasdk/AasdkNative.kt",
+            "app/src/main/cpp/aasdk_jni.cpp",
+            "app/src/main/cpp/jni_session.cpp",
+            "app/src/main/cpp/jni_session.h",
+        ).associateWith(::source)
 
-        assertTrue(preferences.contains("EXPERIMENTAL_GM_MEDIA_CONTROLS"))
-        assertTrue(preferences.contains("DEFAULT_EXPERIMENTAL_GM_MEDIA_CONTROLS = false"))
-        assertTrue(preferences.contains("val experimentalGmMediaControls: Flow<Boolean>"))
-        assertTrue(preferences.contains("suspend fun setExperimentalGmMediaControls"))
-        assertTrue(settingsVm.contains("experimentalGmMediaControls"))
-        assertTrue(settingsVm.contains("updateExperimentalGmMediaControls"))
-        assertTrue(settingsUi.contains("Experimental GM media controls"))
-        assertTrue(settingsUi.contains("experimentalGmMediaControlsToggle"))
+        val removedTokens = listOf(
+            "EXPERIMENTAL_GM_MEDIA_CONTROLS",
+            "experimentalGmMediaControls",
+            "experimentalControlsEnabled",
+            "setExperimentalControlsEnabled",
+            "desiredExperimentalMediaControlsEnabled",
+            "setExperimentalMediaControlsEnabled",
+            "experimentalMediaControlsEnabled",
+            "Experimental GM media controls",
+            "experimentalGmMediaControlsToggle",
+        )
+        files.forEach { (path, text) ->
+            removedTokens.forEach { token ->
+                assertFalse("$token must be absent from $path", text.contains(token))
+            }
+        }
     }
 
     @Test
-    fun `enabled MediaSession controls and both GM mute channels reach the current AA session`() {
+    fun `MediaSession controls and both GM mute channels always reach the current AA session`() {
         val media = source("app/src/main/java/com/openautolink/app/media/OalMediaSessionManager.kt")
         val manager = source("app/src/main/java/com/openautolink/app/session/SessionManager.kt")
         val aasdk = source("app/src/main/java/com/openautolink/app/transport/aasdk/AasdkSession.kt")
@@ -35,66 +52,94 @@ class GmMediaControlWiringContractTest {
         assertTrue(media.contains("override fun onStop()"))
         assertTrue(media.contains("GmMediaControlPolicy.Command.STOP"))
         assertTrue(media.contains("PlaybackStateCompat.ACTION_STOP"))
-        assertTrue(media.contains("if (experimentalControlsEnabled) actions = actions or PlaybackStateCompat.ACTION_STOP"))
-        assertTrue(media.contains("buildPlaybackState(lastPushedState, lastPushedPosition)"))
-        assertTrue(manager.contains("setExperimentalControlsEnabled(false)"))
-        assertTrue(manager.contains("setExperimentalControlsEnabled(true)"))
-        assertTrue(manager.contains("preferences.experimentalGmMediaControls.distinctUntilChanged()"))
+        assertTrue(media.contains("mediaControlCallback?.onCommand"))
+
+        assertTrue(manager.contains("installGmMediaControls()"))
+        assertTrue(manager.contains("registerMuteStateReceiver()"))
         assertTrue(manager.contains("MASTER_MUTE_CHANGED_ACTION"))
         assertTrue(manager.contains("STREAM_MUTE_CHANGED_ACTION"))
         assertTrue(manager.contains("EXTRA_MASTER_VOLUME_MUTED"))
         assertTrue(manager.contains("manager.isStreamMute(AudioManager.STREAM_MUSIC)"))
         assertTrue(manager.contains("routeMediaSessionCommand"))
-        assertTrue(manager.contains("syncExperimentalHuMuteState"))
-        assertTrue(manager.contains("primeExperimentalUnmutedState"))
+        assertTrue(manager.contains("syncGmMuteState"))
+        val prepareNativeStart = manager
+            .substringAfter("private fun prepareNativeSessionStart")
+            .substringBefore("private fun startStreamingServicesLocked")
+        assertTrue(
+            prepareNativeStart.contains(
+                "synchronized(gmMediaControlLock) { lastDeliveredHuMuted = null }",
+            ),
+        )
         val receiverBlock = manager
             .substringAfter("private fun registerMuteStateReceiver()")
-            .substringBefore("private fun unregisterMuteStateReceiver()")
-        assertTrue(receiverBlock.contains("scope.launch { syncExperimentalHuMuteState"))
+            .substringBefore("private fun syncGmMuteState")
+        assertTrue(receiverBlock.contains("scope.launch { syncGmMuteState"))
+
         assertTrue(aasdk.contains("fun sendKeyPress"))
         assertTrue(aasdk.contains("currentNativeSessionGeneration"))
         assertTrue(aasdk.contains("fun setHeadUnitMuted"))
-        val nativeGateSetter = aasdk
-            .substringAfter("fun setExperimentalMediaControlsEnabled")
-            .substringBefore("fun sendGpsLocation")
-        assertTrue(nativeGateSetter.contains("synchronized(connectionStartLock)"))
+        assertTrue(aasdk.contains("private val headUnitMuteLock"))
+        assertTrue(aasdk.contains("synchronized(headUnitMuteLock)"))
         assertTrue(nativeApi.contains("nativeSendKeyPress"))
         assertTrue(nativeApi.contains("nativeSetHeadUnitMuted"))
         assertTrue(nativeApi.contains("nativePrimeHeadUnitMuted"))
-        assertTrue(nativeApi.contains("nativeSetExperimentalMediaControlsEnabled"))
         assertTrue(jni.contains("AasdkNative_nativeSendKeyPress"))
         assertTrue(jni.contains("AasdkNative_nativeSetHeadUnitMuted"))
         assertTrue(jni.contains("gSessionGeneration.load() != expectedGeneration"))
+
         val keyPressBody = nativeImpl
             .substringAfter("bool JniSession::sendKeyPress")
             .substringBefore("void JniSession::sendGpsLocation")
         assertTrue(keyPressBody.contains("for (bool down : {true, false})"))
         assertTrue(keyPressBody.contains("edges == 2"))
-        assertTrue(keyPressBody.contains("experimentalMediaControlsEnabled_"))
+        assertFalse(keyPressBody.contains("experimental"))
+
         val muteSetterBody = nativeImpl
             .substringAfter("bool JniSession::setHeadUnitMuted")
             .substringBefore("bool JniSession::flushHeadUnitAudioFocusState")
         assertTrue(muteSetterBody.contains("ioService_->post"))
+        assertTrue(muteSetterBody.contains("flushHeadUnitAudioFocusState(true)"))
         assertFalse(muteSetterBody.contains("controlChannel_"))
         assertFalse(muteSetterBody.contains("strand_"))
+
         val setupFocusBody = nativeImpl
             .substringAfter("void JniSession::sendUnsolicitedAudioFocusGain")
             .substringBefore("bool JniSession::setHeadUnitMuted")
-        assertTrue(setupFocusBody.contains("if (!experimentalMediaControlsEnabled_.load())"))
-        assertTrue(setupFocusBody.contains("AUDIO_FOCUS_STATE_GAIN"))
+        assertTrue(setupFocusBody.contains("flushHeadUnitAudioFocusState(headUnitMuteExplicit_.load())"))
+        assertFalse(setupFocusBody.contains("AUDIO_FOCUS_STATE_GAIN"))
+        val focusFlushBody = nativeImpl
+            .substringAfter("bool JniSession::flushHeadUnitAudioFocusState")
+            .substringBefore("bool JniSession::sendUnsolicitedAudioFocusState")
+        assertTrue(focusFlushBody.contains("!streaming_"))
+        val streamingReady = nativeImpl.indexOf("streaming_ = true;")
+        val sessionStartedCallback = nativeImpl.indexOf(
+            "callVoidCallback(cbMethods_.onSessionStarted);",
+            startIndex = streamingReady,
+        )
+        assertTrue(streamingReady >= 0 && sessionStartedCallback > streamingReady)
+        val phoneConnectedBlock = manager
+            .substringAfter("is ControlMessage.PhoneConnected ->")
+            .substringBefore("is ControlMessage.PhoneDisconnected ->")
+        assertTrue(phoneConnectedBlock.contains("_sessionState.value = SessionState.STREAMING"))
+        assertTrue(
+            phoneConnectedBlock.contains(
+                "scope.launch { syncGmMuteState(\"phone-connected\") }",
+            ),
+        )
         assertTrue(nativeImpl.contains("Key press send complete:"))
         assertTrue(nativeImpl.contains("AA audio focus sync outcome=sent:"))
+        assertTrue(manager.contains("retainedMuted = currentSession?.desiredHeadUnitMuted"))
+        assertTrue(manager.contains("session.primeHeadUnitMuted("))
     }
 
     @Test
-    fun `existing custom key remapping remains independent of experimental MediaSession controls`() {
+    fun `existing custom key remapping remains independent of built-in MediaSession controls`() {
         val steering = source("app/src/main/java/com/openautolink/app/input/SteeringWheelController.kt")
         val customBranch = steering
             .substringAfter("val customMapped = customKeyMap[keycode]")
             .substringBefore("return when")
 
         assertTrue(customBranch.contains("sendButtonToAA(customMapped"))
-        assertFalse(steering.contains("experimentalGmMediaControls"))
         assertFalse(steering.contains("GmMediaControlPolicy"))
     }
 

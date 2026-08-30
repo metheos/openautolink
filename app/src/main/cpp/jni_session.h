@@ -130,9 +130,6 @@ public:
     /** Queue a complete down/up media-key press as one native operation. */
     bool sendKeyPress(int keyCode);
 
-    /** Gate only the experimental MediaSession command path. */
-    bool setExperimentalMediaControlsEnabled(bool enabled);
-
     /** Send GPS location to phone. */
     void sendGpsLocation(double lat, double lon, double alt,
                          float speed, float bearing, long long timestampMs);
@@ -309,7 +306,6 @@ private:
     std::atomic<bool> sessionStoppedFired_{false};
     std::atomic<bool> headUnitMuted_{false};
     std::atomic<bool> headUnitMuteExplicit_{false};
-    std::atomic<bool> experimentalMediaControlsEnabled_{false};
     // IO-thread confined; reset only when an async send fails.
     int lastQueuedHeadUnitMute_ = -1;
     // Reason string passed to Kotlin onSessionStopped. Defaults to "stopped";

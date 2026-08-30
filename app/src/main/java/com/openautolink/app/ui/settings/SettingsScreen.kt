@@ -2506,41 +2506,6 @@ private fun AudioTab(viewModel: SettingsViewModel, uiState: SettingsUiState) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Temporary field-test switch. Once vehicle evidence is conclusive this
-        // setting can be removed and the proven behavior made unconditional.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Experimental GM media controls",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "Route GM's native media controls and master/stream mute state " +
-                        "to Android Auto. Existing steering-wheel key remaps stay active. " +
-                        "Takes effect immediately.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(
-                checked = uiState.experimentalGmMediaControls,
-                onCheckedChange = { viewModel.updateExperimentalGmMediaControls(it) },
-                modifier = Modifier.testTag("experimentalGmMediaControlsToggle"),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.7f))
-
-        Spacer(modifier = Modifier.height(24.dp))
-
         // --- Per-Purpose Volume Offsets ---
         SectionHeader("Volume Offsets")
 

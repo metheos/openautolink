@@ -1,8 +1,6 @@
 package com.openautolink.app.media
 
 import android.view.KeyEvent
-import com.openautolink.app.data.AppPreferences
-import com.openautolink.app.ui.settings.SettingsUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -12,42 +10,26 @@ import org.junit.Test
 class GmMediaControlPolicyTest {
 
     @Test
-    fun `experiment defaults off in storage and Settings state`() {
-        assertFalse(AppPreferences.DEFAULT_EXPERIMENTAL_GM_MEDIA_CONTROLS)
-        assertFalse(SettingsUiState().experimentalGmMediaControls)
-    }
-
-    @Test
-    fun `disabled experiment does not translate MediaSession commands`() {
-        assertNull(
-            GmMediaControlPolicy.keyCodeFor(
-                GmMediaControlPolicy.Command.PLAY,
-                enabled = false,
-            ),
-        )
-    }
-
-    @Test
-    fun `enabled experiment uses the discrete key mapping from GM GAL`() {
+    fun `built-in controls use the discrete key mapping from GM GAL`() {
         assertEquals(
             KeyEvent.KEYCODE_MEDIA_PLAY,
-            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PLAY, enabled = true),
+            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PLAY),
         )
         assertEquals(
             KeyEvent.KEYCODE_MEDIA_PAUSE,
-            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PAUSE, enabled = true),
+            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PAUSE),
         )
         assertEquals(
             KeyEvent.KEYCODE_MEDIA_PAUSE,
-            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.STOP, enabled = true),
+            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.STOP),
         )
         assertEquals(
             KeyEvent.KEYCODE_MEDIA_NEXT,
-            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.NEXT, enabled = true),
+            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.NEXT),
         )
         assertEquals(
             KeyEvent.KEYCODE_MEDIA_PREVIOUS,
-            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PREVIOUS, enabled = true),
+            GmMediaControlPolicy.keyCodeFor(GmMediaControlPolicy.Command.PREVIOUS),
         )
     }
 
@@ -60,64 +42,77 @@ class GmMediaControlPolicyTest {
     }
 
     @Test
-    fun `mute synchronization emits only enabled state transitions`() {
-        assertNull(
-            GmMediaControlPolicy.nextMuteState(
-                enabled = false,
-                masterMuted = true,
-                streamMuted = false,
-                lastDeliveredMuted = false,
-            ),
-        )
+    fun `mute synchronization emits only state transitions`() {
         assertEquals(
             true,
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = true,
                 streamMuted = false,
                 lastDeliveredMuted = false,
+                retainedMuted = false,
             ),
         )
         assertNull(
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = true,
                 streamMuted = true,
                 lastDeliveredMuted = true,
+                retainedMuted = true,
             ),
         )
         assertEquals(
             false,
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = false,
                 streamMuted = false,
                 lastDeliveredMuted = true,
+                retainedMuted = true,
             ),
         )
         assertNull(
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = false,
                 streamMuted = false,
                 lastDeliveredMuted = null,
+                retainedMuted = false,
             ),
         )
         assertEquals(
             true,
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = true,
                 streamMuted = false,
                 lastDeliveredMuted = null,
+                retainedMuted = false,
             ),
         )
         assertNull(
             GmMediaControlPolicy.nextMuteState(
-                enabled = true,
                 masterMuted = true,
                 streamMuted = false,
                 lastDeliveredMuted = true,
+                retainedMuted = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `startup unmute corrects a retained mute without creating an initial transition`() {
+        assertEquals(
+            false,
+            GmMediaControlPolicy.nextMuteState(
+                masterMuted = false,
+                streamMuted = false,
+                lastDeliveredMuted = null,
+                retainedMuted = true,
+            ),
+        )
+        assertNull(
+            GmMediaControlPolicy.nextMuteState(
+                masterMuted = false,
+                streamMuted = false,
+                lastDeliveredMuted = null,
+                retainedMuted = false,
             ),
         )
     }

@@ -374,10 +374,10 @@ class AasdkSession(
     var onNativeSessionStarting: (() -> Boolean)? = null
 
     /** Desired HU mute state, retained across native transport replacement. */
+    private val headUnitMuteLock = Any()
     @Volatile
     var desiredHeadUnitMuted: Boolean? = null
-    @Volatile
-    var desiredExperimentalMediaControlsEnabled = false
+        private set
     private val nativeSessionGeneration = java.util.concurrent.atomic.AtomicLong(0L)
 
     fun currentNativeSessionGeneration(): Long = nativeSessionGeneration.get()
@@ -559,13 +559,7 @@ class AasdkSession(
 
             try {
                 nativeSessionGeneration.set(AasdkNative.nativeCreateSession())
-                AasdkNative.nativeSetExperimentalMediaControlsEnabled(
-                    desiredExperimentalMediaControlsEnabled,
-                    nativeSessionGeneration.get(),
-                )
-                desiredHeadUnitMuted?.let {
-                    AasdkNative.nativePrimeHeadUnitMuted(it, nativeSessionGeneration.get())
-                }
+                primeDesiredHeadUnitMuteOnNativeSession()
                 AasdkNative.nativeStartSession(pipe, this, sdrConfig)
             } catch (e: Exception) {
                 OalLog.e(TAG, "Native session start failed (USB): ${e.message}")
@@ -654,13 +648,7 @@ class AasdkSession(
 
         try {
             nativeSessionGeneration.set(AasdkNative.nativeCreateSession())
-            AasdkNative.nativeSetExperimentalMediaControlsEnabled(
-                desiredExperimentalMediaControlsEnabled,
-                nativeSessionGeneration.get(),
-            )
-            desiredHeadUnitMuted?.let {
-                AasdkNative.nativePrimeHeadUnitMuted(it, nativeSessionGeneration.get())
-            }
+            primeDesiredHeadUnitMuteOnNativeSession()
             AasdkNative.nativeStartSession(transportPipe!!, this, sdrConfig)
         } catch (e: Exception) {
             OalLog.e(TAG, "Native session start failed: ${e.message}")
@@ -787,14 +775,6 @@ class AasdkSession(
     fun sendKeyPress(keyCode: Int, expectedNativeGeneration: Long): Boolean =
         AasdkNative.nativeSendKeyPress(keyCode, expectedNativeGeneration)
 
-    fun setExperimentalMediaControlsEnabled(enabled: Boolean): Boolean =
-        synchronized(connectionStartLock) {
-            desiredExperimentalMediaControlsEnabled = enabled
-            val generation = nativeSessionGeneration.get()
-            generation != 0L &&
-                AasdkNative.nativeSetExperimentalMediaControlsEnabled(enabled, generation)
-        }
-
     fun sendGpsLocation(lat: Double, lon: Double, alt: Double,
                         speed: Float, bearing: Float, timestampMs: Long) {
         AasdkNative.nativeSendGpsLocation(lat, lon, alt, speed, bearing, timestampMs)
@@ -840,15 +820,27 @@ class AasdkSession(
      * (e.g., pause/resume on mute/unmute).
      */
     fun setHeadUnitMuted(muted: Boolean): Boolean {
-        desiredHeadUnitMuted = muted
-        val generation = nativeSessionGeneration.get()
-        return generation != 0L && AasdkNative.nativeSetHeadUnitMuted(muted, generation)
+        synchronized(headUnitMuteLock) {
+            desiredHeadUnitMuted = muted
+            val generation = nativeSessionGeneration.get()
+            return generation != 0L && AasdkNative.nativeSetHeadUnitMuted(muted, generation)
+        }
     }
 
     fun primeHeadUnitMuted(muted: Boolean): Boolean {
-        desiredHeadUnitMuted = muted
-        val generation = nativeSessionGeneration.get()
-        return generation != 0L && AasdkNative.nativePrimeHeadUnitMuted(muted, generation)
+        synchronized(headUnitMuteLock) {
+            desiredHeadUnitMuted = muted
+            val generation = nativeSessionGeneration.get()
+            return generation != 0L && AasdkNative.nativePrimeHeadUnitMuted(muted, generation)
+        }
+    }
+
+    private fun primeDesiredHeadUnitMuteOnNativeSession() {
+        synchronized(headUnitMuteLock) {
+            desiredHeadUnitMuted?.let {
+                AasdkNative.nativePrimeHeadUnitMuted(it, nativeSessionGeneration.get())
+            }
+        }
     }
 
     /**
