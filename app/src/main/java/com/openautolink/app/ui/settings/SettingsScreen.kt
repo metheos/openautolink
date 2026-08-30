@@ -326,52 +326,85 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
         )
 
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
-                    val wppAutoConfigStatus by viewModel.wppAutoConfigStatus.collectAsStateWithLifecycle()
+            val wppAutoConfigStatus by viewModel.wppAutoConfigStatus.collectAsStateWithLifecycle()
+            val wppNetworkCandidates by viewModel.wppNetworkCandidates.collectAsStateWithLifecycle()
+            var wppNetworkMenuOpen by remember { mutableStateOf(false) }
+
             Spacer(modifier = Modifier.height(8.dp))
-                    // We can derive BSSID from the selected AP interface MAC and then
-                    // try to match SSID via visible scan results. Password still remains
-                    // manual because SoftAP credentials are signature-gated on AAOS.
             Text(
                 text = "Wi-Fi details sent to the phone",
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Text(
-                text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. " +
-                            "Auto-config can fill BSSID and may fill SSID from scan results.",
+                text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. Auto-config scans nearby Wi‑Fi networks and lets you pick the right SSID/BSSID; you still enter the password manually.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { viewModel.autoConfigureWpp() },
+                    enabled = !wppAutoConfigStatus.inProgress,
+                ) {
+                    Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-config")
+                }
+                if (wppAutoConfigStatus.inProgress) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+                if (wppNetworkCandidates.isNotEmpty()) {
+                    FilledTonalButton(
+                        onClick = { wppNetworkMenuOpen = true },
                     ) {
-                        FilledTonalButton(
-                            onClick = { viewModel.autoConfigureWpp() },
-                            enabled = !wppAutoConfigStatus.inProgress,
-                        ) {
-                            Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-config")
-                        }
-                        if (wppAutoConfigStatus.inProgress) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("Choose network")
+                    }
+                }
+            }
+            if (wppAutoConfigStatus.message.isNotBlank()) {
+                Text(
+                    text = wppAutoConfigStatus.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (wppAutoConfigStatus.isError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        Color(0xFF4CAF50)
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
+            if (wppNetworkCandidates.isNotEmpty()) {
+                Box {
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = wppNetworkMenuOpen,
+                        onDismissRequest = { wppNetworkMenuOpen = false },
+                    ) {
+                        wppNetworkCandidates.forEach { candidate ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(candidate.ssid)
+                                        Text(
+                                            candidate.bssid,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.selectWppNetworkCandidate(candidate.ssid, candidate.bssid)
+                                    wppNetworkMenuOpen = false
+                                },
+                            )
                         }
                     }
-                    if (wppAutoConfigStatus.message.isNotBlank()) {
-                        Text(
-                            text = wppAutoConfigStatus.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (wppAutoConfigStatus.isError) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                Color(0xFF4CAF50)
-                            },
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-                        )
-                    }
+                }
+            }
             LocalEchoTextField(
                 value = uiState.hotspotSsid,
                 onValueChange = { viewModel.updateHotspotSsid(it) },

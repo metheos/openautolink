@@ -19,7 +19,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.net.NetworkInterface
+data class WppNetworkCandidate(
+   val ssid: String,
+   val bssid: String,
+   val signalLevel: Int,
+)
 
 data class WppAutoConfigStatus(
     val inProgress: Boolean = false,
@@ -31,7 +35,7 @@ data class SettingsUiState(
     val directTransport: String = AppPreferences.DEFAULT_DIRECT_TRANSPORT,
     val hotspotSsid: String = AppPreferences.DEFAULT_HOTSPOT_SSID,
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
-    /** AP BSSID advertised to the phone in WPP mode. Auto-config can derive this from interface MAC. */
+    /** AP BSSID advertised to the phone in WPP mode. Auto-config can populate this from a nearby Wi‑Fi scan. */
     val wppBssid: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
@@ -231,8 +235,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
     private val _wppAutoConfigStatus = MutableStateFlow(WppAutoConfigStatus())
+    private val _wppNetworkCandidates = MutableStateFlow<List<WppNetworkCandidate>>(emptyList())
 
     val wppAutoConfigStatus: StateFlow<WppAutoConfigStatus> = _wppAutoConfigStatus
+    val wppNetworkCandidates: StateFlow<List<WppNetworkCandidate>> = _wppNetworkCandidates
 
     private val seedIdrThresholds = preferences.seedIdrThresholds.stateIn(
         viewModelScope,
@@ -387,111 +393,122 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferences.setWppBssid(bssid) }
     }
 
+    private fun hasWifiScanPermission(context: android.content.Context): Boolean {
+        val hasFineLocation = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasNearbyWifi = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+            ) == PackageManager.PERMISSION_GRANTED
+        return hasFineLocation && hasNearbyWifi
+    }
+
+    private fun listTopWppCandidates(wifiManager: WifiManager): Result<List<WppNetworkCandidate>> =
+        try {
+            val candidates = wifiManager.scanResults
+                .asSequence()
+                .mapNotNull { scan ->
+                    val ssid = scan.SSID?.trim().orEmpty()
+                    val normalizedSsid = ssid.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
+                    val bssid = scan.BSSID?.trim()?.uppercase()
+                    if (normalizedSsid == null || bssid.isNullOrBlank()) {
+                        null
+                    } else {
+                        WppNetworkCandidate(
+                            ssid = normalizedSsid,
+                            bssid = bssid,
+                            signalLevel = scan.level,
+                        )
+                    }
+                }
+                .distinctBy { it.ssid }
+                .sortedByDescending { it.signalLevel }
+                .take(3)
+                .toList()
+            Result.success(candidates)
+        } catch (_: SecurityException) {
+            Result.failure(SecurityException("scan denied"))
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+
+    fun selectWppNetworkCandidate(ssid: String, bssid: String) {
+        _hotspotSsidOverride.value = ssid
+        _wppBssidOverride.value = bssid.uppercase()
+        viewModelScope.launch {
+            preferences.setHotspotSsid(ssid)
+            preferences.setWppBssid(bssid.uppercase())
+        }
+        _wppAutoConfigStatus.value = WppAutoConfigStatus(
+            message = "Selected SSID '$ssid' with BSSID $bssid. Enter the Wi‑Fi password to continue.",
+            isError = false,
+        )
+    }
+
     fun autoConfigureWpp() {
         viewModelScope.launch(Dispatchers.IO) {
             _wppAutoConfigStatus.value = WppAutoConfigStatus(
                 inProgress = true,
-                message = "Detecting interface MAC and SSID...",
+                message = "Scanning for nearby Wi‑Fi networks...",
                 isError = false,
             )
-
-            val ifaceName = _wppApInterfaceOverride.value
-                .ifBlank { AppPreferences.DEFAULT_WPP_AP_INTERFACE }
-                .trim()
-            val iface = runCatching { NetworkInterface.getByName(ifaceName) }.getOrNull()
-            if (iface == null) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Interface '$ifaceName' was not found.",
-                    isError = true,
-                )
-                return@launch
-            }
-
-            val hw = iface.hardwareAddress
-            if (hw == null || hw.isEmpty()) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Interface '$ifaceName' does not expose a hardware MAC address.",
-                    isError = true,
-                )
-                return@launch
-            }
-
-            val bssid = hw.joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-            _wppBssidOverride.value = bssid
-            preferences.setWppBssid(bssid)
+            _wppNetworkCandidates.value = emptyList()
 
             val wifiManager = getApplication<Application>()
                 .applicationContext
                 .getSystemService(WifiManager::class.java)
             if (wifiManager == null) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Detected BSSID ($bssid), but Wi-Fi service is unavailable for SSID lookup.",
+                    message = "Wi‑Fi service is unavailable, so nearby networks cannot be scanned.",
                     isError = true,
                 )
                 return@launch
             }
 
             val appContext = getApplication<Application>().applicationContext
-            val hasFineLocation = ContextCompat.checkSelfPermission(
-                appContext,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-            ) == PackageManager.PERMISSION_GRANTED
-            val hasNearbyWifi = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                ContextCompat.checkSelfPermission(
-                    appContext,
-                    Manifest.permission.NEARBY_WIFI_DEVICES,
-                ) == PackageManager.PERMISSION_GRANTED
-            if (!hasFineLocation || !hasNearbyWifi) {
+            if (!hasWifiScanPermission(appContext)) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Detected BSSID ($bssid), but Wi-Fi scan permission is missing. Grant Location and Nearby Wi-Fi Devices.",
+                    message = "Wi‑Fi scan permission is missing. Grant Location and Nearby Wi‑Fi Devices, then try again.",
                     isError = true,
                 )
                 return@launch
             }
 
-            val ssidResult = try {
-                Result.success(
-                    wifiManager.scanResults.firstOrNull { it.BSSID.equals(bssid, ignoreCase = true) }
-                        ?.SSID
-                        ?.trim()
-                        ?.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
-                )
-            } catch (_: SecurityException) {
-                Result.failure<String?>(SecurityException("scan denied"))
-            } catch (t: Throwable) {
-                Result.failure(t)
-            }
-
-            if (ssidResult.exceptionOrNull() is SecurityException) {
+            val candidatesResult = listTopWppCandidates(wifiManager)
+            if (candidatesResult.exceptionOrNull() is SecurityException) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Detected BSSID ($bssid), but Wi-Fi scan access was denied by the system.",
+                    message = "Wi‑Fi scan access was denied by the system.",
                     isError = true,
                 )
                 return@launch
             }
 
-            if (ssidResult.isFailure) {
+            if (candidatesResult.isFailure) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Detected BSSID ($bssid), but SSID scan failed. Ensure Location permission and Wi-Fi scanning are enabled.",
+                    message = "Nearby Wi‑Fi scan failed. Ensure Location permission and Wi‑Fi scanning are enabled.",
                     isError = true,
                 )
                 return@launch
             }
 
-            val ssid = ssidResult.getOrNull()
-            if (ssid != null) {
-                _hotspotSsidOverride.value = ssid
-                preferences.setHotspotSsid(ssid)
+            val candidates = candidatesResult.getOrNull().orEmpty()
+            _wppNetworkCandidates.value = candidates
+
+            if (candidates.isEmpty()) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Auto-config complete. Filled BSSID and SSID from '$ifaceName'.",
-                    isError = false,
-                )
-            } else {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Detected BSSID ($bssid), but no matching SSID was found in current scan results.",
+                    message = "No nearby Wi‑Fi networks were found in the current scan.",
                     isError = true,
                 )
+                return@launch
             }
+
+            _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                message = "Found ${candidates.size} nearby network${if (candidates.size == 1) "" else "s"}. Choose the correct one, then enter the password.",
+                isError = false,
+            )
         }
     }
 
