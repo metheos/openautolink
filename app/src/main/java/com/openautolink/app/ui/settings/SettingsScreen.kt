@@ -336,8 +336,7 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             )
             Text(
                 text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. " +
-                    "Auto-detect reads the BSSID from the hotspot interface MAC and (if the WPP SSID Reader accessibility service is enabled) " +
-                    "scrapes the SSID from Android Settings automatically. Enable it once in Android Settings → Accessibility, then tap Auto-detect.",
+                    "Auto-detect reads the BSSID from the configured WPP interface MAC. Enter the SSID and password manually.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),

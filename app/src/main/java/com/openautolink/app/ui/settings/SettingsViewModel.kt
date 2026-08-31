@@ -1,19 +1,9 @@
 package com.openautolink.app.ui.settings
 
-import android.Manifest
 import android.app.Application
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.core.content.ContextCompat
 import com.openautolink.app.data.AppPreferences
-import com.openautolink.app.diagnostics.OalLog
-import com.openautolink.app.diagnostics.WppSsidAccessibilityService
 import com.openautolink.app.transport.NetworkInterfaceInfo
 import com.openautolink.app.transport.NetworkInterfaceScanner
 import kotlinx.coroutines.Dispatchers
@@ -24,9 +14,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.net.NetworkInterface
-import java.util.Collections
 
 data class WppAutoConfigStatus(
     val inProgress: Boolean = false,
@@ -38,7 +26,7 @@ data class SettingsUiState(
     val directTransport: String = AppPreferences.DEFAULT_DIRECT_TRANSPORT,
     val hotspotSsid: String = AppPreferences.DEFAULT_HOTSPOT_SSID,
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
-    /** AP BSSID advertised to the phone in WPP mode. Auto-config can populate this from a nearby Wi‑Fi scan. */
+    /** AP BSSID advertised to the phone in WPP mode. Auto-detect can populate this from the configured interface MAC. */
     val wppBssid: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
@@ -395,119 +383,44 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Probes local network interfaces for a hotspot/softap interface and reads its MAC as the
-     * BSSID. No permissions are required — `NetworkInterface.getNetworkInterfaces()` is a
-     * standard Java socket API and does not violate Play Store policies.
-     *
-     * Hotspot interfaces on AAOS typically use names like "softap0", "wlan1", "ap0", or any name
-     * containing "softap" or "ap". We probe in priority order and return the first hit.
+     * Reads the MAC address from the configured WPP interface and uses it as the advertised BSSID.
+     * We intentionally probe only the configured interface because WPP traffic is already pinned to
+     * that NIC elsewhere in the app, and OEM hotspot naming is not reliable.
      */
-    private fun detectHotspotBssid(): String? = runCatching {
-        val ifaces = Collections.list(NetworkInterface.getNetworkInterfaces() ?: return null)
-        // Priority order: explicit softap names first, then wlan1, then any "ap"-containing name.
-        val ordered = ifaces.sortedWith(
-            compareBy { iface ->
-                val n = iface.name.lowercase()
-                when {
-                    n.startsWith("softap") -> 0
-                    n == "wlan1" -> 1
-                    n.contains("softap") -> 2
-                    n.startsWith("ap") -> 3
-                    n.contains("ap") -> 4
-                    else -> 99
-                }
-            }
-        )
-        for (iface in ordered) {
-            val n = iface.name.lowercase()
-            if (!n.contains("softap") && !n.contains("ap") && n != "wlan1") continue
-            val mac = iface.hardwareAddress ?: continue
-            if (mac.isEmpty()) continue
-            return mac.joinToString(":") { "%02X".format(it) }
-        }
-        null
+    private fun detectHotspotBssid(interfaceName: String): String? = runCatching {
+        val normalizedName = interfaceName.trim()
+        if (normalizedName.isEmpty()) return null
+        val iface = NetworkInterface.getByName(normalizedName) ?: return null
+        val mac = iface.hardwareAddress ?: return null
+        if (mac.isEmpty()) return null
+        mac.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
     }.getOrNull()
-
-    private fun isWppAccessibilityServiceEnabled(context: Context): Boolean {
-        val am = context.getSystemService(AccessibilityManager::class.java) ?: return false
-        val enabledServices = Settings.Secure.getString(
-            context.contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-        ) ?: return false
-        val serviceId = "${context.packageName}/${WppSsidAccessibilityService::class.java.canonicalName}"
-        return enabledServices.split(":").any { it.equals(serviceId, ignoreCase = true) }
-    }
 
     fun autoConfigureWpp() {
         viewModelScope.launch(Dispatchers.IO) {
-            val appContext = getApplication<Application>().applicationContext
-
             _wppAutoConfigStatus.value = WppAutoConfigStatus(
                 inProgress = true,
                 message = "Detecting hotspot interface MAC...",
                 isError = false,
             )
 
-            val bssid = detectHotspotBssid()
+            val configuredInterface = _wppApInterfaceOverride.value
+                .ifBlank { AppPreferences.DEFAULT_WPP_AP_INTERFACE }
+                .trim()
+            val bssid = detectHotspotBssid(configuredInterface)
             if (bssid != null) {
                 _wppBssidOverride.value = bssid
                 preferences.setWppBssid(bssid)
-            }
-
-            // Check if the accessibility service is available for SSID scraping.
-            val a11yEnabled = isWppAccessibilityServiceEnabled(appContext)
-            if (!a11yEnabled) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = if (bssid != null) {
-                        "Detected BSSID $bssid. To also auto-fill the SSID, enable \"WPP SSID Reader\" in Android Settings → Accessibility."
-                    } else {
-                        "No hotspot interface found for BSSID detection. Enable \"WPP SSID Reader\" in Android Settings → Accessibility to also detect the SSID."
-                    },
-                    isError = bssid == null,
+                    message = "Detected BSSID $bssid from WPP interface '$configuredInterface'. Enter the SSID and password manually.",
+                    isError = false,
                 )
                 return@launch
             }
 
-            // Accessibility service is enabled — open TetherSettings and wait for SSID.
             _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                inProgress = true,
-                message = if (bssid != null) "Detected BSSID $bssid. Reading SSID from settings..." else "Reading SSID from settings...",
-                isError = false,
-            )
-
-            WppSsidAccessibilityService.startScrape()
-            val tetherIntent = Intent().apply {
-                setClassName("com.android.settings", "com.android.settings.TetherSettings")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            appContext.startActivity(tetherIntent)
-
-            val ssid = withTimeoutOrNull(8_000L) {
-                WppSsidAccessibilityService.ssidResult.first { it != null }
-            }
-
-            if (ssid == null) {
-                WppSsidAccessibilityService.cancelScrape()
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = if (bssid != null) {
-                        "Detected BSSID $bssid, but SSID was not found in TetherSettings within 8 s. Enter the SSID manually."
-                    } else {
-                        "SSID was not found in TetherSettings within 8 s. Enter it manually."
-                    },
-                    isError = true,
-                )
-                return@launch
-            }
-
-            _hotspotSsidOverride.value = ssid
-            preferences.setHotspotSsid(ssid)
-            _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                message = if (bssid != null) {
-                    "Detected BSSID $bssid and SSID \"$ssid\". Enter the Wi‑Fi password to complete."
-                } else {
-                    "Detected SSID \"$ssid\". BSSID was not found — set it manually."
-                },
-                isError = false,
+                message = "Could not read a MAC address from WPP interface '$configuredInterface'. Enter the BSSID manually.",
+                isError = true,
             )
         }
     }
