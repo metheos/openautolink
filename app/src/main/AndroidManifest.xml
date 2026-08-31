@@ -15,6 +15,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- For WPP SSID auto-config: reads the hotspot SSID from TetherSettings UI.
+         Internal closed-test-track only. User must enable once in Android Accessibility settings. -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
 
     <!-- Bluetooth permissions. BLUETOOTH_CONNECT is needed to read the head
          unit's BT MAC address (Settings.Secure["bluetooth_address"] /
@@ -179,6 +182,22 @@
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+        </service>
+
+        <!-- WPP SSID auto-config: one-shot accessibility service that reads the hotspot
+             name from TetherSettings. Internal closed-test-track only.
+             User enables once in Android Settings → Accessibility → OpenAutoLink → WPP SSID Reader. -->
+        <service
+            android:name=".diagnostics.WppSsidAccessibilityService"
+            android:exported="true"
+            android:label="WPP SSID Reader"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/wpp_accessibility_service" />
         </service>
 
     </application>

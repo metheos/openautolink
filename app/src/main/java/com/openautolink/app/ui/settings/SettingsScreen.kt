@@ -327,8 +327,6 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
 
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
             val wppAutoConfigStatus by viewModel.wppAutoConfigStatus.collectAsStateWithLifecycle()
-            val wppNetworkCandidates by viewModel.wppNetworkCandidates.collectAsStateWithLifecycle()
-            var wppNetworkMenuOpen by remember { mutableStateOf(false) }
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(
@@ -337,7 +335,9 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Text(
-                text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. Auto-config scans nearby Wi‑Fi networks and lets you pick the right SSID/BSSID; you still enter the password manually.",
+                text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. " +
+                    "Auto-detect reads the BSSID from the hotspot interface MAC and (if the WPP SSID Reader accessibility service is enabled) " +
+                    "scrapes the SSID from Android Settings automatically. Enable it once in Android Settings → Accessibility, then tap Auto-detect.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -353,17 +353,10 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                     onClick = { viewModel.autoConfigureWpp() },
                     enabled = !wppAutoConfigStatus.inProgress,
                 ) {
-                    Text(if (wppAutoConfigStatus.inProgress) "Refreshing..." else "Refresh visible networks")
+                    Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-detect BSSID")
                 }
                 if (wppAutoConfigStatus.inProgress) {
                     CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
-                if (wppNetworkCandidates.isNotEmpty()) {
-                    FilledTonalButton(
-                        onClick = { wppNetworkMenuOpen = true },
-                    ) {
-                        Text("Choose network")
-                    }
                 }
             }
             if (wppAutoConfigStatus.message.isNotBlank()) {
@@ -377,33 +370,6 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                     },
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                 )
-            }
-            if (wppNetworkCandidates.isNotEmpty()) {
-                Box {
-                    androidx.compose.material3.DropdownMenu(
-                        expanded = wppNetworkMenuOpen,
-                        onDismissRequest = { wppNetworkMenuOpen = false },
-                    ) {
-                        wppNetworkCandidates.forEach { candidate ->
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(candidate.ssid)
-                                        Text(
-                                            "${candidate.bssid} • ${candidate.signalLabel} • ${if (candidate.is5GHz) "5 GHz" else "2.4 GHz"}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    viewModel.selectWppNetworkCandidate(candidate.ssid, candidate.bssid)
-                                    wppNetworkMenuOpen = false
-                                },
-                            )
-                        }
-                    }
-                }
             }
             LocalEchoTextField(
                 value = uiState.hotspotSsid,

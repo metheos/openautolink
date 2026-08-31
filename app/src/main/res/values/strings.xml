@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">OpenAutoLink</string>
+    <string name="wpp_accessibility_service_description">Used one-time by OpenAutoLink to read the car hotspot SSID from Android Settings during WPP auto-config. It can be disabled immediately after auto-config completes.</string>
 </resources>

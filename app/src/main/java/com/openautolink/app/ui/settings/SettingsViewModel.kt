@@ -2,13 +2,18 @@ package com.openautolink.app.ui.settings
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.net.wifi.WifiManager
+import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.ContextCompat
 import com.openautolink.app.data.AppPreferences
+import com.openautolink.app.diagnostics.OalLog
+import com.openautolink.app.diagnostics.WppSsidAccessibilityService
 import com.openautolink.app.transport.NetworkInterfaceInfo
 import com.openautolink.app.transport.NetworkInterfaceScanner
 import kotlinx.coroutines.Dispatchers
@@ -19,16 +24,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-data class WppNetworkCandidate(
-   val ssid: String,
-   val bssid: String,
-   val signalLevel: Int,
-   val is5GHz: Boolean,
-   val frequencyMhz: Int,
-) {
-   val signalLabel: String
-       get() = "${signalLevel} dBm"
-}
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.NetworkInterface
+import java.util.Collections
 
 data class WppAutoConfigStatus(
     val inProgress: Boolean = false,
@@ -240,10 +238,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
     private val _wppAutoConfigStatus = MutableStateFlow(WppAutoConfigStatus())
-    private val _wppNetworkCandidates = MutableStateFlow<List<WppNetworkCandidate>>(emptyList())
 
     val wppAutoConfigStatus: StateFlow<WppAutoConfigStatus> = _wppAutoConfigStatus
-    val wppNetworkCandidates: StateFlow<List<WppNetworkCandidate>> = _wppNetworkCandidates
 
     private val seedIdrThresholds = preferences.seedIdrThresholds.stateIn(
         viewModelScope,
@@ -398,126 +394,119 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferences.setWppBssid(bssid) }
     }
 
-    private fun hasWifiScanPermission(context: android.content.Context): Boolean {
-        val hasFineLocation = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
-        val hasNearbyWifi = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.NEARBY_WIFI_DEVICES,
-            ) == PackageManager.PERMISSION_GRANTED
-        return hasFineLocation && hasNearbyWifi
-    }
-
-    private fun listTopWppCandidates(wifiManager: WifiManager): Result<List<WppNetworkCandidate>> =
-        try {
-            val candidates = wifiManager.scanResults
-                .asSequence()
-                .mapNotNull { scan ->
-                    val ssid = scan.SSID?.trim().orEmpty()
-                    val normalizedSsid = ssid.takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
-                    val bssid = scan.BSSID?.trim()?.uppercase()
-                    if (normalizedSsid == null || bssid.isNullOrBlank()) {
-                        null
-                    } else {
-                        val is5GHz = scan.frequency in 4900..5900
-                        WppNetworkCandidate(
-                            ssid = normalizedSsid,
-                            bssid = bssid,
-                            signalLevel = scan.level,
-                            is5GHz = is5GHz,
-                            frequencyMhz = scan.frequency,
-                        )
-                    }
+    /**
+     * Probes local network interfaces for a hotspot/softap interface and reads its MAC as the
+     * BSSID. No permissions are required — `NetworkInterface.getNetworkInterfaces()` is a
+     * standard Java socket API and does not violate Play Store policies.
+     *
+     * Hotspot interfaces on AAOS typically use names like "softap0", "wlan1", "ap0", or any name
+     * containing "softap" or "ap". We probe in priority order and return the first hit.
+     */
+    private fun detectHotspotBssid(): String? = runCatching {
+        val ifaces = Collections.list(NetworkInterface.getNetworkInterfaces() ?: return null)
+        // Priority order: explicit softap names first, then wlan1, then any "ap"-containing name.
+        val ordered = ifaces.sortedWith(
+            compareBy { iface ->
+                val n = iface.name.lowercase()
+                when {
+                    n.startsWith("softap") -> 0
+                    n == "wlan1" -> 1
+                    n.contains("softap") -> 2
+                    n.startsWith("ap") -> 3
+                    n.contains("ap") -> 4
+                    else -> 99
                 }
-                .distinctBy { it.ssid to it.bssid }
-                .sortedWith(
-                    compareByDescending<WppNetworkCandidate> { it.is5GHz }
-                        .thenByDescending { it.signalLevel }
-                )
-                .take(5)
-                .toList()
-            Result.success(candidates)
-        } catch (_: SecurityException) {
-            Result.failure(SecurityException("scan denied"))
-        } catch (t: Throwable) {
-            Result.failure(t)
-        }
-
-    fun selectWppNetworkCandidate(ssid: String, bssid: String) {
-        _hotspotSsidOverride.value = ssid
-        _wppBssidOverride.value = bssid.uppercase()
-        viewModelScope.launch {
-            preferences.setHotspotSsid(ssid)
-            preferences.setWppBssid(bssid.uppercase())
-        }
-        _wppAutoConfigStatus.value = WppAutoConfigStatus(
-            message = "Selected SSID '$ssid' with BSSID $bssid. Enter the Wi‑Fi password to continue.",
-            isError = false,
+            }
         )
+        for (iface in ordered) {
+            val n = iface.name.lowercase()
+            if (!n.contains("softap") && !n.contains("ap") && n != "wlan1") continue
+            val mac = iface.hardwareAddress ?: continue
+            if (mac.isEmpty()) continue
+            return mac.joinToString(":") { "%02X".format(it) }
+        }
+        null
+    }.getOrNull()
+
+    private fun isWppAccessibilityServiceEnabled(context: Context): Boolean {
+        val am = context.getSystemService(AccessibilityManager::class.java) ?: return false
+        val enabledServices = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ) ?: return false
+        val serviceId = "${context.packageName}/${WppSsidAccessibilityService::class.java.canonicalName}"
+        return enabledServices.split(":").any { it.equals(serviceId, ignoreCase = true) }
     }
 
     fun autoConfigureWpp() {
         viewModelScope.launch(Dispatchers.IO) {
+            val appContext = getApplication<Application>().applicationContext
+
             _wppAutoConfigStatus.value = WppAutoConfigStatus(
                 inProgress = true,
-                message = "Scanning for nearby Wi‑Fi networks...",
+                message = "Detecting hotspot interface MAC...",
                 isError = false,
             )
-            _wppNetworkCandidates.value = emptyList()
 
-            val wifiManager = getApplication<Application>()
-                .applicationContext
-                .getSystemService(WifiManager::class.java)
-            if (wifiManager == null) {
+            val bssid = detectHotspotBssid()
+            if (bssid != null) {
+                _wppBssidOverride.value = bssid
+                preferences.setWppBssid(bssid)
+            }
+
+            // Check if the accessibility service is available for SSID scraping.
+            val a11yEnabled = isWppAccessibilityServiceEnabled(appContext)
+            if (!a11yEnabled) {
                 _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Wi‑Fi service is unavailable, so nearby networks cannot be scanned.",
-                    isError = true,
+                    message = if (bssid != null) {
+                        "Detected BSSID $bssid. To also auto-fill the SSID, enable \"WPP SSID Reader\" in Android Settings → Accessibility."
+                    } else {
+                        "No hotspot interface found for BSSID detection. Enable \"WPP SSID Reader\" in Android Settings → Accessibility to also detect the SSID."
+                    },
+                    isError = bssid == null,
                 )
                 return@launch
             }
 
-            val appContext = getApplication<Application>().applicationContext
-            if (!hasWifiScanPermission(appContext)) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Wi‑Fi scan permission is missing. Grant Location and Nearby Wi‑Fi Devices, then try again.",
-                    isError = true,
-                )
-                return@launch
-            }
-
-            val candidatesResult = listTopWppCandidates(wifiManager)
-            if (candidatesResult.exceptionOrNull() is SecurityException) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Wi‑Fi scan access was denied by the system.",
-                    isError = true,
-                )
-                return@launch
-            }
-
-            if (candidatesResult.isFailure) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "Nearby Wi‑Fi scan failed. Ensure Location permission and Wi‑Fi scanning are enabled.",
-                    isError = true,
-                )
-                return@launch
-            }
-
-            val candidates = candidatesResult.getOrNull().orEmpty()
-            _wppNetworkCandidates.value = candidates
-
-            if (candidates.isEmpty()) {
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = "No nearby Wi‑Fi networks were found in the current scan.",
-                    isError = true,
-                )
-                return@launch
-            }
-
+            // Accessibility service is enabled — open TetherSettings and wait for SSID.
             _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                message = "Found ${candidates.size} nearby network${if (candidates.size == 1) "" else "s"}. Choose the correct one, then enter the password.",
+                inProgress = true,
+                message = if (bssid != null) "Detected BSSID $bssid. Reading SSID from settings..." else "Reading SSID from settings...",
+                isError = false,
+            )
+
+            WppSsidAccessibilityService.startScrape()
+            val tetherIntent = Intent().apply {
+                setClassName("com.android.settings", "com.android.settings.TetherSettings")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            appContext.startActivity(tetherIntent)
+
+            val ssid = withTimeoutOrNull(8_000L) {
+                WppSsidAccessibilityService.ssidResult.first { it != null }
+            }
+
+            if (ssid == null) {
+                WppSsidAccessibilityService.cancelScrape()
+                _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                    message = if (bssid != null) {
+                        "Detected BSSID $bssid, but SSID was not found in TetherSettings within 8 s. Enter the SSID manually."
+                    } else {
+                        "SSID was not found in TetherSettings within 8 s. Enter it manually."
+                    },
+                    isError = true,
+                )
+                return@launch
+            }
+
+            _hotspotSsidOverride.value = ssid
+            preferences.setHotspotSsid(ssid)
+            _wppAutoConfigStatus.value = WppAutoConfigStatus(
+                message = if (bssid != null) {
+                    "Detected BSSID $bssid and SSID \"$ssid\". Enter the Wi‑Fi password to complete."
+                } else {
+                    "Detected SSID \"$ssid\". BSSID was not found — set it manually."
+                },
                 isError = false,
             )
         }
