@@ -158,6 +158,19 @@ For Android Auto 17.4 or newer:
 
 Those are the short instructions. Read [Wireless WPP setup](docs/wireless-wpp.md) for the required BSSID, saved-network trade-offs, and multi-phone behavior.
 
+## Keep calls in Android Auto on GM vehicles
+
+To keep the vehicle's native Phone app from covering Android Auto on the center display during incoming and active calls:
+
+1. Open the vehicle's native **Phone** app.
+2. Tap the **Settings** gear.
+3. Turn **Active Call** **OFF**.
+4. Turn **Privacy** **ON**.
+
+Leave the phone pairing's Bluetooth **Phone calls** profile **enabled**. Android Auto displays and controls the call while the vehicle's Bluetooth hands-free system carries microphone and speaker audio. Disabling **Phone calls** can remove call audio and break wireless startup.
+
+See [Phone calls](docs/phone-calls.md) for the setting descriptions, verification steps, and troubleshooting.
+
 ## Demonstrations
 
 ### Current project walkthrough

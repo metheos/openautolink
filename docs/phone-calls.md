@@ -9,16 +9,18 @@ Call UI/control: Android Auto → OpenAutoLink input → phone call action
 Voice audio:     phone ↔ vehicle Bluetooth HFP/SCO ↔ microphone and speakers
 ```
 
-## Vehicle settings
+## GM call privacy settings
 
 Configure this once in the vehicle's native **Phone** app:
+
+> **Phone → Settings → Active Call OFF → Privacy ON**
 
 1. Open the native **Phone** app.
 2. Tap the **Settings** gear.
 3. Turn **Active Call** **OFF**. Its description is **“Show active call view when answering call.”**
 4. Turn **Privacy** **ON**. Its description is **“Only show call alerts in cluster.”**
 
-The native Phone app should then stop replacing Android Auto on the center screen when a call is answered.
+These settings keep native incoming-call alerts in the cluster and stop the native active-call screen from replacing Android Auto on the center display.
 
 ## Bluetooth setting that must remain enabled
 
