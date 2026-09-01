@@ -326,8 +326,6 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
         )
 
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
-            val wppAutoConfigStatus by viewModel.wppAutoConfigStatus.collectAsStateWithLifecycle()
-
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Wi-Fi details sent to the phone",
@@ -336,40 +334,11 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             )
             Text(
                 text = "Enter the network the phone should join to reach this head unit — normally the car's own hotspot. " +
-                    "Auto-detect reads the BSSID from the configured WPP interface MAC. Enter the SSID and password manually.",
+                    "Enter the SSID, password, and BSSID manually, or send SSID/BSSID from the companion app over Bluetooth.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = { viewModel.autoConfigureWpp() },
-                    enabled = !wppAutoConfigStatus.inProgress,
-                ) {
-                    Text(if (wppAutoConfigStatus.inProgress) "Detecting..." else "Auto-detect BSSID")
-                }
-                if (wppAutoConfigStatus.inProgress) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
-            }
-            if (wppAutoConfigStatus.message.isNotBlank()) {
-                Text(
-                    text = wppAutoConfigStatus.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (wppAutoConfigStatus.isError) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        Color(0xFF4CAF50)
-                    },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
-                )
-            }
             LocalEchoTextField(
                 value = uiState.hotspotSsid,
                 onValueChange = { viewModel.updateHotspotSsid(it) },

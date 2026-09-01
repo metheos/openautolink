@@ -65,6 +65,14 @@ class OalApplication : Application() {
         //   adb shell am broadcast -a com.openautolink.app.DEBUG_AAW_BT \
         //     --es ssid <SSID> --es psk <KEY> --es ip <CAR_IP> --ei port 5277
         com.openautolink.app.transport.bluetooth.AaWirelessBtControl.init(this)
+        // Companion-driven WPP config side channel.
+        //
+        // Separate from gearhead's AA/WPP RFCOMM handshake UUID on purpose: the
+        // phone companion can send {ssid,bssid} to the head unit over a custom
+        // RFCOMM service without mutating the protocol stream Android Auto owns.
+        // Process scope keeps the listener available before any projection session
+        // exists, which is exactly when the companion needs to push the config.
+        com.openautolink.app.transport.bluetooth.WppConfigBtServer(this, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)).start()
 
         // Create the process-wide MediaSession and publish its token to the
         // MediaBrowserService exactly once, at process start. The GM AAOS

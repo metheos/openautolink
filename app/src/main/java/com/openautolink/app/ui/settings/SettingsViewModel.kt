@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.openautolink.app.data.AppPreferences
 import com.openautolink.app.transport.NetworkInterfaceInfo
 import com.openautolink.app.transport.NetworkInterfaceScanner
-import com.openautolink.app.transport.WppInterfacePolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,25 +14,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.net.Inet4Address
-import java.net.NetworkInterface
-
-data class WppAutoConfigStatus(
-    val inProgress: Boolean = false,
-    val message: String = "",
-    val isError: Boolean = false,
-)
-
-private data class WppDetectedBssid(
-    val bssid: String,
-    val sourceInterfaceName: String,
-)
 
 data class SettingsUiState(
     val directTransport: String = AppPreferences.DEFAULT_DIRECT_TRANSPORT,
     val hotspotSsid: String = AppPreferences.DEFAULT_HOTSPOT_SSID,
     val hotspotPassword: String = AppPreferences.DEFAULT_HOTSPOT_PASSWORD,
-    /** AP BSSID advertised to the phone in WPP mode. Auto-detect can populate this from the configured interface MAC. */
+    /** AP BSSID advertised to the phone in WPP mode. */
     val wppBssid: String = "",
     /** Interface serving the car's hotspot; its IPv4 is advertised to the phone. */
     val wppApInterface: String = AppPreferences.DEFAULT_WPP_AP_INTERFACE,
@@ -232,9 +218,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _wppApInterfaceOverride = MutableStateFlow(AppPreferences.DEFAULT_WPP_AP_INTERFACE)
     private val _wppChannelMhzOverride = MutableStateFlow("")
     private val _directTransportOverride = MutableStateFlow(AppPreferences.DEFAULT_DIRECT_TRANSPORT)
-    private val _wppAutoConfigStatus = MutableStateFlow(WppAutoConfigStatus())
-
-    val wppAutoConfigStatus: StateFlow<WppAutoConfigStatus> = _wppAutoConfigStatus
 
     private val seedIdrThresholds = preferences.seedIdrThresholds.stateIn(
         viewModelScope,
@@ -387,90 +370,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateWppBssid(bssid: String) {
         _wppBssidOverride.value = bssid
         viewModelScope.launch { preferences.setWppBssid(bssid) }
-    }
-
-    /**
-     * Reads the MAC address from the configured WPP interface and uses it as the advertised BSSID.
-     * We intentionally probe only the configured interface because WPP traffic is already pinned to
-     * that NIC elsewhere in the app, and OEM hotspot naming is not reliable.
-     */
-    private fun formatMacAddress(bytes: ByteArray): String =
-        bytes.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
-
-    private fun detectHotspotBssid(interfaceName: String): WppDetectedBssid? = runCatching {
-        val normalizedName = interfaceName.trim()
-        if (normalizedName.isEmpty()) return null
-        val iface = NetworkInterface.getByName(normalizedName) ?: return null
-        val mac = iface.hardwareAddress
-        if (mac != null && mac.isNotEmpty()) {
-            return WppDetectedBssid(
-                bssid = formatMacAddress(mac),
-                sourceInterfaceName = iface.name,
-            )
-        }
-
-        val selectedIpv4 = WppInterfacePolicy.liveInterfaceIpv4(normalizedName) ?: return null
-        val sibling = NetworkInterface.getNetworkInterfaces()
-            ?.toList()
-            ?.asSequence()
-            ?.filter { candidate ->
-                runCatching { candidate.isUp && !candidate.isLoopback && !candidate.isVirtual }.getOrDefault(false)
-            }
-            ?.filter { candidate ->
-                val siblingMac = runCatching { candidate.hardwareAddress }.getOrNull()
-                siblingMac != null && siblingMac.isNotEmpty()
-            }
-            ?.firstOrNull { candidate ->
-                candidate.interfaceAddresses.any { interfaceAddress ->
-                    val address = interfaceAddress.address as? Inet4Address ?: return@any false
-                    if (address.isLoopbackAddress || address.isLinkLocalAddress) {
-                        return@any false
-                    }
-                    val hostAddress = address.hostAddress ?: return@any false
-                    hostAddress == selectedIpv4.address &&
-                        interfaceAddress.networkPrefixLength.toInt() == selectedIpv4.prefixLength
-                }
-            }
-            ?: return null
-
-        val siblingMac = sibling.hardwareAddress ?: return null
-        WppDetectedBssid(
-            bssid = formatMacAddress(siblingMac),
-            sourceInterfaceName = sibling.name,
-        )
-    }.getOrNull()
-
-    fun autoConfigureWpp() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                inProgress = true,
-                message = "Detecting hotspot interface MAC...",
-                isError = false,
-            )
-
-            val configuredInterface = _wppApInterfaceOverride.value
-                .ifBlank { AppPreferences.DEFAULT_WPP_AP_INTERFACE }
-                .trim()
-            val detected = detectHotspotBssid(configuredInterface)
-            if (detected != null) {
-                _wppBssidOverride.value = detected.bssid
-                preferences.setWppBssid(detected.bssid)
-                _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                    message = if (detected.sourceInterfaceName == configuredInterface) {
-                        "Detected BSSID ${detected.bssid} from WPP interface '$configuredInterface'. Enter the SSID and password manually."
-                    } else {
-                        "Detected BSSID ${detected.bssid} from sibling interface '${detected.sourceInterfaceName}' for WPP interface '$configuredInterface'. Enter the SSID and password manually."
-                    },
-                    isError = false,
-                )
-                return@launch
-            }
-
-            _wppAutoConfigStatus.value = WppAutoConfigStatus(
-                message = "Could not read a MAC address from WPP interface '$configuredInterface'. Enter the BSSID manually.",
-                isError = true,
-            )
-        }
     }
 
     fun updateDirectTransport(transport: String) {

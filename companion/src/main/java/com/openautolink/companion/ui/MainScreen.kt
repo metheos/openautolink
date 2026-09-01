@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,12 +76,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.openautolink.companion.R
 import com.openautolink.companion.CompanionPrefs
+import com.openautolink.companion.bluetooth.WppConfigBtClient
 import com.openautolink.companion.autostart.WifiJobService
 import com.openautolink.companion.diagnostics.UploadCredentialStore
 import com.openautolink.companion.service.CompanionService
 import com.openautolink.companion.ui.theme.OalGreen
 import com.openautolink.companion.ui.theme.OalOrange
 import com.openautolink.companion.ui.theme.OalRed
+import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
@@ -119,6 +122,7 @@ fun MainScreen(
     var carWifiEntries by remember {
         mutableStateOf(com.openautolink.companion.wifi.CarWifiEntry.loadAll(prefs))
     }
+    var wppConfigStatus by remember { mutableStateOf("") }
 
     fun saveAutoStartMode(mode: Int) {
         autoStartMode = mode
@@ -545,7 +549,18 @@ fun MainScreen(
                         carWifiEntries = updated
                         com.openautolink.companion.wifi.CarWifiEntry.saveAll(prefs, updated)
                     },
+                    selectedBtMacs = selectedBtMacs,
+                    onWppConfigStatus = { wppConfigStatus = it },
                 )
+                if (wppConfigStatus.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = wppConfigStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 Spacer(Modifier.height(28.dp))
                 HorizontalDivider()
@@ -1072,9 +1087,15 @@ private fun WifiSsidPickerDialog(
 private fun CarWifiConfig(
     entries: List<com.openautolink.companion.wifi.CarWifiEntry>,
     onEntriesChanged: (List<com.openautolink.companion.wifi.CarWifiEntry>) -> Unit,
+    selectedBtMacs: Set<String>,
+    onWppConfigStatus: (String) -> Unit,
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var showSetupGuide by remember { mutableStateOf(false) }
+    var scannedNetworks by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var showScanPicker by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1205,9 +1226,27 @@ private fun CarWifiConfig(
                 TextButton(onClick = { showAddDialog = true }) {
                     Text("Add Car WiFi")
                 }
+                TextButton(
+                    onClick = {
+                        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                        @Suppress("DEPRECATION")
+                        val results = wm?.scanResults
+                            ?.mapNotNull { scan ->
+                                val ssid = scan.SSID?.trim().orEmpty()
+                                val bssid = scan.BSSID?.trim().orEmpty()
+                                if (ssid.isBlank() || bssid.isBlank()) null else ssid to bssid
+                            }
+                            ?.distinct()
+                            ?.sortedBy { it.first.lowercase() }
+                            .orEmpty()
+                        scannedNetworks = results
+                        showScanPicker = true
+                    },
+                ) {
+                    Text("Scan & Send to Car")
+                }
                 if (entries.isNotEmpty()) {
                     val isServiceRunning by CompanionService.isRunning.collectAsState()
-                    val context = androidx.compose.ui.platform.LocalContext.current
                     Button(
                         onClick = {
                             if (isServiceRunning) {
@@ -1234,6 +1273,58 @@ private fun CarWifiConfig(
                         "to manage this WiFi connection. After that, it connects automatically.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (showScanPicker) {
+                AlertDialog(
+                    onDismissRequest = { showScanPicker = false },
+                    title = { Text("Select visible WiFi") },
+                    text = {
+                        Column {
+                            if (scannedNetworks.isEmpty()) {
+                                Text(
+                                    "No visible WiFi networks found. Make sure the car hotspot is on and phone WiFi scan permissions are granted.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                scannedNetworks.take(20).forEach { (ssid, bssid) ->
+                                    Text(
+                                        text = "$ssid  ($bssid)",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                scope.launch {
+                                                    val result = WppConfigBtClient.sendToTargetCars(
+                                                        context = context,
+                                                        targetMacs = selectedBtMacs,
+                                                        ssid = ssid,
+                                                        bssid = bssid,
+                                                    )
+                                                    onWppConfigStatus(
+                                                        result.fold(
+                                                            onSuccess = { count ->
+                                                                "Sent $ssid / $bssid to $count selected car Bluetooth device(s)."
+                                                            },
+                                                            onFailure = { error ->
+                                                                "Send failed: ${error.message}"
+                                                            },
+                                                        )
+                                                    )
+                                                    showScanPicker = false
+                                                }
+                                            }
+                                            .padding(vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showScanPicker = false }) { Text("Close") }
+                    },
                 )
             }
         }
