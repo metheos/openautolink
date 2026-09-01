@@ -85,6 +85,83 @@ import com.openautolink.companion.ui.theme.OalOrange
 import com.openautolink.companion.ui.theme.OalRed
 import kotlinx.coroutines.launch
 
+private data class WppVisibleNetwork(
+    val ssid: String,
+    val bssid: String,
+    val rssiDbm: Int,
+    val frequencyMhz: Int,
+) {
+    val bandKey: String
+        get() = when {
+            is5Ghz(frequencyMhz) -> "5ghz"
+            is24Ghz(frequencyMhz) -> "2.4ghz"
+            else -> "other"
+        }
+
+    val bandLabel: String
+        get() = when {
+            is5Ghz(frequencyMhz) -> "5 GHz"
+            is24Ghz(frequencyMhz) -> "2.4 GHz"
+            else -> "${frequencyMhz} MHz"
+        }
+
+    val channelLabel: String
+        get() = wifiChannelLabel(frequencyMhz)
+}
+
+@SuppressLint("MissingPermission")
+private fun visibleWppNetworks(context: Context): List<WppVisibleNetwork> {
+    return try {
+        val wm = context.applicationContext
+            .getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        @Suppress("DEPRECATION")
+        wm.scanResults
+            ?.mapNotNull { scan ->
+                val ssid = scan.SSID?.trim().orEmpty()
+                val bssid = scan.BSSID?.trim().orEmpty()
+                if (ssid.isBlank() || bssid.isBlank()) {
+                    null
+                } else {
+                    WppVisibleNetwork(
+                        ssid = ssid,
+                        bssid = bssid,
+                        rssiDbm = scan.level,
+                        frequencyMhz = scan.frequency,
+                    )
+                }
+            }
+            ?.groupBy { "${it.ssid.lowercase()}|${it.bandKey}" }
+            ?.values
+            ?.map { networks ->
+                networks.maxWithOrNull(
+                    compareByDescending<WppVisibleNetwork> { it.rssiDbm }
+                        .thenBy { it.bssid }
+                )!!
+            }
+            ?.sortedWith(
+                compareBy<WppVisibleNetwork> { !is5Ghz(it.frequencyMhz) }
+                    .thenByDescending { it.rssiDbm }
+                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.ssid }
+                    .thenBy { it.bssid }
+            )
+            .orEmpty()
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun is5Ghz(frequencyMhz: Int): Boolean = frequencyMhz in 5000..5999
+
+private fun is24Ghz(frequencyMhz: Int): Boolean = frequencyMhz in 2400..2499
+
+private fun wifiChannelLabel(frequencyMhz: Int): String = when {
+    frequencyMhz == 2484 -> "14"
+    frequencyMhz in 2412..2472 -> (((frequencyMhz - 2412) / 5) + 1).toString()
+    frequencyMhz in 5000..5895 -> ((frequencyMhz - 5000) / 5).toString()
+    frequencyMhz > 0 -> "?"
+    else -> "-"
+}
+
 @Composable
 fun MainScreen(
     onStart: () -> Unit,
@@ -531,6 +608,16 @@ fun MainScreen(
             HorizontalDivider()
             Spacer(Modifier.height(20.dp))
 
+            WppWifiSendSection(
+                selectedBtMacs = selectedBtMacs,
+                status = wppConfigStatus,
+                onStatusChanged = { wppConfigStatus = it },
+            )
+
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(20.dp))
+
             // ── Car WiFi Config ────────────────────────────────────
             //
             // Hidden unless already configured. On Android Auto 17.4+ this feature
@@ -549,18 +636,7 @@ fun MainScreen(
                         carWifiEntries = updated
                         com.openautolink.companion.wifi.CarWifiEntry.saveAll(prefs, updated)
                     },
-                    selectedBtMacs = selectedBtMacs,
-                    onWppConfigStatus = { wppConfigStatus = it },
                 )
-                if (wppConfigStatus.isNotBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = wppConfigStatus,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
 
                 Spacer(Modifier.height(28.dp))
                 HorizontalDivider()
@@ -1087,15 +1163,10 @@ private fun WifiSsidPickerDialog(
 private fun CarWifiConfig(
     entries: List<com.openautolink.companion.wifi.CarWifiEntry>,
     onEntriesChanged: (List<com.openautolink.companion.wifi.CarWifiEntry>) -> Unit,
-    selectedBtMacs: Set<String>,
-    onWppConfigStatus: (String) -> Unit,
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var showSetupGuide by remember { mutableStateOf(false) }
-    var scannedNetworks by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var showScanPicker by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1226,25 +1297,6 @@ private fun CarWifiConfig(
                 TextButton(onClick = { showAddDialog = true }) {
                     Text("Add Car WiFi")
                 }
-                TextButton(
-                    onClick = {
-                        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-                        @Suppress("DEPRECATION")
-                        val results = wm?.scanResults
-                            ?.mapNotNull { scan ->
-                                val ssid = scan.SSID?.trim().orEmpty()
-                                val bssid = scan.BSSID?.trim().orEmpty()
-                                if (ssid.isBlank() || bssid.isBlank()) null else ssid to bssid
-                            }
-                            ?.distinct()
-                            ?.sortedBy { it.first.lowercase() }
-                            .orEmpty()
-                        scannedNetworks = results
-                        showScanPicker = true
-                    },
-                ) {
-                    Text("Scan & Send to Car")
-                }
                 if (entries.isNotEmpty()) {
                     val isServiceRunning by CompanionService.isRunning.collectAsState()
                     Button(
@@ -1275,58 +1327,6 @@ private fun CarWifiConfig(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-
-            if (showScanPicker) {
-                AlertDialog(
-                    onDismissRequest = { showScanPicker = false },
-                    title = { Text("Select visible WiFi") },
-                    text = {
-                        Column {
-                            if (scannedNetworks.isEmpty()) {
-                                Text(
-                                    "No visible WiFi networks found. Make sure the car hotspot is on and phone WiFi scan permissions are granted.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else {
-                                scannedNetworks.take(20).forEach { (ssid, bssid) ->
-                                    Text(
-                                        text = "$ssid  ($bssid)",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                scope.launch {
-                                                    val result = WppConfigBtClient.sendToTargetCars(
-                                                        context = context,
-                                                        targetMacs = selectedBtMacs,
-                                                        ssid = ssid,
-                                                        bssid = bssid,
-                                                    )
-                                                    onWppConfigStatus(
-                                                        result.fold(
-                                                            onSuccess = { count ->
-                                                                "Sent $ssid / $bssid to $count selected car Bluetooth device(s)."
-                                                            },
-                                                            onFailure = { error ->
-                                                                "Send failed: ${error.message}"
-                                                            },
-                                                        )
-                                                    )
-                                                    showScanPicker = false
-                                                }
-                                            }
-                                            .padding(vertical = 6.dp),
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = { showScanPicker = false }) { Text("Close") }
-                    },
-                )
-            }
         }
     }
 
@@ -1343,6 +1343,130 @@ private fun CarWifiConfig(
         )
     }
 }
+
+@Composable
+private fun WppWifiSendSection(
+    selectedBtMacs: Set<String>,
+    status: String,
+    onStatusChanged: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var scannedNetworks by remember { mutableStateOf<List<WppVisibleNetwork>>(emptyList()) }
+    var showScanPicker by remember { mutableStateOf(false) }
+
+        Text(
+            text = "Send WPP WiFi to Car",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Use the phone's WiFi scan to pick the car hotspot SSID/BSSID, then send it to the selected car Bluetooth device over OpenAutoLink's custom RFCOMM side channel.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = if (selectedBtMacs.isEmpty()) {
+                        "Select at least one car Bluetooth device above before sending WiFi config."
+                    } else {
+                        "Selected car Bluetooth targets: ${selectedBtMacs.size}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (selectedBtMacs.isEmpty()) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        scannedNetworks = visibleWppNetworks(context)
+                        showScanPicker = true
+                    },
+                    enabled = selectedBtMacs.isNotEmpty(),
+                ) {
+                    Text("Scan & Send to Car")
+                }
+                if (status.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (showScanPicker) {
+            AlertDialog(
+                onDismissRequest = { showScanPicker = false },
+                title = { Text("Select visible WiFi") },
+                text = {
+                    Column {
+                        if (scannedNetworks.isEmpty()) {
+                            Text(
+                                "No visible WiFi networks found. Make sure the car hotspot is on and phone WiFi scan permissions are granted.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            scannedNetworks.take(20).forEach { network ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            scope.launch {
+                                                val result = WppConfigBtClient.sendToTargetCars(
+                                                    context = context,
+                                                    targetMacs = selectedBtMacs,
+                                                    ssid = network.ssid,
+                                                    bssid = network.bssid,
+                                                )
+                                                onStatusChanged(
+                                                    result.fold(
+                                                        onSuccess = { count ->
+                                                            "Sent ${network.ssid} / ${network.bssid} to $count selected car Bluetooth device(s)."
+                                                        },
+                                                        onFailure = { error ->
+                                                            "Send failed: ${error.message}"
+                                                        },
+                                                    )
+                                                )
+                                                showScanPicker = false
+                                            }
+                                        }
+                                        .padding(vertical = 6.dp),
+                                ) {
+                                    Text(
+                                        text = network.ssid,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        text = "${network.bssid}  •  Ch ${network.channelLabel}  •  ${network.bandLabel}  •  ${network.rssiDbm} dBm",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showScanPicker = false }) { Text("Close") }
+                },
+            )
+        }
+    }
 
 @Composable
 private fun CarWifiAddDialog(
