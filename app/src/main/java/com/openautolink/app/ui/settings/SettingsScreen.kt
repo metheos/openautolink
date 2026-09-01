@@ -419,6 +419,32 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                     }
                 }
             }
+            val wppConfigBtStatus by viewModel.wppConfigBtStatus.collectAsStateWithLifecycle()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        if (wppConfigBtStatus.contains("Listening", ignoreCase = true)) {
+                            viewModel.stopWppConfigListener()
+                        } else {
+                            viewModel.startWppConfigListener()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        if (wppConfigBtStatus.contains("Listening", ignoreCase = true)) {
+                            "Stop WPP config listener"
+                        } else {
+                            "Start WPP config listener"
+                        }
+                    )
+                }
+            }
+
             LocalEchoTextField(
                 value = uiState.wppBssid,
                 onValueChange = { viewModel.updateWppBssid(it) },
@@ -436,6 +462,31 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                 },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            val wppStatusColor = when {
+                wppConfigBtStatus.contains("Listening") || wppConfigBtStatus.contains("Applied") ->
+                    MaterialTheme.colorScheme.primary
+                wppConfigBtStatus.contains("failed", ignoreCase = true) ||
+                    wppConfigBtStatus.contains("not granted", ignoreCase = true) ||
+                    wppConfigBtStatus.contains("disabled", ignoreCase = true) ->
+                    MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(wppStatusColor, shape = MaterialTheme.shapes.small),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "WPP BT config listener: $wppConfigBtStatus",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_HOTSPOT) {
             Spacer(modifier = Modifier.height(12.dp))

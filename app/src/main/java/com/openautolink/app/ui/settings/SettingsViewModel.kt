@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.openautolink.app.data.AppPreferences
 import com.openautolink.app.transport.NetworkInterfaceInfo
 import com.openautolink.app.transport.NetworkInterfaceScanner
+import com.openautolink.app.transport.bluetooth.WppConfigBtServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -212,6 +213,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         AppPreferences.DEFAULT_GAL_VERSION,
     )
 
+    val wppConfigBtStatus: StateFlow<String> = WppConfigBtServer.status
+
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)
     private val _wppBssidOverride = MutableStateFlow("")
@@ -370,6 +373,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateWppBssid(bssid: String) {
         _wppBssidOverride.value = bssid
         viewModelScope.launch { preferences.setWppBssid(bssid) }
+    }
+
+    fun startWppConfigListener() {
+        WppConfigBtServer(getApplication(), viewModelScope).start()
+    }
+
+    fun stopWppConfigListener() {
+        WppConfigBtServer(getApplication(), viewModelScope).stop()
     }
 
     fun updateDirectTransport(transport: String) {
