@@ -19,8 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.util.UUID
 
 /**
@@ -102,34 +102,49 @@ class WppConfigBtServer(
         scope.launch {
             val remote = runCatching { socket.remoteDevice?.address ?: "?" }.getOrDefault("?")
             try {
-                BufferedReader(InputStreamReader(socket.inputStream, Charsets.UTF_8)).use { reader ->
-                    val line = reader.readLine()?.trim()
-                    if (line.isNullOrEmpty()) {
-                        OalLog.w(TAG, "Empty WPP config payload from $remote")
-                        return@use
-                    }
-                    val json = JSONObject(line)
-                    val ssid = json.optString("ssid", "").trim()
-                    val bssid = json.optString("bssid", "").trim()
-                    if (ssid.isBlank() || bssid.isBlank()) {
-                        updateStatus("Rejected invalid WPP config payload from $remote")
-                        OalLog.w(TAG, "Invalid WPP config payload from $remote")
-                        socket.outputStream.writer(Charsets.UTF_8).use { it.write("ERR\n"); it.flush() }
-                        return@use
-                    }
-                    scope.launch {
-                        val prefs = AppPreferences.getInstance(context)
-                        prefs.setHotspotSsid(ssid)
-                        prefs.setWppBssid(bssid)
-                    }
-                    updateStatus("Applied WPP SSID/BSSID from $remote")
-                    OalLog.i(TAG, "Received WPP Wi‑Fi config from $remote ssid=$ssid bssid=$bssid")
-                    socket.outputStream.writer(Charsets.UTF_8).use { writer ->
-                        writer.write("OK\n")
-                        writer.flush()
-                    }
-                    stop()
+                val payloadLength = DataInputStream(socket.inputStream).readInt()
+                if (payloadLength <= 0 || payloadLength > 4096) {
+                    OalLog.w(TAG, "Rejected WPP config payload length from $remote: $payloadLength")
+                    DataOutputStream(socket.outputStream).use { it.writeUTF("ERR") }
+                    return@launch
                 }
+
+                val payloadBytes = ByteArray(payloadLength)
+                var read = 0
+                while (read < payloadLength) {
+                    val chunk = socket.inputStream.read(payloadBytes, read, payloadLength - read)
+                    if (chunk < 0) {
+                        OalLog.w(TAG, "BT socket closed before full WPP payload from $remote")
+                        return@launch
+                    }
+                    read += chunk
+                }
+
+                val line = payloadBytes.toString(Charsets.UTF_8).trim()
+                if (line.isEmpty()) {
+                    OalLog.w(TAG, "Empty WPP config payload from $remote")
+                    return@launch
+                }
+
+                val json = JSONObject(line)
+                val ssid = json.optString("ssid", "").trim()
+                val bssid = json.optString("bssid", "").trim()
+                if (ssid.isBlank() || bssid.isBlank()) {
+                    updateStatus("Rejected invalid WPP config payload from $remote")
+                    OalLog.w(TAG, "Invalid WPP config payload from $remote")
+                    DataOutputStream(socket.outputStream).use { it.writeUTF("ERR") }
+                    return@launch
+                }
+
+                scope.launch {
+                    val prefs = AppPreferences.getInstance(context)
+                    prefs.setHotspotSsid(ssid)
+                    prefs.setWppBssid(bssid)
+                }
+                updateStatus("Applied WPP SSID/BSSID from $remote")
+                OalLog.i(TAG, "Received WPP Wi‑Fi config from $remote ssid=$ssid bssid=$bssid")
+                DataOutputStream(socket.outputStream).use { it.writeUTF("OK") }
+                stop()
             } catch (e: Exception) {
                 OalLog.w(TAG, "Failed reading WPP config from $remote: ${e.message}")
             } finally {

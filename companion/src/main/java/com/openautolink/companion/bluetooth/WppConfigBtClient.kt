@@ -13,7 +13,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.io.OutputStreamWriter
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.util.UUID
 
 object WppConfigBtClient {
@@ -71,23 +72,28 @@ object WppConfigBtClient {
             val payload = JSONObject()
                 .put("ssid", ssid)
                 .put("bssid", bssid)
-                .toString() + "\n"
+                .toString()
+            val payloadBytes = payload.toByteArray(Charsets.UTF_8)
 
-            OutputStreamWriter(socket.outputStream, Charsets.UTF_8).use { writer ->
-                writer.write(payload)
-                writer.flush()
+            DataOutputStream(socket.outputStream).use { out ->
+                out.writeInt(payloadBytes.size)
+                out.write(payloadBytes)
+                out.flush()
             }
 
-            val ackLine = runBlocking {
+            val ack = runBlocking {
                 withTimeout(5000L) {
-                    socket.inputStream.bufferedReader(Charsets.UTF_8).use { it.readLine() }
+                    DataInputStream(socket.inputStream).readUTF()
                 }
             }
-            if (ackLine == null || ackLine.trim() !in setOf("OK", "ACK")) {
+            if (ack.trim() !in setOf("OK", "ACK", "ERR")) {
                 CompanionLog.w(TAG, "No ACK from ${device.address} for WPP config update")
                 false
+            } else if (ack.trim() == "ERR") {
+                CompanionLog.w(TAG, "Car rejected WPP config update for ${device.address}")
+                false
             } else {
-                CompanionLog.i(TAG, "Confirmed WPP update from ${device.address}: $ackLine")
+                CompanionLog.i(TAG, "Confirmed WPP update from ${device.address}: $ack")
                 true
             }
         } catch (e: Exception) {
