@@ -375,12 +375,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferences.setWppBssid(bssid) }
     }
 
+    private val wppConfigServer by lazy {
+        WppConfigBtServer.getOrCreateInstance(getApplication(), viewModelScope)
+    }
+
     fun startWppConfigListener() {
-        WppConfigBtServer(getApplication(), viewModelScope).start()
+        wppConfigServer.start()
     }
 
     fun stopWppConfigListener() {
-        WppConfigBtServer(getApplication(), viewModelScope).stop()
+        wppConfigServer.stop()
     }
 
     fun updateDirectTransport(transport: String) {

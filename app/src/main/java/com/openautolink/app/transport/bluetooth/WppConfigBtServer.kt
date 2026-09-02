@@ -153,8 +153,16 @@ class WppConfigBtServer(
         private const val SDP_NAME = "OpenAutoLink WPP Config"
         val CONFIG_UUID: UUID = UUID.fromString("8a0d7f20-8f8d-4b1f-9f0d-2f8a4fd8d8a1")
 
+        @Volatile
+        private var instance: WppConfigBtServer? = null
         private val _status = MutableStateFlow("Not started")
         val status: StateFlow<String> = _status
+
+        fun getOrCreateInstance(context: Context, parentScope: CoroutineScope): WppConfigBtServer {
+            return instance ?: synchronized(this) {
+                instance ?: WppConfigBtServer(context.applicationContext, parentScope).also { instance = it }
+            }
+        }
 
         fun currentStatus(): String = _status.value
 
