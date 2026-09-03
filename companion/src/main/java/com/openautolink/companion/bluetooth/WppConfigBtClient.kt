@@ -61,19 +61,22 @@ object WppConfigBtClient {
     @SuppressLint("MissingPermission")
     private fun sendToDevice(device: BluetoothDevice, ssid: String, bssid: String): Boolean {
         val socket = try {
-            device.createRfcommSocketToServiceRecord(CONFIG_UUID)
+            device.createInsecureRfcommSocketToServiceRecord(CONFIG_UUID)
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Socket create failed for ${device.address}: ${e.message}")
             return false
         }
         return try {
+            CompanionLog.i(TAG, "Opening WPP BT socket to ${device.address}")
             socket.connect()
+            CompanionLog.i(TAG, "Connected WPP BT socket to ${device.address}")
 
             val payload = JSONObject()
                 .put("ssid", ssid)
                 .put("bssid", bssid)
                 .toString()
             val payloadBytes = payload.toByteArray(Charsets.UTF_8)
+            CompanionLog.i(TAG, "Sending WPP payload to ${device.address}: ${payloadBytes.size} bytes")
 
             DataOutputStream(socket.outputStream).use { out ->
                 out.writeInt(payloadBytes.size)
@@ -83,7 +86,9 @@ object WppConfigBtClient {
 
             val ack = runBlocking {
                 withTimeout(5000L) {
-                    DataInputStream(socket.inputStream).readUTF()
+                    val raw = DataInputStream(socket.inputStream).readUTF()
+                    CompanionLog.i(TAG, "Received WPP ACK from ${device.address}: $raw")
+                    raw
                 }
             }
             if (ack.trim() !in setOf("OK", "ACK", "ERR")) {

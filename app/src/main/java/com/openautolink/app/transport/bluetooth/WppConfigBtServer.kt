@@ -76,7 +76,7 @@ class WppConfigBtServer(
             return
         }
         try {
-            serverSocket = adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, CONFIG_UUID)
+            serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(SDP_NAME, CONFIG_UUID)
             updateStatus("Listening for companion SSID/BSSID config")
             OalLog.i(TAG, "WPP config RFCOMM listener up (uuid=$CONFIG_UUID)")
         } catch (e: Exception) {
@@ -102,7 +102,10 @@ class WppConfigBtServer(
         scope.launch {
             val remote = runCatching { socket.remoteDevice?.address ?: "?" }.getOrDefault("?")
             try {
-                val payloadLength = DataInputStream(socket.inputStream).readInt()
+                OalLog.i(TAG, "Accepted WPP BT socket from $remote")
+                val inStream = DataInputStream(socket.inputStream)
+                val payloadLength = inStream.readInt()
+                OalLog.i(TAG, "WPP BT payload length from $remote = $payloadLength")
                 if (payloadLength <= 0 || payloadLength > 4096) {
                     OalLog.w(TAG, "Rejected WPP config payload length from $remote: $payloadLength")
                     DataOutputStream(socket.outputStream).use { it.writeUTF("ERR") }
@@ -112,15 +115,17 @@ class WppConfigBtServer(
                 val payloadBytes = ByteArray(payloadLength)
                 var read = 0
                 while (read < payloadLength) {
-                    val chunk = socket.inputStream.read(payloadBytes, read, payloadLength - read)
+                    val chunk = inStream.read(payloadBytes, read, payloadLength - read)
                     if (chunk < 0) {
                         OalLog.w(TAG, "BT socket closed before full WPP payload from $remote")
                         return@launch
                     }
                     read += chunk
                 }
+                OalLog.i(TAG, "Received WPP BT payload bytes from $remote: ${payloadBytes.size}")
 
                 val line = payloadBytes.toString(Charsets.UTF_8).trim()
+                OalLog.i(TAG, "WPP BT payload text from $remote: $line")
                 if (line.isEmpty()) {
                     OalLog.w(TAG, "Empty WPP config payload from $remote")
                     return@launch
