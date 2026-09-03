@@ -76,7 +76,7 @@ class WppConfigBtServer(
             return
         }
         try {
-            serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(SDP_NAME, CONFIG_UUID)
+            serverSocket = adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, CONFIG_UUID)
             updateStatus("Listening for companion SSID/BSSID config")
             OalLog.i(TAG, "WPP config RFCOMM listener up (uuid=$CONFIG_UUID)")
         } catch (e: Exception) {

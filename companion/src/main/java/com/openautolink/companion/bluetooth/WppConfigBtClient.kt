@@ -41,15 +41,22 @@ object WppConfigBtClient {
         }
 
         val normalizedTargets = targetMacs.map { it.trim().lowercase() }.toSet()
-        val bonded = adapter.bondedDevices
+        val candidates = adapter.bondedDevices
             ?.filter { it.address.trim().lowercase() in normalizedTargets }
+            ?.sortedBy { it.address }
             .orEmpty()
-        if (bonded.isEmpty()) {
+
+        val active = candidates.filter { isConnectedDevice(it) }
+        val targets = if (active.isNotEmpty()) active else candidates
+        if (targets.isEmpty()) {
             return@withContext Result.failure(IllegalStateException("No selected car Bluetooth devices are paired"))
+        }
+        if (active.isEmpty() && candidates.isNotEmpty()) {
+            CompanionLog.w(TAG, "No active ACL link detected for target car device(s); using paired device list anyway")
         }
 
         var sent = 0
-        bonded.forEach { device ->
+        targets.forEach { device ->
             if (sendToDevice(device, ssid, bssid)) {
                 sent += 1
             }
@@ -59,9 +66,19 @@ object WppConfigBtClient {
     }
 
     @SuppressLint("MissingPermission")
+    private fun isConnectedDevice(device: BluetoothDevice): Boolean {
+        return try {
+            val method = device.javaClass.getMethod("isConnected")
+            (method.invoke(device) as? Boolean) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun sendToDevice(device: BluetoothDevice, ssid: String, bssid: String): Boolean {
         val socket = try {
-            device.createInsecureRfcommSocketToServiceRecord(CONFIG_UUID)
+            device.createRfcommSocketToServiceRecord(CONFIG_UUID)
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Socket create failed for ${device.address}: ${e.message}")
             return false
