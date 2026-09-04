@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Bluetooth permissions. BLUETOOTH_CONNECT is needed to read the head
          unit's BT MAC address (Settings.Secure["bluetooth_address"] /
          BluetoothAdapter.getAddress()) for the AA Service Discovery Response.
@@ -23,6 +24,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
