@@ -209,6 +209,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     )
 
     val wppConfigBtStatus: StateFlow<String> = wppConfigServer.status
+    val wppConfigBtAppliedConfig = wppConfigServer.appliedConfig
 
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)

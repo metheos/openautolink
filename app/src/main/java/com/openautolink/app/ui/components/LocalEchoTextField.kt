@@ -42,6 +42,8 @@ import androidx.compose.ui.text.input.VisualTransformation
  * @param value          The upstream (DataStore-backed) value.
  * @param onValueChange  Called with the FILTERED string after each edit.
  * @param filter         Optional input filter (e.g. digits-only). Default: identity.
+ * @param externalValue  Value from an explicit external update that must replace local editing state.
+ * @param externalValueVersion Monotonic version identifying a new external update.
  */
 @Composable
 fun LocalEchoTextField(
@@ -49,6 +51,8 @@ fun LocalEchoTextField(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     filter: (String) -> String = { it },
+    externalValue: String? = null,
+    externalValueVersion: Long = 0L,
     label: @Composable (() -> Unit)? = null,
     placeholder: @Composable (() -> Unit)? = null,
     singleLine: Boolean = true,
@@ -64,6 +68,12 @@ fun LocalEchoTextField(
     LaunchedEffect(value) {
         if (!focused && local.text != value) {
             local = TextFieldValue(value)
+        }
+    }
+
+    LaunchedEffect(externalValueVersion) {
+        if (externalValueVersion > 0L && externalValue != null && local.text != externalValue) {
+            local = TextFieldValue(externalValue)
         }
     }
 

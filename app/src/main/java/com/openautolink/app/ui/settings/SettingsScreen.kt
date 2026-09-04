@@ -326,6 +326,8 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
         )
 
         if (uiState.directTransport == AppPreferences.DIRECT_TRANSPORT_WPP) {
+            val wppConfigBtStatus by viewModel.wppConfigBtStatus.collectAsStateWithLifecycle()
+            val appliedWppConfig by viewModel.wppConfigBtAppliedConfig.collectAsStateWithLifecycle()
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Wi-Fi details sent to the phone",
@@ -342,6 +344,8 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             LocalEchoTextField(
                 value = uiState.hotspotSsid,
                 onValueChange = { viewModel.updateHotspotSsid(it) },
+                externalValue = appliedWppConfig?.ssid,
+                externalValueVersion = appliedWppConfig?.version ?: 0L,
                 label = { Text("Network name (SSID)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -419,7 +423,6 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
                     }
                 }
             }
-            val wppConfigBtStatus by viewModel.wppConfigBtStatus.collectAsStateWithLifecycle()
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -448,6 +451,8 @@ private fun ConnectionTab(viewModel: SettingsViewModel, uiState: SettingsUiState
             LocalEchoTextField(
                 value = uiState.wppBssid,
                 onValueChange = { viewModel.updateWppBssid(it) },
+                externalValue = appliedWppConfig?.bssid,
+                externalValueVersion = appliedWppConfig?.version ?: 0L,
                 label = { Text("Access point BSSID") },
                 singleLine = true,
                 isError = uiState.wppBssid.isNotBlank() && !BSSID_PATTERN.matches(uiState.wppBssid),

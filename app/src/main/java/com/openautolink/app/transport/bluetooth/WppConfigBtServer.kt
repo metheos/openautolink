@@ -23,6 +23,12 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
 
+data class AppliedWppConfig(
+    val version: Long,
+    val ssid: String,
+    val bssid: String,
+)
+
 /**
  * Process-scope RFCOMM side channel for receiving WPP Wi-Fi config from the companion.
  *
@@ -42,6 +48,8 @@ class WppConfigBtServer(
     @Volatile private var running = false
     private val _status = MutableStateFlow("Not started")
     val status: StateFlow<String> = _status
+    private val _appliedConfig = MutableStateFlow<AppliedWppConfig?>(null)
+    val appliedConfig: StateFlow<AppliedWppConfig?> = _appliedConfig
 
     fun start() {
         if (running) return
@@ -146,6 +154,11 @@ class WppConfigBtServer(
                 val prefs = AppPreferences.getInstance(context)
                 prefs.setHotspotSsid(ssid)
                 prefs.setWppBssid(bssid)
+                _appliedConfig.value = AppliedWppConfig(
+                    version = (_appliedConfig.value?.version ?: 0L) + 1L,
+                    ssid = ssid,
+                    bssid = bssid,
+                )
                 updateStatus("Applied WPP SSID/BSSID from $remote")
                 OalLog.i(TAG, "Received WPP Wi‑Fi config from $remote ssid=$ssid bssid=$bssid")
                 DataOutputStream(socket.outputStream).use { it.writeUTF("OK") }
