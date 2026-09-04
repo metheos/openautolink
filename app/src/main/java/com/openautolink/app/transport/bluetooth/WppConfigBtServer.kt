@@ -40,6 +40,8 @@ class WppConfigBtServer(
     private var serverSocket: BluetoothServerSocket? = null
     private var acceptJob: Job? = null
     @Volatile private var running = false
+    private val _status = MutableStateFlow("Not started")
+    val status: StateFlow<String> = _status
 
     fun start() {
         if (running) return
@@ -63,7 +65,7 @@ class WppConfigBtServer(
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun acceptLoop() {
+    private fun acceptLoop() {
         @Suppress("DEPRECATION")
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: run {
             updateStatus("Start failed: no Bluetooth adapter")
@@ -141,11 +143,9 @@ class WppConfigBtServer(
                     return@launch
                 }
 
-                scope.launch {
-                    val prefs = AppPreferences.getInstance(context)
-                    prefs.setHotspotSsid(ssid)
-                    prefs.setWppBssid(bssid)
-                }
+                val prefs = AppPreferences.getInstance(context)
+                prefs.setHotspotSsid(ssid)
+                prefs.setWppBssid(bssid)
                 updateStatus("Applied WPP SSID/BSSID from $remote")
                 OalLog.i(TAG, "Received WPP Wi‑Fi config from $remote ssid=$ssid bssid=$bssid")
                 DataOutputStream(socket.outputStream).use { it.writeUTF("OK") }
@@ -172,22 +172,9 @@ class WppConfigBtServer(
         private const val TAG = "WppConfigBt"
         private const val SDP_NAME = "OpenAutoLink WPP Config"
         val CONFIG_UUID: UUID = UUID.fromString("8a0d7f20-8f8d-4b1f-9f0d-2f8a4fd8d8a1")
+    }
 
-        @Volatile
-        private var instance: WppConfigBtServer? = null
-        private val _status = MutableStateFlow("Not started")
-        val status: StateFlow<String> = _status
-
-        fun getOrCreateInstance(context: Context, parentScope: CoroutineScope): WppConfigBtServer {
-            return instance ?: synchronized(this) {
-                instance ?: WppConfigBtServer(context.applicationContext, parentScope).also { instance = it }
-            }
-        }
-
-        fun currentStatus(): String = _status.value
-
-        private fun updateStatus(value: String) {
-            _status.value = value
-        }
+    private fun updateStatus(value: String) {
+        _status.value = value
     }
 }

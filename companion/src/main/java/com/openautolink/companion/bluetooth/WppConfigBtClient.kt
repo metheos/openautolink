@@ -9,13 +9,13 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.openautolink.companion.diagnostics.CompanionLog
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
+import kotlin.time.Duration.Companion.seconds
 
 object WppConfigBtClient {
     private const val TAG = "WppConfigBt"
@@ -51,7 +51,7 @@ object WppConfigBtClient {
         if (targets.isEmpty()) {
             return@withContext Result.failure(IllegalStateException("No selected car Bluetooth devices are paired"))
         }
-        if (active.isEmpty() && candidates.isNotEmpty()) {
+        if (active.isEmpty()) {
             CompanionLog.w(TAG, "No active ACL link detected for target car device(s); using paired device list anyway")
         }
 
@@ -76,14 +76,18 @@ object WppConfigBtClient {
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendToDevice(device: BluetoothDevice, ssid: String, bssid: String): Boolean {
+    private suspend fun sendToDevice(
+        device: BluetoothDevice,
+        ssid: String,
+        bssid: String,
+    ): Boolean = withContext(Dispatchers.IO) {
         val socket = try {
             device.createRfcommSocketToServiceRecord(CONFIG_UUID)
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Socket create failed for ${device.address}: ${e.message}")
-            return false
+            return@withContext false
         }
-        return try {
+        try {
             CompanionLog.i(TAG, "Opening WPP BT socket to ${device.address}")
             socket.connect()
             CompanionLog.i(TAG, "Connected WPP BT socket to ${device.address}")
@@ -95,18 +99,15 @@ object WppConfigBtClient {
             val payloadBytes = payload.toByteArray(Charsets.UTF_8)
             CompanionLog.i(TAG, "Sending WPP payload to ${device.address}: ${payloadBytes.size} bytes")
 
-            DataOutputStream(socket.outputStream).use { out ->
-                out.writeInt(payloadBytes.size)
-                out.write(payloadBytes)
-                out.flush()
-            }
+            val out = DataOutputStream(socket.outputStream)
+            out.writeInt(payloadBytes.size)
+            out.write(payloadBytes)
+            out.flush()
 
-            val ack = runBlocking {
-                withTimeout(5000L) {
-                    val raw = DataInputStream(socket.inputStream).readUTF()
-                    CompanionLog.i(TAG, "Received WPP ACK from ${device.address}: $raw")
-                    raw
-                }
+            val ack = withTimeout(5.seconds) {
+                val raw = DataInputStream(socket.inputStream).readUTF()
+                CompanionLog.i(TAG, "Received WPP ACK from ${device.address}: $raw")
+                raw
             }
             if (ack.trim() !in setOf("OK", "ACK", "ERR")) {
                 CompanionLog.w(TAG, "No ACK from ${device.address} for WPP config update")

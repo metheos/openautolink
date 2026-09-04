@@ -4,10 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.openautolink.app.data.AppPreferences
-import com.openautolink.app.transport.NetworkInterfaceInfo
-import com.openautolink.app.transport.NetworkInterfaceScanner
 import com.openautolink.app.transport.bluetooth.WppConfigBtServer
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -93,9 +90,7 @@ data class SettingsUiState(
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferences = AppPreferences.getInstance(application)
-    private val interfaceScanner = NetworkInterfaceScanner(application)
-
-    val networkInterfaces: StateFlow<List<NetworkInterfaceInfo>> = interfaceScanner.interfaces
+    private val wppConfigServer = WppConfigBtServer(application, viewModelScope)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         preferences.videoAutoNegotiate,
@@ -213,7 +208,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         AppPreferences.DEFAULT_GAL_VERSION,
     )
 
-    val wppConfigBtStatus: StateFlow<String> = WppConfigBtServer.status
+    val wppConfigBtStatus: StateFlow<String> = wppConfigServer.status
 
     private val _hotspotSsidOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_SSID)
     private val _hotspotPasswordOverride = MutableStateFlow(AppPreferences.DEFAULT_HOTSPOT_PASSWORD)
@@ -373,10 +368,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateWppBssid(bssid: String) {
         _wppBssidOverride.value = bssid
         viewModelScope.launch { preferences.setWppBssid(bssid) }
-    }
-
-    private val wppConfigServer by lazy {
-        WppConfigBtServer.getOrCreateInstance(getApplication(), viewModelScope)
     }
 
     fun startWppConfigListener() {
@@ -573,12 +564,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun scanNetworkInterfaces() {
-        viewModelScope.launch(Dispatchers.IO) {
-            interfaceScanner.scan()
-        }
-    }
-
     fun updateSafeAreaInsets(top: Int, bottom: Int, left: Int, right: Int) {
         viewModelScope.launch {
             preferences.setSafeAreaTop(top)
@@ -615,13 +600,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferences.setVolumeOffsetAssistant(offset) }
     }
 
-    fun clearDefaultPhone() {
-        viewModelScope.launch {
-            preferences.setDefaultPhoneName("")
-            com.openautolink.app.session.SessionManager.instanceOrNull()?.clearDefaultPhone()
-        }
-    }
-
     fun updateManualIpEnabled(enabled: Boolean) {
         viewModelScope.launch { preferences.setManualIpEnabled(enabled) }
     }
@@ -631,6 +609,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
+        wppConfigServer.stop()
         super.onCleared()
     }
 
