@@ -42,8 +42,8 @@ import androidx.compose.ui.text.input.VisualTransformation
  * @param value          The upstream (DataStore-backed) value.
  * @param onValueChange  Called with the FILTERED string after each edit.
  * @param filter         Optional input filter (e.g. digits-only). Default: identity.
- * @param externalValue  Value from an explicit external update that must replace local editing state.
- * @param externalValueVersion Monotonic version identifying a new external update.
+ * @param externalValue  Explicit update replacing local edits once it matches the upstream value.
+ * @param externalValueVersion Monotonic positive version, consumed once per composition.
  */
 @Composable
 fun LocalEchoTextField(
@@ -63,6 +63,7 @@ fun LocalEchoTextField(
 ) {
     var local by remember { mutableStateOf(TextFieldValue(value)) }
     var focused by remember { mutableStateOf(false) }
+    val externalUpdateGate = remember { LocalEchoExternalUpdateGate() }
 
     // Resync from upstream ONLY while unfocused. Avoids fighting the IME.
     LaunchedEffect(value) {
@@ -71,8 +72,11 @@ fun LocalEchoTextField(
         }
     }
 
-    LaunchedEffect(externalValueVersion) {
-        if (externalValueVersion > 0L && externalValue != null && local.text != externalValue) {
+    // Wait for the persisted echo before replacing even a focused draft.
+    LaunchedEffect(externalValueVersion, value, externalValue) {
+        if (externalUpdateGate.consume(value, externalValue, externalValueVersion) &&
+            externalValue != null && local.text != externalValue
+        ) {
             local = TextFieldValue(externalValue)
         }
     }

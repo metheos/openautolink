@@ -8,14 +8,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.openautolink.companion.diagnostics.CompanionLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.util.UUID
-import kotlin.time.Duration.Companion.seconds
 
 object WppConfigBtClient {
     private const val TAG = "WppConfigBt"
@@ -80,50 +77,39 @@ object WppConfigBtClient {
         device: BluetoothDevice,
         ssid: String,
         bssid: String,
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): Boolean {
+        val payloadBytes = JSONObject()
+            .put("ssid", ssid)
+            .put("bssid", bssid)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        CompanionLog.i(TAG, "Opening WPP BT socket to ${device.address}")
         val socket = try {
             device.createRfcommSocketToServiceRecord(CONFIG_UUID)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Socket create failed for ${device.address}: ${e.message}")
-            return@withContext false
+            return false
         }
-        try {
-            CompanionLog.i(TAG, "Opening WPP BT socket to ${device.address}")
-            socket.connect()
-            CompanionLog.i(TAG, "Connected WPP BT socket to ${device.address}")
-
-            val payload = JSONObject()
-                .put("ssid", ssid)
-                .put("bssid", bssid)
-                .toString()
-            val payloadBytes = payload.toByteArray(Charsets.UTF_8)
-            CompanionLog.i(TAG, "Sending WPP payload to ${device.address}: ${payloadBytes.size} bytes")
-
-            val out = DataOutputStream(socket.outputStream)
-            out.writeInt(payloadBytes.size)
-            out.write(payloadBytes)
-            out.flush()
-
-            val ack = withTimeout(5.seconds) {
-                val raw = DataInputStream(socket.inputStream).readUTF()
-                CompanionLog.i(TAG, "Received WPP ACK from ${device.address}: $raw")
-                raw
-            }
-            if (ack.trim() !in setOf("OK", "ACK", "ERR")) {
-                CompanionLog.w(TAG, "No ACK from ${device.address} for WPP config update")
-                false
-            } else if (ack.trim() == "ERR") {
-                CompanionLog.w(TAG, "Car rejected WPP config update for ${device.address}")
-                false
+        return try {
+            val acknowledged = WppConfigBtExchange.send(object : WppConfigBtTransport {
+                override fun connect() = socket.connect()
+                override val inputStream get() = socket.inputStream
+                override val outputStream get() = socket.outputStream
+                override fun close() = socket.close()
+            }, payloadBytes)
+            if (acknowledged) {
+                CompanionLog.i(TAG, "Confirmed WPP update from ${device.address}")
             } else {
-                CompanionLog.i(TAG, "Confirmed WPP update from ${device.address}: $ack")
-                true
+                CompanionLog.w(TAG, "WPP update rejected or timed out for ${device.address}")
             }
+            acknowledged
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             CompanionLog.w(TAG, "Send failed for ${device.address}: ${e.message}")
             false
-        } finally {
-            runCatching { socket.close() }
         }
     }
 }

@@ -83,31 +83,8 @@ import com.openautolink.companion.service.CompanionService
 import com.openautolink.companion.ui.theme.OalGreen
 import com.openautolink.companion.ui.theme.OalOrange
 import com.openautolink.companion.ui.theme.OalRed
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-
-private data class WppVisibleNetwork(
-    val ssid: String,
-    val bssid: String,
-    val rssiDbm: Int,
-    val frequencyMhz: Int,
-) {
-    val bandKey: String
-        get() = when {
-            is5Ghz(frequencyMhz) -> "5ghz"
-            is24Ghz(frequencyMhz) -> "2.4ghz"
-            else -> "other"
-        }
-
-    val bandLabel: String
-        get() = when {
-            is5Ghz(frequencyMhz) -> "5 GHz"
-            is24Ghz(frequencyMhz) -> "2.4 GHz"
-            else -> "${frequencyMhz} MHz"
-        }
-
-    val channelLabel: String
-        get() = wifiChannelLabel(frequencyMhz)
-}
 
 @SuppressLint("MissingPermission")
 private fun visibleWppNetworks(context: Context): List<WppVisibleNetwork> {
@@ -115,51 +92,18 @@ private fun visibleWppNetworks(context: Context): List<WppVisibleNetwork> {
         val wm = context.applicationContext
             .getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
         @Suppress("DEPRECATION")
-        wm.scanResults
-            ?.mapNotNull { scan ->
-                val ssid = scan.SSID?.trim().orEmpty()
-                val bssid = scan.BSSID?.trim().orEmpty()
-                if (ssid.isBlank() || bssid.isBlank()) {
-                    null
-                } else {
-                    WppVisibleNetwork(
-                        ssid = ssid,
-                        bssid = bssid,
-                        rssiDbm = scan.level,
-                        frequencyMhz = scan.frequency,
-                    )
-                }
-            }
-            ?.groupBy { "${it.ssid.lowercase()}|${it.bandKey}" }
-            ?.values
-            ?.map { networks ->
-                networks.maxWithOrNull(
-                    compareByDescending<WppVisibleNetwork> { it.rssiDbm }
-                        .thenBy { it.bssid }
-                )!!
-            }
-            ?.sortedWith(
-                compareBy<WppVisibleNetwork> { !is5Ghz(it.frequencyMhz) }
-                    .thenByDescending { it.rssiDbm }
-                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.ssid }
-                    .thenBy { it.bssid }
+        val scans = wm.scanResults.orEmpty().map { scan ->
+            WppVisibleNetwork(
+                ssid = scan.SSID.orEmpty(),
+                bssid = scan.BSSID.orEmpty(),
+                rssiDbm = scan.level,
+                frequencyMhz = scan.frequency,
             )
-            .orEmpty()
+        }
+        selectWppNetworks(scans)
     } catch (_: Exception) {
         emptyList()
     }
-}
-
-private fun is5Ghz(frequencyMhz: Int): Boolean = frequencyMhz in 5000..5999
-
-private fun is24Ghz(frequencyMhz: Int): Boolean = frequencyMhz in 2400..2499
-
-private fun wifiChannelLabel(frequencyMhz: Int): String = when {
-    frequencyMhz == 2484 -> "14"
-    frequencyMhz in 2412..2472 -> (((frequencyMhz - 2412) / 5) + 1).toString()
-    frequencyMhz in 5000..5895 -> ((frequencyMhz - 5000) / 5).toString()
-    frequencyMhz > 0 -> "?"
-    else -> "-"
 }
 
 @Composable
@@ -1350,6 +1294,7 @@ private fun WppWifiSendSection(
     val scope = rememberCoroutineScope()
     var scannedNetworks by remember { mutableStateOf<List<WppVisibleNetwork>>(emptyList()) }
     var showScanPicker by remember { mutableStateOf(false) }
+    var isSending by remember { mutableStateOf(false) }
 
         Text(
             text = "Send WPP WiFi to Car",
@@ -1388,9 +1333,9 @@ private fun WppWifiSendSection(
                         scannedNetworks = visibleWppNetworks(context)
                         showScanPicker = true
                     },
-                    enabled = selectedBtMacs.isNotEmpty(),
+                    enabled = selectedBtMacs.isNotEmpty() && !isSending,
                 ) {
-                    Text("Scan & Send to Car")
+                    Text(if (isSending) "Sending…" else "Scan & Send to Car")
                 }
                 if (status.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
@@ -1420,25 +1365,37 @@ private fun WppWifiSendSection(
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable {
+                                        .clickable(enabled = !isSending) {
+                                            if (isSending) return@clickable
+                                            isSending = true
+                                            showScanPicker = false
+                                            onStatusChanged("Sending ${network.ssid} / ${network.bssid} to selected car Bluetooth device(s)…")
                                             scope.launch {
-                                                val result = WppConfigBtClient.sendToTargetCars(
-                                                    context = context,
-                                                    targetMacs = selectedBtMacs,
-                                                    ssid = network.ssid,
-                                                    bssid = network.bssid,
-                                                )
-                                                onStatusChanged(
-                                                    result.fold(
-                                                        onSuccess = { count ->
-                                                            "Sent ${network.ssid} / ${network.bssid} to $count selected car Bluetooth device(s)."
-                                                        },
-                                                        onFailure = { error ->
-                                                            "Send failed: ${error.message}"
-                                                        },
+                                                try {
+                                                    val result = WppConfigBtClient.sendToTargetCars(
+                                                        context = context,
+                                                        targetMacs = selectedBtMacs,
+                                                        ssid = network.ssid,
+                                                        bssid = network.bssid,
                                                     )
-                                                )
-                                                showScanPicker = false
+                                                    onStatusChanged(
+                                                        result.fold(
+                                                            onSuccess = { count ->
+                                                                "Sent ${network.ssid} / ${network.bssid} to $count selected car Bluetooth device(s)."
+                                                            },
+                                                            onFailure = { error ->
+                                                                "Send failed: ${error.message}"
+                                                            },
+                                                        )
+                                                    )
+                                                } catch (e: CancellationException) {
+                                                    onStatusChanged("Send cancelled.")
+                                                    throw e
+                                                } catch (e: Exception) {
+                                                    onStatusChanged("Send failed: ${e.message}")
+                                                } finally {
+                                                    isSending = false
+                                                }
                                             }
                                         }
                                         .padding(vertical = 6.dp),
