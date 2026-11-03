@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -106,6 +107,9 @@ class OalMediaSessionManager private constructor(private val context: Context) {
         successfulActive=active
     }
     private fun submitPlaybackState(session:MediaSessionCompat,state:Int,position:Long) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            submittedStateKnown && state == lastPushedState && position == lastPushedPosition
+        ) return
         try { session.setPlaybackState(buildPlaybackState(state,position)) }
         catch (failure: Exception) { outcome(Outcome.SUBMISSION_FAILED); throw failure }
         lastPushedState=state;lastPushedPosition=position;submittedStateKnown=true
@@ -453,6 +457,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             playingPublicationOwner = null
             cachedArtHash = 0
             cachedBitmap = null
+            MediaArtworkProvider.clear()
             lastPushedPlaying = null
             lastPushedState = PlaybackStateCompat.STATE_NONE
             lastPushedPosition = 0L
@@ -487,6 +492,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             )
             cachedArtHash = 0
             cachedBitmap = null
+            MediaArtworkProvider.clear()
             submitPlaybackState(session,PlaybackStateCompat.STATE_NONE,0)
             // Track successful submissions, not attempts (retirement can throw and be retried).
             lastPushedPlaying = false
@@ -559,14 +565,12 @@ class OalMediaSessionManager private constructor(private val context: Context) {
                     }
                 }
                 if (bitmap != null) {
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+                    putArtwork(builder, bitmap)
                 }
             } else {
                 // Playback-only update (no new art) — preserve cached bitmap
                 cachedBitmap?.let { bitmap ->
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+                    putArtwork(builder, bitmap)
                 }
             }
 
@@ -576,16 +580,16 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             outcome(Outcome.METADATA_SUBMITTED)
             cachedBitmap=nextBitmap
 
-            // Nudge PlaybackState so consumers that only react to onPlaybackStateChanged
-            // (notably the AAOS cluster media tile) re-read the new metadata. We don't
-            // know the current position on a metadata-only update, so reuse 0 with the
-            // last known playing state. setState is idempotent if nothing actually changed
-            // for consumers that DO listen to onMetadataChanged.
-            val playing = lastPushedPlaying ?: false
-            val st = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-            submitPlaybackState(session,st,0L)
-            lastPushedState = st
-            lastPushedPosition = 0L
+            // Older GM hosts only re-read metadata on a playback callback. Modern
+            // hosts consume metadata directly; a synthetic seek to zero can reselect
+            // the media card over navigation in their split cluster layout.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val playing = lastPushedPlaying ?: false
+                val st = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+                submitPlaybackState(session,st,0L)
+                lastPushedState = st
+                lastPushedPosition = 0L
+            }
         }
     }
 
@@ -636,8 +640,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
                 value.album?.let { builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM, it) }
                 value.durationMillis?.let { builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, it) }
                 nextBitmap?.let {
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it)
-                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, it)
+                    putArtwork(builder, it)
                 }
                 try { session.setMetadata(builder.build()) }
                 catch (failure: Exception) { outcome(Outcome.SUBMISSION_FAILED); throw failure }
@@ -667,6 +670,15 @@ class OalMediaSessionManager private constructor(private val context: Context) {
                 }
             }
         }
+
+    private fun putArtwork(builder: MediaMetadataCompat.Builder, bitmap: Bitmap) {
+        val uri = MediaArtworkProvider.publish(context, bitmap).toString()
+        builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, uri)
+            .putString(MediaMetadataCompat.METADATA_KEY_ART_URI, uri)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
+            .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+            .putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+    }
 
     private fun decodeCarPlayArtwork(bytes: ByteArray): Bitmap? = runCatching {
         if (bytes.isEmpty() || bytes.size > 2 * 1024 * 1024) return null

@@ -203,6 +203,12 @@
         </service>
 
         <!-- Media source for AAOS system UI, cluster, and steering wheel controls -->
+        <!-- OEM media/cluster processes read only opaque, bounded artwork snapshots. -->
+        <provider
+            android:name=".media.MediaArtworkProvider"
+            android:authorities="${applicationId}.media.artwork"
+            android:exported="true" />
+
         <service
             android:name=".media.OalMediaBrowserService"
             android:label="@string/app_name"

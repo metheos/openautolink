@@ -26,6 +26,36 @@ The AAOS host publication path additionally requires a valid sourced step distan
 - Truly unknown instructions retain available text/estimates and current source artwork without fabricating a directional fallback.
 - Direct-AA roundabout angle integers do not yet have a proved source unit/sign/reference convention. OAL does not invent a conversion into AndroidX's traveled-in-circulation angle. Existing bridge-provided raw angles are retained as source data; richer phone artwork can still depict the junction.
 
+## AAOS artwork and media/navigation coexistence
+
+[Android's AAOS artwork contract](https://developer.android.com/training/cars/media/create-media-browser/media-artwork)
+requires a local `content://` or `android.resource://` URI for now-playing artwork.
+OAL publishes all three metadata URI keys (`DISPLAY_ICON_URI`, `ART_URI`, and
+`ALBUM_ART_URI`) through a read-only provider using the installed application ID.
+Embedded album-art/display-icon bitmaps remain available for older hosts.
+The provider keeps up to eight opaque, process-local image snapshots; retained
+artwork keeps its URI, replacement art gets a new URI, and session idle clears
+the snapshots. Encoding happens only when a consumer reads an image, off the
+media publication thread.
+
+On Android 14/API 34 and newer, metadata updates no longer synthesize a
+playback-state update/seek to zero. Identical playback state/position submissions
+are also skipped. Actual play/pause and position changes still publish normally.
+AAOS 12/13 retain the legacy playback callback nudge required by older GM media
+tiles. These are compatibility measures, not proof of an OEM regression's cause.
+
+MediaSession and NavigationManager continue to publish independently. There is
+no public API to place a combined media/navigation card in GM's cluster; the
+vehicle host owns its sections and arbitration. OAL does not end/restart navigation
+or reclaim focus when a track changes.
+
+Vehicle acceptance: on Android 14, play a track with artwork while navigating,
+change tracks repeatedly, pause/resume, cancel/restart navigation, and reconnect.
+Confirm artwork loads and media remains in its center section without displacing
+left-side guidance. Repeat artwork/track changes on AAOS 12/13 to verify legacy
+callbacks. If flicker persists, capture remote logs alongside the visible changes:
+host Trip receipt alone cannot establish that the OEM rendered both sections.
+
 ## Checks before calling a vehicle report resolved
 
 While parked where possible, test both Android Auto and CarPlay independently:
