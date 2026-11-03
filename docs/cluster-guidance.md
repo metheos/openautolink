@@ -32,11 +32,34 @@ The AAOS host publication path additionally requires a valid sourced step distan
 requires a local `content://` or `android.resource://` URI for now-playing artwork.
 OAL publishes all three metadata URI keys (`DISPLAY_ICON_URI`, `ART_URI`, and
 `ALBUM_ART_URI`) through a read-only provider using the installed application ID.
-Embedded album-art/display-icon bitmaps remain available for older hosts.
+Embedded `ALBUM_ART`, `ART`, and `DISPLAY_ICON` bitmaps remain available for
+hosts using any of those fields. Images are bounded to 256 pixels per dimension
+to leave Binder headroom when publishing three bitmap fields.
 The provider keeps up to eight opaque, process-local image snapshots; retained
 artwork keeps its URI, replacement art gets a new URI, and session idle clears
-the snapshots. Encoding happens only when a consumer reads an image, off the
-media publication thread.
+the snapshots. Encoding happens on demand on the provider reader thread, not
+the media publication thread. Readers receive a seekable, read-only PNG file
+descriptor with a real size (also exposed through `OpenableColumns.SIZE`),
+rather than a non-seekable pipe.
+
+### Temporary artwork investigation logs
+
+Filter the HU log for **`MediaArtwork`** or **`artwork`** at **WARN** level.
+These deliberately prominent diagnostics are temporary; move them to DEBUG
+after vehicle confirmation. They report metadata submission (AA/CarPlay, active
+state, input-art size, bitmap/URI field presence), publication/reuse/eviction,
+provider creation, MIME/query/open requests, caller UID/PID/user and packages,
+dimensions/config/allocation, cached read count, file size and open latency.
+Titles, artists, image bytes, and source artwork URLs are not logged.
+
+`metadata submitted` proves only that the MediaSession setter returned.
+`open request` identifies an actual consumer, and `open success` proves a
+readable descriptor was handed off, not that the image was rendered. Compare
+caller identities and image IDs when opening the HU player versus displaying
+the cluster. No separate cluster caller is itself inconclusive (GM can proxy
+reads through a shared service). Lookup misses, rejected modes, and encoding/open
+failures are logged explicitly. Permission denial before provider dispatch can
+still appear only in the calling/system process's logs.
 
 On Android 14/API 34 and newer, metadata updates no longer synthesize a
 playback-state update/seek to zero. Identical playback state/position submissions

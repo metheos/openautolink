@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
+import com.openautolink.app.diagnostics.OalLog
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -43,7 +44,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
     companion object {
         private const val TAG = "OalMediaSession"
         /** Max album art dimension — keeps Binder IPC under transaction limit. */
-        private const val MAX_ART_SIZE = 320
+        private const val MAX_ART_SIZE = 256
 
         @Volatile
         private var instance: OalMediaSessionManager? = null
@@ -574,7 +575,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
                 }
             }
 
-            try { session.setMetadata(builder.build()) }
+            try { submitMetadata(session, builder.build(), "aa", albumArtBase64?.length, false) }
                 catch (failure: Exception) { outcome(Outcome.SUBMISSION_FAILED); throw failure }
             cachedArtHash=nextHash
             outcome(Outcome.METADATA_SUBMITTED)
@@ -642,7 +643,7 @@ class OalMediaSessionManager private constructor(private val context: Context) {
                 nextBitmap?.let {
                     putArtwork(builder, it)
                 }
-                try { session.setMetadata(builder.build()) }
+                try { submitMetadata(session, builder.build(), "carplay", artwork?.size, clearArtwork) }
                 catch (failure: Exception) { outcome(Outcome.SUBMISSION_FAILED); throw failure }
                 cachedBitmap=nextBitmap
                 if(nextBitmap!=null) MediaReadinessDiagnostics.event(MediaReadinessDiagnostics.Event.BITMAP_SUBMITTED)
@@ -678,6 +679,25 @@ class OalMediaSessionManager private constructor(private val context: Context) {
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, uri)
             .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
             .putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+            .putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
+    }
+
+    private fun submitMetadata(
+        session: MediaSessionCompat, metadata: MediaMetadataCompat, source: String,
+        incomingArtSize: Int?, clearArtwork: Boolean,
+    ) {
+        OalLog.w("MediaArtwork", "artwork metadata submitting source=$source sdk=${Build.VERSION.SDK_INT} " +
+            "active=${session.isActive} playbackState=$lastPushedState incomingArtSize=$incomingArtSize " +
+            "clear=$clearArtwork titlePresent=${!metadata.getString(MediaMetadataCompat.METADATA_KEY_TITLE).isNullOrEmpty()} " +
+            "bitmapAlbum=${metadata.getBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART) != null} " +
+            "bitmapArt=${metadata.getBitmap(MediaMetadataCompat.METADATA_KEY_ART) != null} " +
+            "bitmapIcon=${metadata.getBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON) != null} " +
+            "uriAlbum=${metadata.getString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI)} " +
+            "uriArt=${metadata.getString(MediaMetadataCompat.METADATA_KEY_ART_URI)} " +
+            "uriIcon=${metadata.getString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI)}")
+        session.setMetadata(metadata)
+        OalLog.w("MediaArtwork", "artwork metadata submitted source=$source active=${session.isActive} " +
+            "legacyPlaybackNudge=${source == "aa" && Build.VERSION.SDK_INT < 34}")
     }
 
     private fun decodeCarPlayArtwork(bytes: ByteArray): Bitmap? = runCatching {
